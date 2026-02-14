@@ -1,0 +1,106 @@
+# 项目信息
+project:
+  name: "satellite_design_optimizer"
+  version: "1.0.0"
+  description: "Unified satellite design optimization system"
+
+# 几何配置
+geometry:
+  envelope:
+    auto_envelope: true
+    fill_ratio: 0.30
+    size_ratio: [1.7, 1.8, 1.5]
+    shell_thickness_mm: 5.0
+    origin: "center"
+
+  components:
+    - id: "battery_01"
+      dims_mm: [200, 150, 100]
+      mass_kg: 5.0
+      power_w: 50.0
+      category: "power"
+
+    - id: "payload_01"
+      dims_mm: [180, 180, 120]
+      mass_kg: 3.5
+      power_w: 30.0
+      category: "payload"
+
+  keepouts:
+    - min_mm: [500, 200, 200]
+      max_mm: [600, 300, 300]
+      tag: "sensor_fov"
+
+  clearance_mm: 20
+
+# 仿真配置
+simulation:
+  backend: "comsol"  # matlab | comsol | simplified
+  type: "COMSOL"  # 保留兼容性
+
+  # MATLAB配置（当type=MATLAB时使用）
+  matlab_workspace: "E:/Simulations/Matlab"
+  matlab_function: "run_thermal_analysis"
+
+  # COMSOL配置（当type=COMSOL时使用）
+  comsol_model: "e:/Code/msgalaxy/models/satellite_thermal_v2.mph"
+  comsol_parameters:
+    - "battery_x"
+    - "battery_y"
+    - "battery_z"
+    - "battery_dx"
+    - "battery_dy"
+    - "battery_dz"
+    - "battery_power"
+    - "payload_x"
+    - "payload_y"
+    - "payload_z"
+    - "payload_dx"
+    - "payload_dy"
+    - "payload_dz"
+    - "payload_power"
+
+  # 约束条件
+  constraints:
+    max_temp_c: 50.0
+    min_clearance_mm: 3.0
+    max_mass_kg: 150.0
+    max_power_w: 500.0
+
+# 优化配置
+optimization:
+  max_iterations: 20
+  convergence_threshold: 0.01
+
+  allowed_operators:
+    - "MOVE"
+    - "ROTATE"
+
+  solver_method: "bounded"
+  solver_tolerance: 0.000001
+
+# LLM配置（支持OpenAI和Qwen）
+openai:
+  # API配置
+  api_key: "${OPENAI_API_KEY}"  # 从环境变量读取，或直接填写
+
+  # 模型选择
+  # OpenAI: gpt-4-turbo, gpt-4, gpt-3.5-turbo
+  # Qwen: qwen-plus, qwen-turbo, qwen-max
+  model: "qwen-plus"
+
+  # API Base URL
+  # OpenAI: https://api.openai.com/v1 (默认，可不填)
+  # Qwen: https://dashscope.aliyuncs.com/compatible-mode/v1
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+  # 生成参数
+  temperature: 0.7  # 0.0-1.0，越高越随机
+  max_tokens: 2000  # 最大生成token数
+
+# 日志配置
+logging:
+  level: "INFO"
+  output_dir: "experiments"
+  save_llm_interactions: true
+  save_visualizations: true

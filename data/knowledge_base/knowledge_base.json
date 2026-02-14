@@ -1,0 +1,90 @@
+[
+  {
+    "item_id": "K001",
+    "category": "standard",
+    "title": "GJB 5236-2004 卫星热控设计规范",
+    "content": "高功耗组件（>10W）应安装在±Y面，以利用辐射散热。散热面应朝向冷空间，避免朝向太阳或地球。",
+    "relevance_score": 0.0,
+    "metadata": {
+      "source": "GJB 5236-2004",
+      "section": "3.2"
+    }
+  },
+  {
+    "item_id": "K002",
+    "category": "heuristic",
+    "title": "质心控制启发式规则",
+    "content": "当质心偏移>5mm时，优先移动质量最大的组件（通常是电池）。移动方向应与偏移方向相反。",
+    "relevance_score": 0.0,
+    "metadata": {
+      "confidence": 0.9
+    }
+  },
+  {
+    "item_id": "K003",
+    "category": "formula",
+    "title": "辐射散热公式",
+    "content": "辐射散热功率 Q = ε·σ·A·(T₁⁴ - T₂⁴)，其中ε为发射率，σ为斯特藩-玻尔兹曼常数(5.67×10⁻⁸ W/m²·K⁴)，A为面积，T为绝对温度。",
+    "relevance_score": 0.0,
+    "metadata": {
+      "formula_type": "thermal"
+    }
+  },
+  {
+    "item_id": "K004",
+    "category": "case",
+    "title": "某卫星电池过热问题案例",
+    "content": "电池组初始布局在+Z面，导致温度超标15°C。解决方案：移至-Y面并增加热管，温度降至安全范围。关键教训：高功耗组件不应放在小散热面。",
+    "relevance_score": 0.0,
+    "metadata": {
+      "success": true,
+      "temp_reduction": 15.0
+    }
+  },
+  {
+    "item_id": "K005",
+    "category": "standard",
+    "title": "结构设计安全系数要求",
+    "content": "卫星结构安全系数应≥2.0。对于关键承力结构，安全系数应≥2.5。一阶模态频率应>50Hz，避开发射段低频振动。",
+    "relevance_score": 0.0,
+    "metadata": {
+      "source": "QJ 3000-2004"
+    }
+  },
+  {
+    "item_id": "K006",
+    "category": "heuristic",
+    "title": "几何干涉解决策略",
+    "content": "解决干涉的优先级：1)移动质量小的组件；2)移动非关键组件；3)旋转细长组件；4)重新装箱（最后手段）。",
+    "relevance_score": 0.0,
+    "metadata": {
+      "priority_order": [
+        1,
+        2,
+        3,
+        4
+      ]
+    }
+  },
+  {
+    "item_id": "K007",
+    "category": "formula",
+    "title": "电源线路压降计算",
+    "content": "压降 ΔV = I·ρ·L/A，其中I为电流，ρ为电阻率（铜1.7×10⁻⁸ Ω·m），L为线路长度，A为导线截面积。压降应<电压的5%。",
+    "relevance_score": 0.0,
+    "metadata": {
+      "formula_type": "power"
+    }
+  },
+  {
+    "item_id": "K008",
+    "category": "case",
+    "title": "布局优化降低温度梯度案例",
+    "content": "通过将高功耗组件分散布置，温度梯度从8°C/m降至3°C/m，避免了热应力问题。关键：避免热源集中。",
+    "relevance_score": 0.0,
+    "metadata": {
+      "success": true,
+      "gradient_reduction": 5.0
+    }
+  }
+]

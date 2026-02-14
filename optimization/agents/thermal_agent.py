@@ -1,0 +1,348 @@
+"""
+Thermal Agent: 热控专家
+
+负责：
+1. 热分析与优化
+2. 散热路径设计
+3. 温度约束验证
+"""
+
+import openai
+from typing import List, Dict, Any, Optional
+from datetime import datetime
+import json
+
+from ..protocol import (
+    AgentTask,
+    ThermalProposal,
+    ThermalAction,
+    ThermalMetrics,
+)
+from core.protocol import DesignState
+from core.logger import ExperimentLogger
+from core.exceptions import LLMError
+
+
+class ThermalAgent:
+    """热控专家Agent"""
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gpt-4-turbo",
+        temperature: float = 0.6,
+        base_url: Optional[str] = None,
+        logger: Optional[ExperimentLogger] = None
+    ):
+        """
+        初始化Thermal Agent
+
+        Args:
+            api_key: OpenAI API密钥
+            model: 使用的模型
+            temperature: 温度参数
+            logger: 实验日志记录器
+        """
+        if base_url:
+            self.client = openai.OpenAI(api_key=api_key, base_url=base_url)
+        else:
+            self.client = openai.OpenAI(api_key=api_key)
+        self.model = model
+        self.temperature = temperature
+        self.logger = logger
+
+        self.system_prompt = self._load_system_prompt()
+
+    def _load_system_prompt(self) -> str:
+        """加载系统提示词"""
+        return """你是热控专家（Thermal Agent）。
+
+【专业能力】
+1. 热传递理论：理解传导、对流、辐射三种热传递方式
+2. 热分析：识别热点、分析散热路径、预测温度分布
+3. 热控设计：散热器设计、热管布置、表面涂层优化
+
+【任务输入】
+Meta-Reasoner分配给你的任务，包含：
+- objective: 任务目标（如"降低电池温度至55°C以下"）
+- constraints: 约束条件（如"不增加质量>100g"）
+- context: 当前热控状态
+
+【可用操作】
+1. **ADJUST_LAYOUT**: 调整组件布局以改善散热
+   - 参数: target_components, target_face (±X/±Y/±Z)
+   - 原理: 将高功耗组件移至散热面（通常是±Y面）
+   - 示例: 将Battery移至+Y面以利用辐射散热
+
+2. **ADD_HEATSINK**: 增加散热器
+   - 参数: target_components, heatsink_type (fin/plate/heatpipe)
+   - 原理: 增大散热面积或改善热传导路径
+   - 示例: 为PowerModule添加翅片式散热器
+
+3. **MODIFY_COATING**: 修改表面涂层
+   - 参数: target_components, coating_type (high_emissivity/low_emissivity/reflective)
+   - 原理: 改变表面发射率，影响辐射散热
+   - 示例: 在热点区域使用高发射率涂层
+
+4. **CHANGE_ORIENTATION**: 改变组件朝向
+   - 参数: target_components, new_orientation
+   - 原理: 改变散热面朝向，优化辐射路径
+   - 示例: 旋转散热器使其朝向冷空间
+
+【输出格式】
+你必须输出JSON格式的ThermalProposal：
+
+```json
+{
+  "proposal_id": "THERM_PROP_001",
+  "task_id": "TASK_001",
+  "reasoning": "详细的热分析推理：\\n1. 热点识别与原因分析\\n2. 散热路径评估\\n3. 为什么选择这个方案\\n4. 预期热传递效果",
+  "actions": [
+    {
+      "action_id": "ACT_001",
+      "op_type": "ADJUST_LAYOUT",
+      "target_components": ["Battery_01", "PowerModule_02"],
+      "parameters": {
+        "target_face": "+Y",
+        "reason": "利用+Y面的辐射散热"
+      },
+      "rationale": "+Y面朝向冷空间，辐射散热效率高"
+    }
+  ],
+  "predicted_metrics": {
+    "max_temp": 52.0,
+    "min_temp": 18.0,
+    "avg_temp": 32.5,
+    "temp_gradient": 1.8,
+    "hotspot_components": []
+  },
+  "side_effects": [
+    "移动Battery会影响质心，需Geometry Agent确认",
+    "可能需要重新布线，需Power Agent评估"
+  ],
+  "confidence": 0.80
+}
+```
+
+【热控知识】
+1. **热传导**: Q = k·A·ΔT/L (k=导热系数, A=面积, L=长度)
+   - 金属导热好（铝k≈200 W/m·K），塑料导热差（k≈0.2 W/m·K）
+
+2. **对流散热**: Q = h·A·ΔT (h=对流系数)
+   - 真空环境无对流，卫星主要靠传导和辐射
+
+3. **辐射散热**: Q = ε·σ·A·(T₁⁴ - T₂⁴)
+   - ε=发射率（黑体=1.0，抛光铝≈0.05）
+   - σ=斯特藩-玻尔兹曼常数 5.67×10⁻⁸ W/m²·K⁴
+   - 辐射散热与温度的四次方成正比
+
+4. **工程经验**:
+   - 高功耗组件（>10W）应安装在±Y面
+   - 组件间距>5mm可减少热耦合
+   - 热管可有效传导热量（等效导热系数>10000 W/m·K）
+   - 多层隔热材料（MLI）可减少辐射热损失
+
+【推理原则】
+1. **物理依据**: 基于热传递三定律进行分析
+2. **量化预测**: 给出具体的温度预测值
+3. **权衡分析**: 考虑热控方案对质量、成本、复杂度的影响
+4. **安全裕度**: 目标温度应低于限制温度5-10°C
+
+【注意事项】
+- 卫星在轨环境：真空、无对流、温度范围-100°C~+100°C
+- 太阳辐射强度：1367 W/m²（太阳常数）
+- 地球红外辐射：约240 W/m²
+- 内部热源：电子设备功耗
+"""
+
+    def generate_proposal(
+        self,
+        task: AgentTask,
+        current_state: DesignState,
+        current_metrics: ThermalMetrics
+    ) -> ThermalProposal:
+        """
+        生成热控优化提案
+
+        Args:
+            task: Meta-Reasoner分配的任务
+            current_state: 当前设计状态
+            current_metrics: 当前热控指标
+
+        Returns:
+            ThermalProposal: 热控优化提案
+        """
+        try:
+            # 构建提示
+            user_prompt = self._build_prompt(task, current_state, current_metrics)
+
+            messages = [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+
+            # 记录请求
+            if self.logger:
+                self.logger.log_llm_interaction(
+                    iteration=task.task_id,
+                    role="thermal_agent",
+                    request={"messages": messages},
+                    response=None
+                )
+
+            # 调用LLM
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=self.temperature,
+                response_format={"type": "json_object"}
+            )
+
+            response_text = response.choices[0].message.content
+            response_json = json.loads(response_text)
+
+            # 记录响应
+            if self.logger:
+                self.logger.log_llm_interaction(
+                    iteration=task.task_id,
+                    role="thermal_agent",
+                    request=None,
+                    response=response_json
+                )
+
+            # 构建Proposal
+            proposal = ThermalProposal(**response_json)
+
+            # 自动生成ID
+            if not proposal.proposal_id or proposal.proposal_id.startswith("THERM_PROP"):
+                proposal.proposal_id = f"THERM_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+            proposal.task_id = task.task_id
+
+            return proposal
+
+        except Exception as e:
+            raise LLMError(f"Thermal Agent failed: {e}")
+
+    def _build_prompt(
+        self,
+        task: AgentTask,
+        current_state: DesignState,
+        current_metrics: ThermalMetrics
+    ) -> str:
+        """构建用户提示"""
+        prompt = f"""# 热控优化任务
+
+## 任务信息
+- 任务ID: {task.task_id}
+- 目标: {task.objective}
+- 优先级: {task.priority}
+
+## 约束条件
+"""
+        for i, constraint in enumerate(task.constraints, 1):
+            prompt += f"{i}. {constraint}\n"
+
+        prompt += f"""
+## 当前热控状态
+- 温度范围: {current_metrics.min_temp:.1f}°C ~ {current_metrics.max_temp:.1f}°C
+- 平均温度: {current_metrics.avg_temp:.1f}°C
+- 最大温度梯度: {current_metrics.temp_gradient:.2f}°C/m
+"""
+        if current_metrics.hotspot_components:
+            prompt += f"- 热点组件: {', '.join(current_metrics.hotspot_components)}\n"
+
+        prompt += "\n## 组件功耗信息\n"
+        # 添加高功耗组件信息
+        high_power_comps = [c for c in current_state.components if c.power > 5.0]
+        for comp in high_power_comps[:5]:
+            prompt += f"- {comp.id}: {comp.power:.1f}W, 位置 {comp.geometry.position}\n"
+
+        # 添加任务上下文
+        if task.context:
+            prompt += "\n## 额外上下文\n"
+            for key, value in task.context.items():
+                prompt += f"- {key}: {value}\n"
+
+        prompt += "\n请生成热控优化提案（JSON格式）。"
+
+        return prompt
+
+    def validate_proposal(
+        self,
+        proposal: ThermalProposal,
+        current_state: DesignState
+    ) -> Dict[str, Any]:
+        """
+        验证提案的可行性
+
+        Args:
+            proposal: 热控提案
+            current_state: 当前设计状态
+
+        Returns:
+            验证结果
+        """
+        issues = []
+        warnings = []
+
+        component_ids = [c.id for c in current_state.components]
+
+        # 检查操作的有效性
+        for action in proposal.actions:
+            # 检查目标组件是否存在
+            for comp_id in action.target_components:
+                if comp_id not in component_ids:
+                    issues.append(f"组件 {comp_id} 不存在")
+
+            # 检查参数合理性
+            if action.op_type == "ADJUST_LAYOUT":
+                target_face = action.parameters.get("target_face")
+                valid_faces = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
+                if target_face not in valid_faces:
+                    issues.append(f"无效的目标面: {target_face}")
+
+            elif action.op_type == "ADD_HEATSINK":
+                heatsink_type = action.parameters.get("heatsink_type")
+                valid_types = ["fin", "plate", "heatpipe"]
+                if heatsink_type not in valid_types:
+                    warnings.append(f"未知的散热器类型: {heatsink_type}")
+
+        # 检查预测指标的合理性
+        if proposal.predicted_metrics.max_temp < proposal.predicted_metrics.min_temp:
+            issues.append("预测的最高温度低于最低温度，不合理")
+
+        if proposal.predicted_metrics.max_temp > 100 or proposal.predicted_metrics.min_temp < -50:
+            warnings.append("预测温度超出典型卫星工作范围")
+
+        # 检查置信度
+        if proposal.confidence < 0.3:
+            warnings.append(f"置信度过低 ({proposal.confidence:.2f})，建议谨慎执行")
+
+        return {
+            "is_valid": len(issues) == 0,
+            "issues": issues,
+            "warnings": warnings
+        }
+
+
+if __name__ == "__main__":
+    print("Testing Thermal Agent...")
+
+    # 创建示例任务
+    task = AgentTask(
+        task_id="TASK_002",
+        agent_type="thermal",
+        objective="降低Battery_01温度至55°C以下",
+        constraints=[
+            "不增加质量>100g",
+            "保持现有布局尽量不变"
+        ],
+        priority=1,
+        context={
+            "current_temp": 68.5,
+            "target_temp": 55.0
+        }
+    )
+
+    print(f"✓ Task created: {task.objective}")

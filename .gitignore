@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environment variables
+.env
+.env.local
+
+# Experiments and logs
+experiments/
+*.log
+
+# Temporary files
+tmp_files/
+*.tmp
+*.bak
+
+# OS
+.DS_Store
+Thumbs.db
+
+# MATLAB
+*.asv
+*.m~
+
+# COMSOL
+*.mph~
+# COMSOL模型文件通常很大，不建议提交到git
+# 如需共享模型，请使用外部存储（如网盘）
+models/*.mph
+!models/README.md

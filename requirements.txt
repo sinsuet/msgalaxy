@@ -1,0 +1,37 @@
+# Core dependencies (Python 3.12 compatible)
+numpy>=1.26.0
+scipy>=1.12.0
+pydantic>=2.6.0
+pyyaml>=6.0
+
+# LLM integration
+openai>=1.12.0
+
+# Simulation interfaces
+# Note: Install MATLAB Engine manually from MATLAB installation:
+# cd "D:\Program Files\MATLAB\R20XXx\extern\engines\python"
+# python setup.py install
+#
+# Note: Install MPh for COMSOL:
+# pip install mph
+
+# Geometry and layout
+py3dbp>=1.1.0
+# cadquery>=2.3.0  # Install via conda: conda install -c conda-forge cadquery
+
+# Web services
+flask>=3.0.0
+requests>=2.31.0
+
+# Visualization
+matplotlib>=3.8.0
+
+# Utilities
+python-dotenv>=1.0.0
+click>=8.1.0
+
+# Development
+pytest>=7.4.0
+pytest-cov>=4.1.0
+black>=23.12.0
+flake8>=7.0.0
