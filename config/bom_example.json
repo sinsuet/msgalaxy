@@ -1,0 +1,38 @@
+{
+  "components": [
+    {
+      "id": "battery_01",
+      "name": "锂电池组",
+      "dimensions": {
+        "x": 200,
+        "y": 150,
+        "z": 100
+      },
+      "mass": 5.0,
+      "power": 50.0,
+      "category": "power",
+      "quantity": 1,
+      "material": "aluminum",
+      "thermal_conductivity": 237.0,
+      "max_temp": 60.0,
+      "notes": "主电源"
+    },
+    {
+      "id": "payload_01",
+      "name": "科学载荷",
+      "dimensions": {
+        "x": 180,
+        "y": 180,
+        "z": 120
+      },
+      "mass": 3.5,
+      "power": 30.0,
+      "category": "payload",
+      "quantity": 1,
+      "material": "aluminum",
+      "thermal_conductivity": 237.0,
+      "max_temp": 50.0,
+      "notes": "主要任务载荷"
+    }
+  ]
+}

@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MsGalaxy - 实时任务监控</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .connection-status {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-left: 20px;
+        }
+
+        .connected {
+            background: #10b981;
+            color: white;
+        }
+
+        .disconnected {
+            background: #ef4444;
+            color: white;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 20px;
+        }
+
+        .panel {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .panel h2 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 18px;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #555;
+            font-weight: 500;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+
+        button {
+            width: 100%;
+            padding: 12px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        button:hover {
+            background: #5568d3;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .log-container {
+            height: 500px;
+            overflow-y: auto;
+            background: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+        }
+
+        .log-entry {
+            margin-bottom: 8px;
+            padding: 8px;
+            border-radius: 3px;
+            animation: fadeIn 0.3s;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .log-info {
+            background: #e3f2fd;
+            border-left: 3px solid #2196f3;
+        }
+
+        .log-success {
+            background: #e8f5e9;
+            border-left: 3px solid #4caf50;
+        }
+
+        .log-warning {
+            background: #fff3e0;
+            border-left: 3px solid #ff9800;
+        }
+
+        .log-error {
+            background: #ffebee;
+            border-left: 3px solid #f44336;
+        }
+
+        .timestamp {
+            color: #999;
+            font-size: 11px;
+            margin-right: 10px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background: #e0e0e0;
+            border-radius: 15px;
+            overflow: hidden;
+            margin: 15px 0;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            transition: width 0.5s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            font-size: 12px;
+        }
+
+        .task-info {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+        }
+
+        .task-info-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        .task-info-label {
+            color: #666;
+            font-weight: 500;
+        }
+
+        .task-info-value {
+            color: #333;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>
+                MsGalaxy - 卫星设计优化系统
+                <span id="connectionStatus" class="connection-status disconnected">未连接</span>
+            </h1>
+            <p class="subtitle">实时任务监控 - WebSocket演示</p>
+        </div>
+
+        <div class="main-content">
+            <!-- 左侧控制面板 -->
+            <div class="panel">
+                <h2>任务控制</h2>
+
+                <div class="form-group">
+                    <label for="serverUrl">服务器地址</label>
+                    <input type="text" id="serverUrl" value="http://localhost:5000" placeholder="http://localhost:5000">
+                </div>
+
+                <div class="form-group">
+                    <button id="connectBtn" onclick="connectToServer()">连接服务器</button>
+                </div>
+
+                <hr style="margin: 20px 0; border: none; border-top: 1px solid #ddd;">
+
+                <div class="form-group">
+                    <label for="bomFile">BOM文件路径</label>
+                    <input type="text" id="bomFile" value="config/bom_example.json" placeholder="config/bom_example.json">
+                </div>
+
+                <div class="form-group">
+                    <label for="maxIterations">最大迭代次数</label>
+                    <input type="number" id="maxIterations" value="20" min="1" max="100">
+                </div>
+
+                <div class="form-group">
+                    <button id="createTaskBtn" onclick="createTask()" disabled>创建优化任务</button>
+                </div>
+
+                <hr style="margin: 20px 0; border: none; border-top: 1px solid #ddd;">
+
+                <div class="task-info" id="taskInfo" style="display: none;">
+                    <div class="task-info-item">
+                        <span class="task-info-label">任务ID:</span>
+                        <span class="task-info-value" id="taskId">-</span>
+                    </div>
+                    <div class="task-info-item">
+                        <span class="task-info-label">状态:</span>
+                        <span class="task-info-value" id="taskStatus">-</span>
+                    </div>
+                    <div class="task-info-item">
+                        <span class="task-info-label">当前迭代:</span>
+                        <span class="task-info-value" id="currentIteration">-</span>
+                    </div>
+                </div>
+
+                <div class="progress-bar" id="progressBar" style="display: none;">
+                    <div class="progress-fill" id="progressFill" style="width: 0%;">0%</div>
+                </div>
+            </div>
+
+            <!-- 右侧日志面板 -->
+            <div class="panel">
+                <h2>实时日志</h2>
+                <div class="log-container" id="logContainer">
+                    <div class="log-entry log-info">
+                        <span class="timestamp">[系统]</span>
+                        等待连接到服务器...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let socket = null;
+        let currentTaskId = null;
+
+        function addLog(message, type = 'info') {
+            const logContainer = document.getElementById('logContainer');
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.className = `log-entry log-${type}`;
+            logEntry.innerHTML = `<span class="timestamp">[${timestamp}]</span>${message}`;
+            logContainer.appendChild(logEntry);
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        function updateConnectionStatus(connected) {
+            const statusEl = document.getElementById('connectionStatus');
+            const connectBtn = document.getElementById('connectBtn');
+            const createTaskBtn = document.getElementById('createTaskBtn');
+
+            if (connected) {
+                statusEl.textContent = '已连接';
+                statusEl.className = 'connection-status connected';
+                connectBtn.textContent = '断开连接';
+                createTaskBtn.disabled = false;
+            } else {
+                statusEl.textContent = '未连接';
+                statusEl.className = 'connection-status disconnected';
+                connectBtn.textContent = '连接服务器';
+                createTaskBtn.disabled = true;
+            }
+        }
+
+        function connectToServer() {
+            const serverUrl = document.getElementById('serverUrl').value;
+
+            if (socket && socket.connected) {
+                socket.disconnect();
+                addLog('已断开连接', 'warning');
+                return;
+            }
+
+            addLog(`正在连接到 ${serverUrl}...`, 'info');
+
+            socket = io(serverUrl + '/tasks');
+
+            socket.on('connect', () => {
+                addLog('WebSocket连接成功!', 'success');
+                updateConnectionStatus(true);
+            });
+
+            socket.on('disconnect', () => {
+                addLog('WebSocket连接断开', 'warning');
+                updateConnectionStatus(false);
+            });
+
+            socket.on('connected', (data) => {
+                addLog(`服务器确认: ${data.message}`, 'success');
+            });
+
+            socket.on('task_update', (data) => {
+                handleTaskUpdate(data);
+            });
+
+            socket.on('error', (data) => {
+                addLog(`错误: ${data.message}`, 'error');
+            });
+        }
+
+        function handleTaskUpdate(data) {
+            const { task_id, event_type, data: eventData } = data;
+
+            if (event_type === 'status_change') {
+                const status = eventData.status;
+                const message = eventData.message;
+                addLog(`[状态变更] ${message} (${status})`, status === 'failed' ? 'error' : 'success');
+
+                document.getElementById('taskStatus').textContent = status;
+
+                if (status === 'completed' || status === 'failed') {
+                    document.getElementById('progressBar').style.display = 'none';
+                }
+            }
+            else if (event_type === 'progress') {
+                const percent = eventData.progress_percent || 0;
+                const message = eventData.message;
+                const current = eventData.current_iteration;
+                const max = eventData.max_iterations;
+
+                if (message) {
+                    addLog(`[进度] ${message}`, 'info');
+                } else if (current !== undefined) {
+                    addLog(`[进度] 迭代 ${current}/${max} (${percent}%)`, 'info');
+                    document.getElementById('currentIteration').textContent = `${current}/${max}`;
+                }
+
+                document.getElementById('progressBar').style.display = 'block';
+                document.getElementById('progressFill').style.width = percent + '%';
+                document.getElementById('progressFill').textContent = percent + '%';
+            }
+            else if (event_type === 'iteration_complete') {
+                const iteration = eventData.iteration;
+                addLog(`[迭代完成] 第 ${iteration} 次迭代完成`, 'success');
+            }
+            else if (event_type === 'error') {
+                const error = eventData.error;
+                addLog(`[错误] ${error}`, 'error');
+            }
+        }
+
+        async function createTask() {
+            const serverUrl = document.getElementById('serverUrl').value;
+            const bomFile = document.getElementById('bomFile').value;
+            const maxIterations = parseInt(document.getElementById('maxIterations').value);
+
+            addLog('正在创建优化任务...', 'info');
+
+            try {
+                const response = await fetch(serverUrl + '/api/tasks', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        bom_file: bomFile,
+                        max_iterations: maxIterations
+                    })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    currentTaskId = result.task_id;
+                    addLog(`任务创建成功! ID: ${currentTaskId}`, 'success');
+
+                    document.getElementById('taskInfo').style.display = 'block';
+                    document.getElementById('taskId').textContent = currentTaskId;
+                    document.getElementById('taskStatus').textContent = result.status;
+                    document.getElementById('currentIteration').textContent = '0/' + maxIterations;
+
+                    // 订阅任务更新
+                    socket.emit('subscribe', { task_id: currentTaskId });
+                    addLog(`已订阅任务 ${currentTaskId} 的更新`, 'info');
+                } else {
+                    addLog(`任务创建失败: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                addLog(`请求失败: ${error.message}`, 'error');
+            }
+        }
+    </script>
+</body>
+</html>

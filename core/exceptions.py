@@ -51,3 +51,25 @@ class ConfigurationError(SatelliteDesignError):
 class ValidationError(SatelliteDesignError):
     """数据验证异常"""
     pass
+
+
+class BOMParseError(SatelliteDesignError):
+    """BOM文件解析异常"""
+    pass
+
+
+class VisualizationError(SatelliteDesignError):
+    """可视化生成异常"""
+    pass
+
+
+class ConvergenceError(OptimizationError):
+    """优化收敛失败异常"""
+    pass
+
+
+class ConstraintViolationError(OptimizationError):
+    """约束违反异常"""
+    def __init__(self, message: str, violations: list = None):
+        super().__init__(message)
+        self.violations = violations or []

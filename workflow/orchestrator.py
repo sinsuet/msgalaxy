@@ -8,9 +8,15 @@ Workflow Orchestrator: 主工作流编排器
 4. 生成最终报告
 """
 
+import os
+import re
 from typing import Optional, Dict, Any
 from pathlib import Path
 import yaml
+from dotenv import load_dotenv
+
+# 加载.env文件
+load_dotenv()
 
 from core.protocol import DesignState, ComponentGeometry, Vector3D
 from core.logger import ExperimentLogger
@@ -57,13 +63,34 @@ class WorkflowOrchestrator:
         self._initialize_modules()
 
     def _load_config(self, config_path: str) -> Dict[str, Any]:
-        """加载配置文件"""
+        """加载配置文件并替换环境变量"""
         config_file = Path(config_path)
         if not config_file.exists():
             raise FileNotFoundError(f"Config file not found: {config_path}")
 
         with open(config_file, 'r', encoding='utf-8') as f:
-            return yaml.safe_load(f)
+            config = yaml.safe_load(f)
+
+        # 递归替换环境变量
+        config = self._replace_env_vars(config)
+        return config
+
+    def _replace_env_vars(self, obj):
+        """递归替换配置中的环境变量占位符 ${VAR_NAME}"""
+        if isinstance(obj, dict):
+            return {k: self._replace_env_vars(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._replace_env_vars(item) for item in obj]
+        elif isinstance(obj, str):
+            # 匹配 ${VAR_NAME} 格式
+            pattern = r'\$\{([^}]+)\}'
+            matches = re.findall(pattern, obj)
+            for var_name in matches:
+                env_value = os.environ.get(var_name, '')
+                obj = obj.replace(f'${{{var_name}}}', env_value)
+            return obj
+        else:
+            return obj
 
     def _initialize_modules(self):
         """初始化所有模块"""
@@ -103,23 +130,34 @@ class WorkflowOrchestrator:
         )
 
         # Agents
+        agent_model = openai_config.get("model", "gpt-4-turbo")
+        agent_temperature = openai_config.get("temperature", 0.7)
+
         self.geometry_agent = GeometryAgent(
             api_key=api_key,
+            model=agent_model,
+            temperature=agent_temperature,
             base_url=base_url,
             logger=self.logger
         )
         self.thermal_agent = ThermalAgent(
             api_key=api_key,
+            model=agent_model,
+            temperature=agent_temperature,
             base_url=base_url,
             logger=self.logger
         )
         self.structural_agent = StructuralAgent(
             api_key=api_key,
+            model=agent_model,
+            temperature=agent_temperature,
             base_url=base_url,
             logger=self.logger
         )
         self.power_agent = PowerAgent(
             api_key=api_key,
+            model=agent_model,
+            temperature=agent_temperature,
             base_url=base_url,
             logger=self.logger
         )
@@ -187,6 +225,9 @@ class WorkflowOrchestrator:
                     'solver_cost': 0,
                     'llm_tokens': 0
                 })
+
+                # 保存设计状态（用于3D可视化）
+                self.logger.save_design_state(iteration, current_state.dict())
 
                 # 2.2 检查收敛
                 if not violations:
@@ -258,8 +299,41 @@ class WorkflowOrchestrator:
         """初始化设计状态"""
         if bom_file:
             # 从BOM文件加载
-            # TODO: 实现BOM解析
-            pass
+            from core.bom_parser import BOMParser
+
+            self.logger.logger.info(f"Loading BOM from: {bom_file}")
+            bom_components = BOMParser.parse(bom_file)
+
+            # 验证BOM
+            errors = BOMParser.validate(bom_components)
+            if errors:
+                raise ValueError(f"BOM验证失败: {errors}")
+
+            self.logger.logger.info(f"BOM loaded: {len(bom_components)} components")
+
+            # 更新layout_engine的配置
+            # 将BOM组件转换为layout_engine需要的格式
+            geom_config = self.config.get('geometry', {})
+            geom_config['components'] = []
+
+            for bom_comp in bom_components:
+                for i in range(bom_comp.quantity):
+                    comp_id = f"{bom_comp.id}_{i+1:02d}" if bom_comp.quantity > 1 else bom_comp.id
+                    geom_config['components'].append({
+                        'id': comp_id,
+                        'dims_mm': [
+                            bom_comp.dimensions['x'],
+                            bom_comp.dimensions['y'],
+                            bom_comp.dimensions['z']
+                        ],
+                        'mass_kg': bom_comp.mass,
+                        'power_w': bom_comp.power,
+                        'category': bom_comp.category
+                    })
+
+            # 重新初始化layout_engine
+            from geometry.layout_engine import LayoutEngine
+            self.layout_engine = LayoutEngine(config=geom_config)
 
         # 使用默认布局
         packing_result = self.layout_engine.generate_layout()
@@ -503,6 +577,15 @@ class WorkflowOrchestrator:
         self.logger.logger.info(f"{'='*60}")
         self.logger.logger.info(f"Total iterations: {iterations}")
         self.logger.logger.info(f"Final design: {len(final_state.components)} components")
+
+        # 生成可视化
+        if self.config.get('logging', {}).get('save_visualizations', True):
+            try:
+                from core.visualization import generate_visualizations
+                generate_visualizations(self.logger.run_dir)
+                self.logger.logger.info("✓ Visualizations generated")
+            except Exception as e:
+                self.logger.logger.warning(f"Visualization generation failed: {e}")
 
 
 if __name__ == "__main__":

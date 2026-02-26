@@ -43,7 +43,7 @@ simulation:
   matlab_function: "run_thermal_analysis"
 
   # COMSOL配置（当type=COMSOL时使用）
-  comsol_model: "e:/Code/msgalaxy/models/satellite_thermal_v2.mph"
+  comsol_model: "e:/Code/msgalaxy/models/satellite_thermal_heatflux.mph"
   comsol_parameters:
     - "battery_x"
     - "battery_y"

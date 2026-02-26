@@ -84,7 +84,8 @@ class AgentCoordinator:
         proposals = self._dispatch_tasks(
             strategic_plan.tasks,
             current_state,
-            current_metrics
+            current_metrics,
+            strategic_plan.iteration
         )
 
         # 2. 验证提案
@@ -116,7 +117,8 @@ class AgentCoordinator:
         self,
         tasks: List[AgentTask],
         current_state: DesignState,
-        current_metrics: Dict[str, Any]
+        current_metrics: Dict[str, Any],
+        iteration: int
     ) -> Dict[str, Any]:
         """分发任务给各Agent"""
         proposals = {
@@ -146,7 +148,8 @@ class AgentCoordinator:
                         current_metrics.get("geometry", GeometryMetrics(
                             min_clearance=0, com_offset=[0,0,0],
                             moment_of_inertia=[0,0,0], packing_efficiency=0
-                        ))
+                        )),
+                        iteration
                     )
                     proposals["geometry"].append(proposal)
 
@@ -157,7 +160,8 @@ class AgentCoordinator:
                         current_state,
                         current_metrics.get("thermal", ThermalMetrics(
                             max_temp=0, min_temp=0, avg_temp=0, temp_gradient=0
-                        ))
+                        )),
+                        iteration
                     )
                     proposals["thermal"].append(proposal)
 
@@ -169,7 +173,8 @@ class AgentCoordinator:
                         current_metrics.get("structural", StructuralMetrics(
                             max_stress=0, max_displacement=0,
                             first_modal_freq=0, safety_factor=0
-                        ))
+                        )),
+                        iteration
                     )
                     proposals["structural"].append(proposal)
 
@@ -181,13 +186,20 @@ class AgentCoordinator:
                         current_metrics.get("power", PowerMetrics(
                             total_power=0, peak_power=0,
                             power_margin=0, voltage_drop=0
-                        ))
+                        )),
+                        iteration
                     )
                     proposals["power"].append(proposal)
 
             except Exception as e:
                 if self.logger:
-                    self.logger.logger.error(f"Agent {agent_type} failed: {e}")
+                    import traceback
+                    error_details = traceback.format_exc()
+                    self.logger.logger.error(
+                        f"Agent {agent_type} failed: {e}\n"
+                        f"Task ID: {task.task_id}\n"
+                        f"Full traceback:\n{error_details}"
+                    )
 
         return proposals
 

@@ -129,7 +129,8 @@ class PowerAgent:
         self,
         task: AgentTask,
         current_state: DesignState,
-        current_metrics: PowerMetrics
+        current_metrics: PowerMetrics,
+        iteration: int = 0
     ) -> PowerProposal:
         try:
             user_prompt = self._build_prompt(task, current_state, current_metrics)
@@ -140,7 +141,7 @@ class PowerAgent:
 
             if self.logger:
                 self.logger.log_llm_interaction(
-                    iteration=task.task_id,
+                    iteration=iteration,
                     role="power_agent",
                     request={"messages": messages},
                     response=None
@@ -157,7 +158,7 @@ class PowerAgent:
 
             if self.logger:
                 self.logger.log_llm_interaction(
-                    iteration=task.task_id,
+                    iteration=iteration,
                     role="power_agent",
                     request=None,
                     response=response_json

@@ -159,7 +159,8 @@ Meta-Reasoner分配给你的任务，包含：
         self,
         task: AgentTask,
         current_state: DesignState,
-        current_metrics: ThermalMetrics
+        current_metrics: ThermalMetrics,
+        iteration: int = 0
     ) -> ThermalProposal:
         """
         生成热控优化提案
@@ -168,13 +169,25 @@ Meta-Reasoner分配给你的任务，包含：
             task: Meta-Reasoner分配的任务
             current_state: 当前设计状态
             current_metrics: 当前热控指标
+            iteration: 当前迭代次数
 
         Returns:
             ThermalProposal: 热控优化提案
         """
         try:
             # 构建提示
-            user_prompt = self._build_prompt(task, current_state, current_metrics)
+            try:
+                if self.logger:
+                    self.logger.logger.debug(f"[ThermalAgent] Building prompt for task {task.task_id}")
+                user_prompt = self._build_prompt(task, current_state, current_metrics)
+                if self.logger:
+                    self.logger.logger.debug(f"[ThermalAgent] Prompt built successfully, length: {len(user_prompt)}")
+            except Exception as prompt_error:
+                import traceback
+                error_details = traceback.format_exc()
+                if self.logger:
+                    self.logger.logger.error(f"[ThermalAgent] Failed to build prompt:\n{error_details}")
+                raise LLMError(f"Failed to build prompt: {prompt_error}")
 
             messages = [
                 {"role": "system", "content": self.system_prompt},
@@ -183,35 +196,50 @@ Meta-Reasoner分配给你的任务，包含：
 
             # 记录请求
             if self.logger:
+                self.logger.logger.debug(f"[ThermalAgent] Logging LLM request for task {task.task_id}")
                 self.logger.log_llm_interaction(
-                    iteration=task.task_id,
+                    iteration=iteration,
                     role="thermal_agent",
                     request={"messages": messages},
                     response=None
                 )
 
             # 调用LLM
+            if self.logger:
+                self.logger.logger.debug(f"[ThermalAgent] Calling LLM API")
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=self.temperature,
                 response_format={"type": "json_object"}
             )
+            if self.logger:
+                self.logger.logger.debug(f"[ThermalAgent] LLM API call successful")
 
             response_text = response.choices[0].message.content
+            if self.logger:
+                self.logger.logger.debug(f"[ThermalAgent] Response text length: {len(response_text)}")
+
             response_json = json.loads(response_text)
+            if self.logger:
+                self.logger.logger.debug(f"[ThermalAgent] JSON parsed successfully")
 
             # 记录响应
             if self.logger:
+                self.logger.logger.debug(f"[ThermalAgent] Logging LLM response")
                 self.logger.log_llm_interaction(
-                    iteration=task.task_id,
+                    iteration=iteration,
                     role="thermal_agent",
                     request=None,
                     response=response_json
                 )
 
             # 构建Proposal
+            if self.logger:
+                self.logger.logger.debug(f"[ThermalAgent] Creating ThermalProposal from JSON")
             proposal = ThermalProposal(**response_json)
+            if self.logger:
+                self.logger.logger.debug(f"[ThermalAgent] ThermalProposal created successfully")
 
             # 自动生成ID
             if not proposal.proposal_id or proposal.proposal_id.startswith("THERM_PROP"):
@@ -245,9 +273,9 @@ Meta-Reasoner分配给你的任务，包含：
 
         prompt += f"""
 ## 当前热控状态
-- 温度范围: {current_metrics.min_temp:.1f}°C ~ {current_metrics.max_temp:.1f}°C
-- 平均温度: {current_metrics.avg_temp:.1f}°C
-- 最大温度梯度: {current_metrics.temp_gradient:.2f}°C/m
+- 温度范围: {float(current_metrics.min_temp):.1f}°C ~ {float(current_metrics.max_temp):.1f}°C
+- 平均温度: {float(current_metrics.avg_temp):.1f}°C
+- 最大温度梯度: {float(current_metrics.temp_gradient):.2f}°C/m
 """
         if current_metrics.hotspot_components:
             prompt += f"- 热点组件: {', '.join(current_metrics.hotspot_components)}\n"
@@ -256,7 +284,7 @@ Meta-Reasoner分配给你的任务，包含：
         # 添加高功耗组件信息
         high_power_comps = [c for c in current_state.components if c.power > 5.0]
         for comp in high_power_comps[:5]:
-            prompt += f"- {comp.id}: {comp.power:.1f}W, 位置 {comp.geometry.position}\n"
+            prompt += f"- {comp.id}: {float(comp.power):.1f}W, 位置 {comp.position}\n"
 
         # 添加任务上下文
         if task.context:

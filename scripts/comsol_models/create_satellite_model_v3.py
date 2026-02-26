@@ -125,58 +125,43 @@ def create_satellite_model_v3(output_path: str):
         client.disconnect()
         return False
 
-    # 5. 创建选择集（用于材料和热源）
+    # 5. 定义材料（简化：所有域使用铝合金）
     print()
-    print("[5/12] 创建选择集...")
+    print("[5/12] 定义材料属性...")
     try:
         comp = model.java.component('comp1')
 
-        # 电池域选择
-        sel_battery = comp.selection().create('sel_battery', 'Explicit')
-        sel_battery.geom('geom1', 3)
-        sel_battery.set([1])  # 假设电池是第一个域
-        sel_battery.label('Battery Domain')
-
-        # 载荷域选择
-        sel_payload = comp.selection().create('sel_payload', 'Explicit')
-        sel_payload.geom('geom1', 3)
-        sel_payload.set([2])  # 假设载荷是第二个域
-        sel_payload.label('Payload Domain')
-
-        # 外壳域选择
-        sel_envelope = comp.selection().create('sel_envelope', 'Explicit')
-        sel_envelope.geom('geom1', 3)
-        sel_envelope.set([3])  # 假设外壳是第三个域
-        sel_envelope.label('Envelope Domain')
-
-        print("  ✓ 选择集创建完成 (3个选择集)")
-    except Exception as e:
-        print(f"  ✗ 失败: {e}")
-        client.disconnect()
-        return False
-
-    # 6. 定义材料
-    print()
-    print("[6/12] 定义材料属性...")
-    try:
-        # 铝合金（用于电池和载荷）
+        # 铝合金（应用于所有域）
         mat_al = comp.material().create('mat_aluminum', 'Common')
         mat_al.label('Aluminum')
         mat_al.propertyGroup('def').set('thermalconductivity', ['237[W/(m*K)]'])
         mat_al.propertyGroup('def').set('density', ['2700[kg/m^3]'])
         mat_al.propertyGroup('def').set('heatcapacity', ['900[J/(kg*K)]'])
-        mat_al.selection().named('sel_battery')
-        mat_al.selection().named('sel_payload')
+        mat_al.selection().all()
 
-        # 复合材料（用于外壳）
-        mat_comp = comp.material().create('mat_composite', 'Common')
-        mat_comp.label('Composite')
-        mat_comp.propertyGroup('def').set('thermalconductivity', ['5[W/(m*K)]'])
-        mat_comp.propertyGroup('def').set('density', ['1600[kg/m^3]'])
-        mat_comp.propertyGroup('def').set('heatcapacity', ['1000[J/(kg*K)]'])
-        mat_comp.selection().named('sel_envelope')
+        print("  ✓ 材料定义完成 (铝合金应用于所有域)")
+    except Exception as e:
+        print(f"  ✗ 失败: {e}")
+        client.disconnect()
+        return False
 
-        print("  ✓ 材料定义完成 (2种材料)")
+    # 6. 创建选择集（用于热源）
+    print()
+    print("[6/12] 创建选择集...")
+    try:
+        # 电池域选择
+        sel_battery = comp.selection().create('sel_battery', 'Explicit')
+        sel_battery.geom('geom1', 3)
+        sel_battery.set([1])  # 电池是第一个域
+        sel_battery.label('Battery Domain')
+
+        # 载荷域选择
+        sel_payload = comp.selection().create('sel_payload', 'Explicit')
+        sel_payload.geom('geom1', 3)
+        sel_payload.set([2])  # 载荷是第二个域
+        sel_payload.label('Payload Domain')
+
+        print("  ✓ 选择集创建完成 (2个选择集)")
     except Exception as e:
         print(f"  ✗ 失败: {e}")
         client.disconnect()
@@ -201,11 +186,11 @@ def create_satellite_model_v3(output_path: str):
         hs_payload.set('Q0', 1, 'payload_power/(payload_dx*payload_dy*payload_dz*1e-9)')
         hs_payload.label('Payload Heat Source')
 
-        # 外壳边界条件（外表面恒温）
-        temp_bc = ht.create('temp1', 'TemperatureBoundary', 2)
-        temp_bc.selection().all()
-        temp_bc.set('T0', 'ambient_temp')
-        temp_bc.label('Boundary Temperature')
+        # 外表面对流边界条件（更合理）
+        hf = ht.create('hf1', 'HeatFluxBoundary', 2)
+        hf.selection().all()
+        hf.set('q0', '10[W/(m^2*K)]*(T-ambient_temp)')  # 简化的对流
+        hf.label('Convection Boundary')
 
         print("  ✓ 热传导物理场设置完成")
     except Exception as e:

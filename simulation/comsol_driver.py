@@ -2,6 +2,7 @@
 COMSOL仿真驱动器
 
 通过MPh库连接COMSOL Multiphysics进行多物理场仿真
+支持动态模型生成，自动修复边界条件问题
 """
 
 import os
@@ -26,10 +27,14 @@ class ComsolDriver(SimulationDriver):
             config: 配置字典，包含：
                 - comsol_model: COMSOL模型文件路径（.mph）
                 - comsol_parameters: 要更新的参数列表
+                - auto_generate_model: 是否自动生成模型（默认False）
+                - environment: 环境类型 ("orbit"或"ground"，默认"orbit")
         """
         super().__init__(config)
         self.model_file = config.get('comsol_model', 'model.mph')
         self.parameters = config.get('comsol_parameters', [])
+        self.auto_generate = config.get('auto_generate_model', False)
+        self.environment = config.get('environment', 'orbit')
         self.client: Optional[Any] = None
         self.model: Optional[Any] = None
 
@@ -107,6 +112,10 @@ class ComsolDriver(SimulationDriver):
             )
 
         try:
+            # 检查是否需要重新生成模型
+            if self.auto_generate:
+                self._regenerate_model_if_needed(request.design_state)
+
             logger.info("运行COMSOL仿真...")
 
             # 1. 更新几何参数
@@ -180,6 +189,48 @@ class ComsolDriver(SimulationDriver):
 
         logger.info(f"  已更新 {len(design_state.components)} 个组件的参数")
 
+    def _regenerate_model_if_needed(self, design_state):
+        """
+        根据需要重新生成COMSOL模型
+
+        Args:
+            design_state: 设计状态
+        """
+        # 检查是否需要重新生成
+        # 条件：组件数量变化、首次运行、或模型文件不存在
+        need_regenerate = False
+
+        if not os.path.exists(self.model_file):
+            logger.info("模型文件不存在，需要生成新模型")
+            need_regenerate = True
+        elif hasattr(self, '_last_component_count'):
+            if len(design_state.components) != self._last_component_count:
+                logger.info(f"组件数量变化 ({self._last_component_count} -> {len(design_state.components)})，需要重新生成模型")
+                need_regenerate = True
+
+        if need_regenerate:
+            logger.info("开始动态生成COMSOL模型...")
+            from simulation.comsol_model_generator import COMSOLModelGenerator
+
+            generator = COMSOLModelGenerator()
+            success = generator.generate_model(
+                design_state,
+                self.model_file,
+                environment=self.environment
+            )
+
+            if not success:
+                raise SimulationError("COMSOL模型生成失败")
+
+            # 重新加载模型
+            if self.connected:
+                self.disconnect()
+            self.connect()
+
+            logger.info("✓ 动态模型生成并加载成功")
+
+        self._last_component_count = len(design_state.components)
+
     def _extract_results(self) -> Dict[str, float]:
         """
         从COMSOL模型中提取仿真结果
@@ -190,22 +241,17 @@ class ComsolDriver(SimulationDriver):
         metrics = {}
 
         try:
-            # 使用直接表达式提取温度（更可靠）
-            try:
-                max_temp = float(self.model.evaluate('max(T)', unit='degC'))
-                metrics['max_temp'] = max_temp
-            except:
-                pass
+            # 提取最大温度（使用算子）
+            max_temp = float(self.model.evaluate('maxop1(T)', unit='degC'))
+            metrics['max_temp'] = max_temp
 
-            try:
-                avg_temp = float(self.model.evaluate('mean(T)', unit='degC'))
-                metrics['avg_temp'] = avg_temp
-            except:
-                pass
+            # 提取平均温度（使用算子）
+            avg_temp = float(self.model.evaluate('aveop1(T)', unit='degC'))
+            metrics['avg_temp'] = avg_temp
 
             # 提取最大应力（如果有结构分析）
             try:
-                max_stress = float(self.model.evaluate('max(solid.mises)', unit='MPa'))
+                max_stress = float(self.model.evaluate('maxop1(solid.mises)', unit='MPa'))
                 metrics['max_stress'] = max_stress
             except:
                 pass

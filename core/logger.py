@@ -47,7 +47,7 @@ class ExperimentLogger:
         # 创建Python logger
         self.logger = get_logger(f"experiment_{timestamp}")
 
-        print(f"📁 Experiment logs: {self.run_dir}")
+        print(f"Experiment logs: {self.run_dir}")
 
     def _init_csv(self):
         """初始化CSV文件头"""
@@ -67,26 +67,53 @@ class ExperimentLogger:
             writer = csv.writer(f)
             writer.writerow(headers)
 
-    def log_llm_interaction(self, iteration: int, context_dict: Dict[str, Any], response_dict: Dict[str, Any]):
+    def log_llm_interaction(self, iteration: int, role: str = None, request: Dict[str, Any] = None,
+                           response: Dict[str, Any] = None, context_dict: Dict[str, Any] = None,
+                           response_dict: Dict[str, Any] = None):
         """
         记录LLM交互
 
+        支持两种调用方式：
+        1. 新方式: log_llm_interaction(iteration, role, request, response)
+        2. 旧方式: log_llm_interaction(iteration, context_dict, response_dict)
+
         Args:
             iteration: 迭代次数
-            context_dict: 输入上下文（ContextPack）
-            response_dict: LLM响应（OptimizationPlan）
+            role: 角色名称（meta_reasoner, thermal_agent等）
+            request: 请求数据
+            response: 响应数据
+            context_dict: 输入上下文（旧方式）
+            response_dict: LLM响应（旧方式）
         """
-        # 保存输入
-        req_path = os.path.join(self.llm_log_dir, f"iter_{iteration:02d}_req.json")
-        with open(req_path, 'w', encoding='utf-8') as f:
-            json.dump(context_dict, f, indent=2, ensure_ascii=False)
+        # 兼容旧方式
+        if context_dict is not None:
+            request = context_dict
+        if response_dict is not None:
+            response = response_dict
 
-        # 保存输出
-        resp_path = os.path.join(self.llm_log_dir, f"iter_{iteration:02d}_resp.json")
-        with open(resp_path, 'w', encoding='utf-8') as f:
-            json.dump(response_dict, f, indent=2, ensure_ascii=False)
+        # 如果没有数据，跳过
+        if request is None and response is None:
+            return
 
-        print(f"  💾 LLM interaction saved: iter_{iteration:02d}")
+        # 确定文件名前缀
+        prefix = f"iter_{iteration:02d}"
+        if role:
+            prefix = f"iter_{iteration:02d}_{role}"
+
+        # 保存请求
+        if request is not None:
+            req_path = os.path.join(self.llm_log_dir, f"{prefix}_req.json")
+            with open(req_path, 'w', encoding='utf-8') as f:
+                json.dump(request, f, indent=2, ensure_ascii=False)
+
+        # 保存响应
+        if response is not None:
+            resp_path = os.path.join(self.llm_log_dir, f"{prefix}_resp.json")
+            with open(resp_path, 'w', encoding='utf-8') as f:
+                json.dump(response, f, indent=2, ensure_ascii=False)
+
+        if request is not None or response is not None:
+            print(f"  💾 LLM interaction saved: {prefix}")
 
     def log_metrics(self, data: Dict[str, Any]):
         """
@@ -218,13 +245,49 @@ def get_logger(name: str) -> Any:
     logger = logging.getLogger(name)
 
     if not logger.handlers:
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter(
+        # 控制台处理器 - 设置UTF-8编码
+        import sys
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.stream.reconfigure(encoding='utf-8') if hasattr(console_handler.stream, 'reconfigure') else None
+        console_formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
+        console_handler.setFormatter(console_formatter)
+        console_handler.setLevel(logging.INFO)
+
+        # 文件处理器
+        log_dir = Path("logs")
+        log_dir.mkdir(exist_ok=True)
+        file_handler = logging.FileHandler(
+            log_dir / f"{name}.log",
+            encoding='utf-8'
+        )
+        file_formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        file_handler.setFormatter(file_formatter)
+        file_handler.setLevel(logging.DEBUG)
+
+        logger.addHandler(console_handler)
+        logger.addHandler(file_handler)
+        logger.setLevel(logging.DEBUG)
 
     return logger
+
+
+def log_exception(logger, exception: Exception, context: str = ""):
+    """
+    记录异常详情
+
+    Args:
+        logger: 日志记录器
+        exception: 异常对象
+        context: 上下文信息
+    """
+    import traceback
+
+    error_msg = f"Exception in {context}: {type(exception).__name__}: {str(exception)}"
+    logger.error(error_msg)
+    logger.debug(traceback.format_exc())

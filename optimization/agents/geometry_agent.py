@@ -143,7 +143,8 @@ Meta-Reasoner分配给你的任务，包含：
         self,
         task: AgentTask,
         current_state: DesignState,
-        current_metrics: GeometryMetrics
+        current_metrics: GeometryMetrics,
+        iteration: int = 0
     ) -> GeometryProposal:
         """
         生成几何优化提案
@@ -152,13 +153,25 @@ Meta-Reasoner分配给你的任务，包含：
             task: Meta-Reasoner分配的任务
             current_state: 当前设计状态
             current_metrics: 当前几何指标
+            iteration: 当前迭代次数
 
         Returns:
             GeometryProposal: 几何优化提案
         """
         try:
             # 构建提示
-            user_prompt = self._build_prompt(task, current_state, current_metrics)
+            try:
+                if self.logger:
+                    self.logger.logger.debug(f"[GeometryAgent] Building prompt for task {task.task_id}")
+                user_prompt = self._build_prompt(task, current_state, current_metrics)
+                if self.logger:
+                    self.logger.logger.debug(f"[GeometryAgent] Prompt built successfully, length: {len(user_prompt)}")
+            except Exception as prompt_error:
+                import traceback
+                error_details = traceback.format_exc()
+                if self.logger:
+                    self.logger.logger.error(f"[GeometryAgent] Failed to build prompt:\n{error_details}")
+                raise LLMError(f"Failed to build prompt: {prompt_error}")
 
             messages = [
                 {"role": "system", "content": self.system_prompt},
@@ -167,35 +180,50 @@ Meta-Reasoner分配给你的任务，包含：
 
             # 记录请求
             if self.logger:
+                self.logger.logger.debug(f"[GeometryAgent] Logging LLM request for task {task.task_id}")
                 self.logger.log_llm_interaction(
-                    iteration=task.task_id,
+                    iteration=iteration,
                     role="geometry_agent",
                     request={"messages": messages},
                     response=None
                 )
 
             # 调用LLM
+            if self.logger:
+                self.logger.logger.debug(f"[GeometryAgent] Calling LLM API")
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=self.temperature,
                 response_format={"type": "json_object"}
             )
+            if self.logger:
+                self.logger.logger.debug(f"[GeometryAgent] LLM API call successful")
 
             response_text = response.choices[0].message.content
+            if self.logger:
+                self.logger.logger.debug(f"[GeometryAgent] Response text length: {len(response_text)}")
+
             response_json = json.loads(response_text)
+            if self.logger:
+                self.logger.logger.debug(f"[GeometryAgent] JSON parsed successfully")
 
             # 记录响应
             if self.logger:
+                self.logger.logger.debug(f"[GeometryAgent] Logging LLM response")
                 self.logger.log_llm_interaction(
-                    iteration=task.task_id,
+                    iteration=iteration,
                     role="geometry_agent",
                     request=None,
                     response=response_json
                 )
 
             # 构建Proposal
+            if self.logger:
+                self.logger.logger.debug(f"[GeometryAgent] Creating GeometryProposal from JSON")
             proposal = GeometryProposal(**response_json)
+            if self.logger:
+                self.logger.logger.debug(f"[GeometryAgent] GeometryProposal created successfully")
 
             # 自动生成ID
             if not proposal.proposal_id or proposal.proposal_id.startswith("GEOM_PROP"):
@@ -229,17 +257,17 @@ Meta-Reasoner分配给你的任务，包含：
 
         prompt += f"""
 ## 当前几何状态
-- 最小间隙: {current_metrics.min_clearance:.2f} mm
-- 质心偏移: [{', '.join(f'{x:.2f}' for x in current_metrics.com_offset)}] mm
-- 转动惯量: [{', '.join(f'{x:.2f}' for x in current_metrics.moment_of_inertia)}] kg·m²
-- 装填率: {current_metrics.packing_efficiency:.1f}%
-- 碰撞数量: {current_metrics.num_collisions}
+- 最小间隙: {float(current_metrics.min_clearance):.2f} mm
+- 质心偏移: [{', '.join(f'{float(x):.2f}' for x in current_metrics.com_offset)}] mm
+- 转动惯量: [{', '.join(f'{float(x):.2f}' for x in current_metrics.moment_of_inertia)}] kg·m²
+- 装填率: {float(current_metrics.packing_efficiency):.1f}%
+- 碰撞数量: {int(current_metrics.num_collisions)}
 
 ## 组件布局
 """
         # 添加组件位置信息
         for comp in current_state.components[:5]:  # 只显示前5个组件
-            prompt += f"- {comp.id}: 位置 {comp.geometry.position}, 尺寸 {comp.geometry.dimensions}\n"
+            prompt += f"- {comp.id}: 位置 {comp.position}, 尺寸 {comp.dimensions}\n"
 
         if len(current_state.components) > 5:
             prompt += f"... (共{len(current_state.components)}个组件)\n"
