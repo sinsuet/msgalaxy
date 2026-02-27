@@ -640,13 +640,11 @@ class ComsolDriver(SimulationDriver):
                 thin_layer.selection().all()
 
                 # 设置极其微弱的接触热导（等效于薄层导热硅脂）
-                h_gap = 10.0  # W/(m^2*K)，微弱但非零
+                # COMSOL ThinLayer 只需要设置厚度 ds，导热率会自动使用材料属性
                 d_gap = 0.1  # mm，假设间隙厚度
-                # COMSOL ThinLayer 参数：ds (厚度), k_mat (导热率)
-                thin_layer.set("ds", f"{d_gap}[mm]")  # 修复：使用 ds 而不是 d
-                thin_layer.set("k_mat", f"{h_gap * d_gap / 1000}[W/(m*K)]")  # 等效导热率
+                thin_layer.set("ds", f"{d_gap}[mm]")  # 修复：只设置厚度，不设置 k_mat
 
-                logger.info(f"      ✓ 全局默认导热网络已建立: h_gap={h_gap} W/(m^2*K)")
+                logger.info(f"      ✓ 全局默认导热网络已建立: ds={d_gap} mm")
             except Exception as e:
                 logger.warning(f"      ⚠️ 全局导热网络创建失败（非致命）: {e}")
                 # 非致命错误，继续执行

@@ -47,6 +47,10 @@ experiments/
 tmp_files/
 *.tmp
 *.bak
+workspace/
+
+# Research papers and references
+papers/
 
 # OS
 .DS_Store

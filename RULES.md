@@ -51,7 +51,7 @@ Whenever you need to create, modify, or write to a file, you MUST strictly follo
      ```
 
 8. **LLM Configuration & API Key Protocol (大模型配置与密钥规范)**:
-   - The default and ONLY permitted LLM for this project is `qwen-plus`. Do not attempt to revert to or use OpenAI models (like `gpt-4`) in the configuration unless explicitly requested.
+   - The default and ONLY permitted LLM for this project is `qwen3.5-plus`. Do not attempt to revert to or use OpenAI models (like `gpt-4`) in the configuration unless explicitly requested.
    - The API key and Base URL are ALREADY securely set in the `.env` file. 
    - NEVER ask the user for the API key, and NEVER hardcode API keys into scripts. Always use `dotenv` to load environment variables or read them from `config/system.yaml`.
 
@@ -59,3 +59,12 @@ Whenever you need to create, modify, or write to a file, you MUST strictly follo
    - This is a rigorous scientific research project aiming for academic publication.
    - When encountering complex bugs, mathematical divergences (e.g., COMSOL non-linear convergence failure), or integration challenges, you MUST NOT suggest "simplified versions," "temporary bypasses," "mocking data," or "skipping" the core problem.
    - You are required to dig deep, debug thoroughly, and provide mathematically and architecturally sound solutions. Degraded physical fidelity or "hacking" a fix just to make a test pass is STRICTLY PROHIBITED. Thoroughly solve the root cause.
+
+10. **Documentation & File Organization Protocol (文档与文件组织规范)**:
+   - **Documentation Location**: All summary documents, reports, analysis files, and documentation MUST be placed in the `docs/` directory. Do NOT create documentation files (e.g., `SUMMARY.md`, `ANALYSIS.md`, `REPORT.md`) in the project root or other directories.
+   - **Temporary Test Files Cleanup**: After debugging or testing is complete and the issue is resolved, you MUST delete temporary test files, test outputs, and workspace artifacts to maintain code cleanliness. Examples include:
+     - Temporary test scripts in `scripts/tests/` that were created for one-time debugging
+     - Test output files in `workspace/` or similar temporary directories
+     - Obsolete test data files that are no longer referenced
+   - **Archive Old Files**: If a file is deprecated but has historical value, move it to `docs/archive/` rather than deleting it outright.
+   - **Keep Repository Clean**: Regularly review and clean up unused files, outdated test artifacts, and redundant code to maintain a professional, publication-ready codebase.
