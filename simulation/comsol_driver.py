@@ -621,6 +621,8 @@ class ComsolDriver(SimulationDriver):
             mat.propertyGroup("def").set("density", "2700[kg/m^3]")
             mat.propertyGroup("def").set("heatcapacity", "896[J/(kg*K)]")
             mat.propertyGroup("def").set("epsilon_rad", "0.8")  # 默认发射率
+            # 为 ThinLayer 特征添加薄层导热率属性
+            mat.propertyGroup("def").set("ks", "167[W/(m*K)]")  # 薄层导热率（与体导热率相同）
             # 关键修复：将材料应用到所有域
             mat.selection().all()
             logger.info("  ✓ 材料已应用到所有域")
@@ -628,23 +630,34 @@ class ComsolDriver(SimulationDriver):
             # 数值稳定网络：添加全局默认的微弱导热接触（防止热悬浮）
             logger.info("  [3.5/7] 建立全局默认导热网络...")
             # 为所有内部边界添加默认的接触热导
-            # 这确保没有任何组件是绝对绝热的
+            # 这确保没有任何组件是绝对绝热的，防止求解器发散
             try:
                 # 创建 Thin Layer 特征（模拟组件间的微弱热接触）
-                thin_layer = ht.feature().create("tl_default", "ThinLayer")
-                # 选择所有内部边界（entitydim=2, 但不是外边界）
-                # 使用 "interior" 选择所有内部边界
+                thin_layer = ht.feature().create("tl_global", "ThinLayer")
+                # 选择所有内部边界（entitydim=2）
                 thin_layer.selection().geom("geom1", 2)
                 thin_layer.selection().set([])  # 先清空
-                # 设置为选择所有内部边界
-                thin_layer.selection().all()
+                thin_layer.selection().all()  # 选择所有边界
 
-                # 设置极其微弱的接触热导（等效于薄层导热硅脂）
-                # COMSOL ThinLayer 只需要设置厚度 ds，导热率会自动使用材料属性
+                # 设置厚度
                 d_gap = 0.1  # mm，假设间隙厚度
-                thin_layer.set("ds", f"{d_gap}[mm]")  # 修复：只设置厚度，不设置 k_mat
+                thin_layer.set("ds", f"{d_gap}[mm]")
 
-                logger.info(f"      ✓ 全局默认导热网络已建立: ds={d_gap} mm")
+                # ---- 核心修复：强制使用用户定义的材料属性 ----
+                # ThinLayer 是边界特征（2D），无法读取应用在域（3D）上的材料属性
+                # 因此必须在 ThinLayer 节点上直接设置用户定义属性
+                try:
+                    # 尝试断开材料链接，声明自定义
+                    thin_layer.set("ks_mat", "userdef")
+                except Exception:
+                    pass  # 忽略报错，继续尝试设置值
+
+                # 强制设置薄层导热率 (ks)、密度 (rho) 和恒压热容 (Cp)
+                thin_layer.set("ks", "167[W/(m*K)]")  # 薄层导热率
+                thin_layer.set("rho", "2700[kg/m^3]")  # 密度
+                thin_layer.set("Cp", "900[J/(kg*K)]")  # 恒压热容
+
+                logger.info(f"      ✓ 全局默认导热网络已建立: ds={d_gap} mm, ks=167 W/(m*K)")
             except Exception as e:
                 logger.warning(f"      ⚠️ 全局导热网络创建失败（非致命）: {e}")
                 # 非致命错误，继续执行

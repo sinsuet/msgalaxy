@@ -67,5 +67,6 @@ Thumbs.db
 models/*.mph
 !models/README.md
 
+#docs
 archive/
 docs/
