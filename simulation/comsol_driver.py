@@ -309,6 +309,11 @@ class ComsolDriver(SimulationDriver):
         try:
             import os
 
+            # 检查模型是否存在
+            if not self.model:
+                logger.warning("  ⚠ COMSOL 模型对象不存在，跳过保存")
+                return
+
             # 从 request.parameters 中获取实验目录
             experiment_dir = request.parameters.get("experiment_dir", None)
             iteration = request.design_state.iteration
@@ -327,8 +332,15 @@ class ComsolDriver(SimulationDriver):
 
                 # 保存模型
                 logger.info(f"  保存 COMSOL .mph 模型...")
-                self.model.save(mph_save_path_safe)
-                logger.info(f"  ✓ COMSOL .mph 模型已保存: {mph_save_path_safe}")
+                try:
+                    self.model.save(mph_save_path_safe)
+                    logger.info(f"  ✓ COMSOL .mph 模型已保存: {mph_save_path_safe}")
+                except Exception as save_error:
+                    logger.warning(f"  ⚠ MPh save() 调用失败: {save_error}")
+                    logger.warning(f"  尝试使用 Java API 保存...")
+                    # 尝试使用 Java API
+                    self.model.java.save(mph_save_path_safe)
+                    logger.info(f"  ✓ COMSOL .mph 模型已保存（Java API）: {mph_save_path_safe}")
 
             else:
                 # 如果没有提供实验目录，保存到默认位置
@@ -340,12 +352,20 @@ class ComsolDriver(SimulationDriver):
                 mph_save_path_safe = str(mph_save_path).replace('\\', '/')
 
                 logger.info(f"  保存 COMSOL .mph 模型（默认位置）...")
-                self.model.save(mph_save_path_safe)
-                logger.info(f"  ✓ COMSOL .mph 模型已保存: {mph_save_path_safe}")
+                try:
+                    self.model.save(mph_save_path_safe)
+                    logger.info(f"  ✓ COMSOL .mph 模型已保存: {mph_save_path_safe}")
+                except Exception as save_error:
+                    logger.warning(f"  ⚠ MPh save() 调用失败: {save_error}")
+                    logger.warning(f"  尝试使用 Java API 保存...")
+                    # 尝试使用 Java API
+                    self.model.java.save(mph_save_path_safe)
+                    logger.info(f"  ✓ COMSOL .mph 模型已保存（Java API）: {mph_save_path_safe}")
 
         except Exception as e:
             # 保存失败不应中断仿真流程
             logger.warning(f"  ⚠ 保存 .mph 模型失败: {e}")
+            logger.warning(f"  异常类型: {type(e).__name__}")
             logger.warning(f"  仿真结果仍然有效，继续执行...")
 
     def evaluate_expression(self, expression: str, unit: str = None) -> float:
@@ -414,13 +434,21 @@ class ComsolDriver(SimulationDriver):
             logger.info("  创建动态模型...")
             self._create_dynamic_model(step_file, request.design_state)
 
-            # 3. 求解（Phase 3 Step 3: 增强容错机制 + Step 4: 捕获底层 Java 异常）
-            logger.info("  求解物理场（T⁴ 辐射边界）...")
+            # 3. 求解（使用功率斜坡加载策略，解决非线性发散）
+            logger.info("  求解物理场（T⁴ 辐射边界 + 功率斜坡加载）...")
             solve_success = False
             try:
-                logger.info("  执行 study.run()...")
-                self.model.java.study("std1").run()
-                logger.info("  ✓ 求解成功")
+                # 功率斜坡加载：1% -> 20% -> 100%
+                # COMSOL 会自动将上一次的稳态解作为下一次的初始猜测值
+                ramping_steps = ["0.01", "0.20", "1.0"]  # 1%, 20%, 100% 功率
+
+                for scale in ramping_steps:
+                    logger.info(f"    - 执行稳态求解 (功率缩放 P_scale = {scale})...")
+                    self.model.java.param().set("P_scale", scale)
+                    self.model.java.study("std1").run()
+                    logger.info(f"      ✓ P_scale={scale} 求解成功")
+
+                logger.info("  ✓ 功率斜坡加载完成，求解成功")
                 solve_success = True
             except Exception as solve_error:
                 logger.warning(f"  ⚠ 求解发散或失败: {solve_error}")
@@ -627,6 +655,10 @@ class ComsolDriver(SimulationDriver):
             mat.selection().all()
             logger.info("  ✓ 材料已应用到所有域")
 
+            # 添加全局功率缩放参数（用于功率斜坡加载）
+            self.model.java.param().set("P_scale", "0.01")  # 初始值 1%
+            logger.info("  ✓ 全局参数 P_scale 已设置: 0.01 (1% 功率)")
+
             # 数值稳定网络：添加全局默认的微弱导热接触（防止热悬浮）
             logger.info("  [3.5/7] 建立全局默认导热网络...")
             # 为所有内部边界添加默认的接触热导
@@ -652,10 +684,8 @@ class ComsolDriver(SimulationDriver):
                 except Exception:
                     pass  # 忽略报错，继续尝试设置值
 
-                # 强制设置薄层导热率 (ks)、密度 (rho) 和恒压热容 (Cp)
+                # 只设置薄层导热率 (ks)，ThinLayer 不需要密度和热容
                 thin_layer.set("ks", "167[W/(m*K)]")  # 薄层导热率
-                thin_layer.set("rho", "2700[kg/m^3]")  # 密度
-                thin_layer.set("Cp", "900[J/(kg*K)]")  # 恒压热容
 
                 logger.info(f"      ✓ 全局默认导热网络已建立: ds={d_gap} mm, ks=167 W/(m*K)")
             except Exception as e:
@@ -795,14 +825,15 @@ class ComsolDriver(SimulationDriver):
             heat_source = ht.feature().create(hs_name, "HeatSource")
             heat_source.selection().named(sel_name)
 
-            # 设置发热功率（W/m³需要转换）
-            # 假设组件均匀发热，功率密度 = 总功率 / 体积
+            # 设置发热功率（使用参数化功率，支持功率斜坡加载）
+            # 功率密度 = 总功率 * P_scale / 体积
             volume = (dim.x * dim.y * dim.z) / 1e9  # mm³ -> m³
             power_density = comp.power / volume if volume > 0 else 0
 
-            heat_source.set("Q0", f"{power_density}[W/m^3]")
+            # 使用参数化表达式，绑定到全局 P_scale 参数
+            heat_source.set("Q0", f"{power_density} * P_scale [W/m^3]")
 
-            logger.info(f"      ✓ 热源已设置: {comp.power}W, 功率密度: {power_density:.2e} W/m³")
+            logger.info(f"      ✓ 热源已设置: {comp.power}W * P_scale, 功率密度: {power_density:.2e} W/m³")
             total_heat_sources_assigned += 1
 
         # 最终校验

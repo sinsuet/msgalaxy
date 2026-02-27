@@ -328,6 +328,12 @@ Meta-Reasoner分配给你的任务，包含：
         for comp in high_power_comps[:5]:
             prompt += f"- {comp.id}: {float(comp.power):.1f}W, 位置 {comp.position}\n"
 
+        # 添加完整的可用组件列表（防止幻觉）
+        prompt += "\n## 可用组件列表（仅可引用以下组件ID）\n"
+        for comp in current_state.components:
+            prompt += f"- {comp.id} ({comp.name})\n"
+        prompt += "\n⚠️ 重要：在 SET_THERMAL_CONTACT 中，contact_component 参数必须是上述列表中的组件ID，不能使用不存在的组件名称（如 chassis, main_structure, payload_heavy_mount 等）！\n"
+
         # 添加任务上下文
         if task.context:
             prompt += "\n## 额外上下文\n"
@@ -367,16 +373,45 @@ Meta-Reasoner分配给你的任务，包含：
 
             # 检查参数合理性
             if action.op_type == "ADJUST_LAYOUT":
-                target_face = action.parameters.get("target_face")
-                valid_faces = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
-                if target_face not in valid_faces:
-                    issues.append(f"无效的目标面: {target_face}")
+                # ADJUST_LAYOUT 参数: {"axis": "Y", "range": [50, 80]}
+                axis = action.parameters.get("axis")
+                valid_axes = ["X", "Y", "Z"]
+                if axis not in valid_axes:
+                    issues.append(f"无效的轴: {axis}，必须是 X, Y, Z 之一")
+
+                range_param = action.parameters.get("range")
+                if range_param and not isinstance(range_param, list):
+                    warnings.append(f"range 参数应为列表: {range_param}")
+
+            elif action.op_type == "CHANGE_ORIENTATION":
+                # CHANGE_ORIENTATION 参数: {"axis": "Z", "angle": 90}
+                axis = action.parameters.get("axis")
+                valid_axes = ["X", "Y", "Z"]
+                if axis not in valid_axes:
+                    issues.append(f"无效的轴: {axis}，必须是 X, Y, Z 之一")
 
             elif action.op_type == "ADD_HEATSINK":
-                heatsink_type = action.parameters.get("heatsink_type")
-                valid_types = ["fin", "plate", "heatpipe"]
-                if heatsink_type not in valid_types:
-                    warnings.append(f"未知的散热器类型: {heatsink_type}")
+                # ADD_HEATSINK 参数: {"face": "+Y", "thickness": 3.0, "conductivity": 400.0}
+                face = action.parameters.get("face")
+                valid_faces = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
+                if face and face not in valid_faces:
+                    warnings.append(f"未知的散热器面: {face}")
+
+            elif action.op_type == "MODIFY_COATING":
+                # MODIFY_COATING 参数: {"emissivity": 0.85, "absorptivity": 0.3, "coating_type": "high_emissivity"}
+                emissivity = action.parameters.get("emissivity")
+                if emissivity and (emissivity < 0 or emissivity > 1):
+                    warnings.append(f"发射率超出范围 [0, 1]: {emissivity}")
+
+                absorptivity = action.parameters.get("absorptivity")
+                if absorptivity and (absorptivity < 0 or absorptivity > 1):
+                    warnings.append(f"吸收率超出范围 [0, 1]: {absorptivity}")
+
+            elif action.op_type == "SET_THERMAL_CONTACT":
+                # SET_THERMAL_CONTACT 参数: {"contact_component": "battery_01", "conductance": 1000.0, "gap": 0.5}
+                contact_comp = action.parameters.get("contact_component")
+                if contact_comp and contact_comp not in component_ids:
+                    issues.append(f"接触组件 {contact_comp} 不存在")
 
         # 检查预测指标的合理性
         if proposal.predicted_metrics.max_temp < proposal.predicted_metrics.min_temp:

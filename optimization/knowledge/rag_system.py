@@ -145,7 +145,8 @@ class RAGSystem:
         try:
             response = self.client.embeddings.create(
                 model=self.embedding_model,
-                input=texts
+                input=texts,
+                timeout=60.0  # 增加超时时间到 60 秒
             )
 
             embeddings = [data.embedding for data in response.data]
@@ -158,7 +159,10 @@ class RAGSystem:
 
         except Exception as e:
             if self.logger:
-                self.logger.logger.error(f"Failed to compute embeddings: {e}")
+                self.logger.logger.warning(f"Failed to compute embeddings: {e}")
+                self.logger.logger.warning("RAG 语义检索将被禁用，仅使用关键词检索")
+            # 设置空 embeddings，后续检索时会跳过语义检索
+            self.embeddings = None
 
     def _save_knowledge_base(self):
         """保存知识库"""

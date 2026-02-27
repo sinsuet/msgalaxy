@@ -1,7 +1,3 @@
-# File Writing Protocol & Error Prevention (写文件协议与错误预防)
-
-Whenever you need to create, modify, or write to a file, you MUST strictly follow these rules to prevent "Write failed" errors:
-
 1. **Path Verification (路径验证)**: 
    - Never write to a file without explicitly defining the absolute or relative path.
    - If writing to a new file in a subdirectory, you MUST use bash commands (e.g., `mkdir -p <dir_name>`) to ensure the parent directories exist BEFORE calling the Write tool.
@@ -51,8 +47,8 @@ Whenever you need to create, modify, or write to a file, you MUST strictly follo
      ```
 
 8. **LLM Configuration & API Key Protocol (大模型配置与密钥规范)**:
-   - The default and ONLY permitted LLM for this project is `qwen3.5-plus`. Do not attempt to revert to or use OpenAI models (like `gpt-4`) in the configuration unless explicitly requested.
-   - The API key and Base URL are ALREADY securely set in the `.env` file. 
+   - The default and ONLY permitted LLM for this project is `qwen3-max`. Do not attempt to revert to or use OpenAI models (like `gpt-4`) in the configuration unless explicitly requested.
+   - The API key and Base URL are ALREADY securely set in the `.env` file.
    - NEVER ask the user for the API key, and NEVER hardcode API keys into scripts. Always use `dotenv` to load environment variables or read them from `config/system.yaml`.
 
 9. **Strict Scientific Rigor & Anti-Shortcut Policy (科研严谨性与反捷径协议)**:

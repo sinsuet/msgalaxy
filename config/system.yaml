@@ -87,9 +87,9 @@ openai:
   api_key: "${OPENAI_API_KEY}"  # 从环境变量读取，或直接填写
 
   # 模型选择
-  # OpenAI: gpt-4
-  # Qwen: qwen3.5-plus, qwen-plus, qwen-turbo, qwen-max
-  model: "qwen3.5-plus"
+  # OpenAI: gpt-4-turbo, gpt-4, gpt-3.5-turbo
+  # Qwen: qwen3-max, qwen3.5-plus, qwen-plus, qwen-turbo
+  model: "qwen3-max"
 
   # API Base URL
   # OpenAI: https://api.openai.com/v1 (默认，可不填)
