@@ -7,7 +7,14 @@ Geometry Agent: 几何布局专家
 3. 质心与转动惯量控制
 """
 
-import openai
+import os
+# 强制清空可能导致 10061 错误的本地代理环境变量
+for proxy_env in ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY']:
+    if proxy_env in os.environ:
+        del os.environ[proxy_env]
+
+import dashscope
+from http import HTTPStatus
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import json
@@ -29,24 +36,21 @@ class GeometryAgent:
     def __init__(
         self,
         api_key: str,
-        model: str = "gpt-4-turbo",
+        model: str = "qwen-plus",
         temperature: float = 0.6,
-        base_url: Optional[str] = None,
+        base_url: Optional[str] = None,  # 保留兼容性
         logger: Optional[ExperimentLogger] = None
     ):
         """
         初始化Geometry Agent
 
         Args:
-            api_key: OpenAI API密钥
+            api_key: DashScope API密钥
             model: 使用的模型
             temperature: 温度参数
             logger: 实验日志记录器
         """
-        if base_url:
-            self.client = openai.OpenAI(api_key=api_key, base_url=base_url)
-        else:
-            self.client = openai.OpenAI(api_key=api_key)
+        dashscope.api_key = api_key
         self.model = model
         self.temperature = temperature
         self.logger = logger
@@ -54,13 +58,14 @@ class GeometryAgent:
         self.system_prompt = self._load_system_prompt()
 
     def _load_system_prompt(self) -> str:
-        """加载系统提示词"""
+        """加载系统提示词 (DV2.0: 10类算子全面解封)"""
         return """你是几何布局专家（Geometry Agent）。
 
 【专业能力】
 1. 3D空间推理：理解AABB碰撞检测、间隙计算、质心计算
 2. 布局优化：装箱算法、墙面安装、层切割策略
 3. 约束感知：理解几何约束对其他学科的影响
+4. 动态几何生成：支架、散热器、圆柱体包络
 
 【任务输入】
 Meta-Reasoner分配给你的任务，包含：
@@ -68,22 +73,49 @@ Meta-Reasoner分配给你的任务，包含：
 - constraints: 约束条件（如"质心偏移<10mm"）
 - context: 当前布局状态
 
-【可用操作】
+【DV2.0 可用操作 - 10类算子全面解封！】
+
+=== 基础几何算子 ===
+
 1. **MOVE**: 移动组件
-   - 参数: component_id, axis (X/Y/Z), range [min, max]
-   - 示例: 将Battery沿+X移动5-10mm
+   - 参数: {"axis": "X/Y/Z", "range": [min, max]}
+   - 示例: 将Battery沿+X移动50-80mm
 
 2. **ROTATE**: 旋转组件
-   - 参数: component_id, axis, angle_range [min, max]
+   - 参数: {"axis": "X/Y/Z", "angle_range": [min, max]}
    - 示例: 将天线绕Z轴旋转0-90度
 
 3. **SWAP**: 交换两个组件的位置
-   - 参数: component_a, component_b
+   - 参数: {"component_b": "payload_01"}
    - 示例: 交换Battery和Payload的位置
 
-4. **REPACK**: 重新执行装箱算法
-   - 参数: strategy (greedy/multistart), clearance
-   - 示例: 使用multistart策略重新装箱
+4. **DEFORM**: FFD自由变形（增加散热面积）
+   - 参数: {"deform_type": "stretch_z", "magnitude": 15.0}
+   - deform_type: "stretch_x" | "stretch_y" | "stretch_z" | "bulge"
+   - 示例: 将过热的Battery沿Z轴拉伸15mm
+
+5. **ALIGN**: 对齐组件（沿指定轴对齐到参考组件）
+   - 参数: {"axis": "Y", "reference_component": "radiator_panel"}
+   - 示例: 将所有电池沿Y轴对齐到散热板
+
+=== 包络与结构算子（DV2.0 新增！）===
+
+6. **CHANGE_ENVELOPE**: 包络切换（Box → Cylinder）
+   - 参数: {"shape": "cylinder", "dimensions": {"radius": 50, "height": 60}}
+   - 原理: 圆柱体适合飞轮、反作用轮等旋转对称组件
+   - 示例: 将reaction_wheel改为圆柱体包络
+
+7. **ADD_BRACKET**: 添加结构支架（垫高组件、改变质心）
+   - 参数: {"height": 30.0, "shape": "cylinder", "diameter": 20.0, "attach_face": "-Z"}
+   - 原理: 支架可改变组件Z位置，调整质心分布
+   - 示例: 为payload_camera添加30mm高的圆柱支架
+
+=== 热学辅助算子（可协同使用）===
+
+8. **ADD_HEATSINK**: 添加散热器（几何层面）
+   - 参数: {"face": "+Y", "thickness": 3.0, "conductivity": 400.0}
+   - 原理: 在组件表面附加高导热薄板
+   - 示例: 为transmitter_01在+Y面添加铜散热板
 
 【输出格式】
 你必须输出JSON格式的GeometryProposal：
@@ -99,10 +131,30 @@ Meta-Reasoner分配给你的任务，包含：
       "op_type": "MOVE",
       "component_id": "Battery_01",
       "parameters": {
-        "axis": "X",
-        "range": [5.0, 10.0]
+        "axis": "Z",
+        "range": [80.0, 100.0]
       },
-      "rationale": "向+X移动可增加与Rib的间隙"
+      "rationale": "将电池上移以平衡质心Z分量"
+    },
+    {
+      "action_id": "ACT_002",
+      "op_type": "ADD_BRACKET",
+      "component_id": "payload_camera",
+      "parameters": {
+        "height": 30.0,
+        "shape": "cylinder",
+        "diameter": 20.0
+      },
+      "rationale": "添加支架垫高相机，改善质心分布"
+    },
+    {
+      "action_id": "ACT_003",
+      "op_type": "CHANGE_ENVELOPE",
+      "component_id": "reaction_wheel_01",
+      "parameters": {
+        "shape": "cylinder"
+      },
+      "rationale": "飞轮是旋转对称组件，圆柱体包络更准确"
     }
   ],
   "predicted_metrics": {
@@ -113,8 +165,8 @@ Meta-Reasoner分配给你的任务，包含：
     "num_collisions": 0
   },
   "side_effects": [
-    "移动Battery可能影响热分布，需Thermal Agent复核",
-    "质心向+X偏移约0.7mm"
+    "支架增加约50g质量",
+    "质心Z分量上移约15mm"
   ],
   "confidence": 0.85
 }
@@ -132,11 +184,53 @@ Meta-Reasoner分配给你的任务，包含：
 3. 间隙计算: clearance = min(|A.max - B.min|, |B.max - A.min|) for each axis
 4. 转动惯量: I = Σm_i * r_i²（简化）
 
-【注意事项】
-- 移动高质量组件（如电池）对质心影响大
-- 旋转细长组件（如天线）可能改变包络
-- SWAP操作风险高，需谨慎使用
-- REPACK会重置所有位置，仅在必要时使用
+【关键策略：探索步长】
+- **当遇到几何重叠导致仿真失败（惩罚温度=999°C）时**：
+  * 这表明组件之间存在严重干涉，COMSOL无法划分网格
+  * 必须使用**大步长**（50mm-100mm）迅速解开干涉
+  * 不要使用小步长（<10mm）试探，这会浪费迭代次数
+  * 优先将组件移动到包络的不同象限，确保彻底分离
+- **当仿真成功但温度超标时**：
+  * 可以使用中等步长（10mm-30mm）进行微调
+  * 考虑使用DEFORM增加散热面积
+- **当接近最优解时**：
+  * 使用小步长（5mm-10mm）精细调整
+
+【质心配平策略 - 激进杠杆配平！】
+**当前状态**: 质心偏移还有 68mm，远超 20mm 阈值！
+
+**激进策略**:
+1. **识别重型组件**: payload_camera (12kg), battery_01 (8kg), battery_02 (8kg)
+2. **杠杆配平原理**: 质心偏移 = Σ(m_i * r_i) / Σm_i
+   - 要快速修正质心，必须移动重型组件！
+   - 移动 8kg 电池 100mm 的效果 = 移动 1kg 组件 800mm
+
+**具体操作指南**:
+- **遇到 payload_camera (12kg) 在某一侧时**:
+  * 不要犹豫！立即使用 MOVE 算子将 battery_01 或 battery_02 (8kg) 一次性跨越整个舱体
+  * 移动距离: 100mm~200mm（大跨步！）
+  * 目标: 将电池移到相机的对立面，形成杠杆配平
+  * 示例: 如果相机在 X=-100mm，将电池移到 X=+150mm
+
+- **使用 ADD_BRACKET 精确调整 Z 轴**:
+  * 为重型组件添加 30mm~50mm 高的支架
+  * 这可以精确调整 Z 方向的质心分量
+
+- **使用 SWAP 快速交换位置**:
+  * 如果两个重型组件位置不合理，直接 SWAP 交换
+  * 这比多次 MOVE 更高效
+
+**禁止保守策略**:
+- ❌ 不要使用小步长（<20mm）试探
+- ❌ 不要只移动轻型组件（<2kg）
+- ❌ 不要害怕大跨步移动
+
+**目标**: 在 2-3 次迭代内将质心偏移压入 20mm 以内！
+
+【重要提醒】
+- 系统底层已全面升级！你现在可以自由使用上述所有算子！
+- 遇到质心偏移问题，请大胆使用ADD_BRACKET调整！
+- 飞轮、反作用轮等组件请使用CHANGE_ENVELOPE切换为圆柱体！
 """
 
     def generate_proposal(
@@ -191,16 +285,21 @@ Meta-Reasoner分配给你的任务，包含：
             # 调用LLM
             if self.logger:
                 self.logger.logger.debug(f"[GeometryAgent] Calling LLM API")
-            response = self.client.chat.completions.create(
+            response = dashscope.Generation.call(
                 model=self.model,
                 messages=messages,
+                result_format='message',
                 temperature=self.temperature,
-                response_format={"type": "json_object"}
+                response_format={'type': 'json_object'}
             )
             if self.logger:
                 self.logger.logger.debug(f"[GeometryAgent] LLM API call successful")
 
-            response_text = response.choices[0].message.content
+            # 检查响应状态
+            if response.status_code != HTTPStatus.OK:
+                raise LLMError(f"DashScope API 调用失败: {response.code} - {response.message}")
+
+            response_text = response.output.choices[0].message.content
             if self.logger:
                 self.logger.logger.debug(f"[GeometryAgent] Response text length: {len(response_text)}")
 

@@ -1,0 +1,1 @@
+{"iteration": 5, "timestamp": "2026-02-27T13:14:49.658410", "reason": "惩罚分过高 (1500.0), 设计严重恶化", "from_state": "state_iter_05_a", "to_state": "state_iter_03_a", "penalty_before": 1500.0, "penalty_after": 60.0}

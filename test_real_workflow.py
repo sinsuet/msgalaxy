@@ -13,8 +13,18 @@
 
 import os
 import sys
+import io
 from pathlib import Path
 from dotenv import load_dotenv
+
+# 修复 Windows GBK 编码问题
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 # 加载.env文件
 load_dotenv()
@@ -71,12 +81,12 @@ def main():
     print("-" * 80)
 
     try:
-        # 修改配置以加快测试
-        orchestrator.config['optimization']['max_iterations'] = 3  # 只运行3次迭代
+        # 修改配置以运行精简 BOM 快速验证（敏捷降维验证：10轮）
+        orchestrator.config['optimization']['max_iterations'] = 10  # 敏捷调试：10次迭代
 
         final_state = orchestrator.run_optimization(
-            bom_file="config/bom_example.json",
-            max_iterations=3
+            bom_file="config/bom_intermediate.json",
+            max_iterations=10
         )
 
         print()

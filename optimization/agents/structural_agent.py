@@ -7,7 +7,14 @@ Structural Agent: 结构专家
 3. 质量优化
 """
 
-import openai
+import os
+# 强制清空可能导致 10061 错误的本地代理环境变量
+for proxy_env in ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY']:
+    if proxy_env in os.environ:
+        del os.environ[proxy_env]
+
+import dashscope
+from http import HTTPStatus
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import json
@@ -29,15 +36,12 @@ class StructuralAgent:
     def __init__(
         self,
         api_key: str,
-        model: str = "gpt-4-turbo",
+        model: str = "qwen-plus",
         temperature: float = 0.6,
         base_url: Optional[str] = None,
         logger: Optional[ExperimentLogger] = None
     ):
-        if base_url:
-            self.client = openai.OpenAI(api_key=api_key, base_url=base_url)
-        else:
-            self.client = openai.OpenAI(api_key=api_key)
+        dashscope.api_key = api_key
         self.model = model
         self.temperature = temperature
         self.logger = logger
@@ -147,14 +151,19 @@ class StructuralAgent:
                     response=None
                 )
 
-            response = self.client.chat.completions.create(
+            response = dashscope.Generation.call(
                 model=self.model,
                 messages=messages,
+                result_format='message',
                 temperature=self.temperature,
-                response_format={"type": "json_object"}
+                response_format={'type': 'json_object'}
             )
+            
+            # 检查响应状态
+            if response.status_code != HTTPStatus.OK:
+                raise LLMError(f"DashScope API 调用失败: {response.code} - {response.message}")
 
-            response_json = json.loads(response.choices[0].message.content)
+            response_json = json.loads(response.output.choices[0].message.content)
 
             if self.logger:
                 self.logger.log_llm_interaction(

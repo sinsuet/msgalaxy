@@ -75,7 +75,8 @@ class Constraint(BaseModel):
 class GeometryMetrics(BaseModel):
     """几何指标"""
     min_clearance: float = Field(..., description="最小间隙 (mm)")
-    com_offset: List[float] = Field(..., description="质心偏移 [x,y,z] (mm)")
+    com_offset: List[float] = Field(..., description="质心偏移向量 [x,y,z] (mm)")
+    cg_offset_magnitude: float = Field(default=0.0, description="质心偏移量（标量） (mm)")
     moment_of_inertia: List[float] = Field(..., description="转动惯量 [Ixx,Iyy,Izz] (kg·m²)")
     packing_efficiency: float = Field(..., description="装填率 (%)")
     num_collisions: int = Field(default=0, description="碰撞数量")
@@ -233,11 +234,14 @@ class StrategicPlan(BaseModel):
 # ============================================================================
 
 class GeometryAction(BaseModel):
-    """几何操作"""
+    """几何操作 (DV2.0: 支持全部几何类算子)"""
     action_id: str
-    op_type: Literal["MOVE", "ROTATE", "SWAP", "REPACK"]
+    op_type: Literal[
+        "MOVE", "ROTATE", "SWAP", "REPACK", "DEFORM",  # 基础几何算子
+        "ALIGN", "CHANGE_ENVELOPE", "ADD_BRACKET"       # DV2.0 新增算子
+    ]
     component_id: str
-    parameters: Dict[str, Any]  # 操作参数，如 {"axis": "X", "range": [-5, 0]}
+    parameters: Dict[str, Any]  # 操作参数，如 {"axis": "X", "range": [-5, 0]} 或 {"deform_type": "stretch_z", "magnitude": 15.0}
     rationale: str  # 操作理由
 
 
@@ -265,9 +269,13 @@ class GeometryProposal(BaseModel):
 
 
 class ThermalAction(BaseModel):
-    """热控操作"""
+    """热控操作 (DV2.0: 支持全部热学算子)"""
     action_id: str
-    op_type: Literal["ADJUST_LAYOUT", "ADD_HEATSINK", "MODIFY_COATING", "CHANGE_ORIENTATION"]
+    op_type: Literal[
+        "ADJUST_LAYOUT", "CHANGE_ORIENTATION",           # 布局调整
+        "ADD_HEATSINK", "MODIFY_COATING",                # 热控核心算子
+        "SET_THERMAL_CONTACT"                            # DV2.0 新增算子
+    ]
     target_components: List[str]
     parameters: Dict[str, Any]
     rationale: str
@@ -381,6 +389,12 @@ class OptimizationPlan(BaseModel):
 
     # 执行序列（考虑依赖关系）
     execution_sequence: List[Dict[str, Any]]
+
+    # 各学科的提案（用于执行层）
+    geometry_proposal: Optional["GeometryProposal"] = None
+    thermal_proposal: Optional["ThermalProposal"] = None
+    structural_proposal: Optional["StructuralProposal"] = None
+    power_proposal: Optional["PowerProposal"] = None
 
     # 预期结果
     expected_metrics: Dict[str, Any]

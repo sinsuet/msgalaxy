@@ -7,7 +7,14 @@ Meta-Reasoner: 战略层元推理器
 3. 冲突解决 - 提供多约束权衡方案
 """
 
-import openai
+import os
+# 强制清空可能导致 10061 错误的本地代理环境变量
+for proxy_env in ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY']:
+    if proxy_env in os.environ:
+        del os.environ[proxy_env]
+
+import dashscope
+from http import HTTPStatus
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import json
@@ -30,25 +37,23 @@ class MetaReasoner:
     def __init__(
         self,
         api_key: str,
-        model: str = "gpt-4-turbo",
+        model: str = "qwen-plus",
         temperature: float = 0.7,
-        base_url: Optional[str] = None,
+        base_url: Optional[str] = None,  # 保留兼容性，但不使用
         logger: Optional[ExperimentLogger] = None
     ):
         """
         初始化Meta-Reasoner
 
         Args:
-            api_key: API密钥（OpenAI或Qwen）
-            model: 使用的模型（gpt-4-turbo, qwen-plus等）
+            api_key: API密钥（DashScope API Key）
+            model: 使用的模型（qwen-plus, qwen-max等）
             temperature: 温度参数（0.0-1.0），控制创造性
-            base_url: API Base URL（Qwen需要设置）
+            base_url: 保留兼容性参数（不使用）
             logger: 实验日志记录器
         """
-        if base_url:
-            self.client = openai.OpenAI(api_key=api_key, base_url=base_url)
-        else:
-            self.client = openai.OpenAI(api_key=api_key)
+        # 设置 DashScope API Key
+        dashscope.api_key = api_key
         self.model = model
         self.temperature = temperature
         self.logger = logger
@@ -314,16 +319,21 @@ class MetaReasoner:
                     response=None
                 )
 
-            # 调用OpenAI API
-            response = self.client.chat.completions.create(
+            # 调用 DashScope API
+            response = dashscope.Generation.call(
                 model=self.model,
                 messages=messages,
+                result_format='message',  # 使用 message 格式
                 temperature=self.temperature,
-                response_format={"type": "json_object"}
+                response_format={'type': 'json_object'}  # 字典格式
             )
 
+            # 检查响应状态
+            if response.status_code != HTTPStatus.OK:
+                raise LLMError(f"DashScope API 调用失败: {response.code} - {response.message}")
+
             # 解析响应
-            response_text = response.choices[0].message.content
+            response_text = response.output.choices[0].message.content
             response_json = json.loads(response_text)
 
             # 记录响应
@@ -430,14 +440,18 @@ class MetaReasoner:
         ]
 
         try:
-            response = self.client.chat.completions.create(
+            response = dashscope.Generation.call(
                 model=self.model,
                 messages=messages,
+                result_format='message',
                 temperature=self.temperature,
-                response_format={"type": "json_object"}
+                response_format={'type': 'json_object'}
             )
 
-            response_json = json.loads(response.choices[0].message.content)
+            if response.status_code != HTTPStatus.OK:
+                raise LLMError(f"DashScope API 调用失败: {response.code} - {response.message}")
+
+            response_json = json.loads(response.output.choices[0].message.content)
             refined_plan = StrategicPlan(**response_json)
             refined_plan.plan_id = f"{plan.plan_id}_refined"
 

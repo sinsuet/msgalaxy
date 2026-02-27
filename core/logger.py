@@ -47,7 +47,43 @@ class ExperimentLogger:
         # 创建Python logger
         self.logger = get_logger(f"experiment_{timestamp}")
 
+        # 添加文件处理器，将日志输出到实验目录的 run_log.txt
+        self._add_run_log_handler(timestamp)
+
         print(f"Experiment logs: {self.run_dir}")
+
+    def _add_run_log_handler(self, timestamp: str):
+        """
+        添加文件处理器，将日志输出到实验目录的 run_log.txt
+
+        Args:
+            timestamp: 时间戳字符串
+        """
+        import logging
+
+        # 创建 run_log.txt 文件路径
+        run_log_path = os.path.join(self.run_dir, "run_log.txt")
+
+        # 创建文件处理器
+        file_handler = logging.FileHandler(run_log_path, encoding='utf-8')
+        file_handler.setLevel(logging.INFO)
+
+        # 设置格式器
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        file_handler.setFormatter(formatter)
+
+        # 只添加到根 logger，这样可以捕获所有模块的日志
+        root_logger = logging.getLogger()
+        root_logger.addHandler(file_handler)
+
+        # 确保根 logger 的级别不会过滤掉 INFO 级别的日志
+        if root_logger.level > logging.INFO:
+            root_logger.setLevel(logging.INFO)
+
+        self.logger.info(f"Run log initialized: {run_log_path}")
 
     def _init_csv(self):
         """初始化CSV文件头"""
@@ -61,7 +97,9 @@ class ExperimentLogger:
             "num_violations",
             "is_safe",
             "solver_cost",
-            "llm_tokens"
+            "llm_tokens",
+            "penalty_score",  # Phase 4: 惩罚分
+            "state_id"        # Phase 4: 状态ID
         ]
         with open(self.csv_path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
@@ -132,7 +170,9 @@ class ExperimentLogger:
             data.get("num_violations", 0),
             data.get("is_safe", False),
             f"{data.get('solver_cost', 0):.4f}",
-            data.get("llm_tokens", 0)
+            data.get("llm_tokens", 0),
+            f"{data.get('penalty_score', 0):.2f}",  # Phase 4
+            data.get("state_id", "")                 # Phase 4
         ]
 
         with open(self.csv_path, 'a', newline='', encoding='utf-8') as f:
@@ -228,6 +268,88 @@ class ExperimentLogger:
             f.write(f"- Visualizations: `visualizations/`\n")
 
         print(f"  📝 Report generated: report.md")
+
+    # ============ Phase 4: Trace 审计日志 ============
+
+    def save_trace_data(
+        self,
+        iteration: int,
+        context_pack: Optional[Dict[str, Any]] = None,
+        strategic_plan: Optional[Dict[str, Any]] = None,
+        eval_result: Optional[Dict[str, Any]] = None
+    ):
+        """
+        保存完整的 Trace 审计数据（Phase 4）
+
+        Args:
+            iteration: 迭代次数
+            context_pack: 输入给 LLM 的上下文包
+            strategic_plan: LLM 的战略计划输出
+            eval_result: 物理仿真的评估结果
+        """
+        # 创建 trace 子目录
+        trace_dir = os.path.join(self.run_dir, "trace")
+        os.makedirs(trace_dir, exist_ok=True)
+
+        prefix = f"iter_{iteration:02d}"
+
+        # 保存 ContextPack
+        if context_pack is not None:
+            context_path = os.path.join(trace_dir, f"{prefix}_context.json")
+            with open(context_path, 'w', encoding='utf-8') as f:
+                json.dump(context_pack, f, indent=2, ensure_ascii=False)
+
+        # 保存 StrategicPlan
+        if strategic_plan is not None:
+            plan_path = os.path.join(trace_dir, f"{prefix}_plan.json")
+            with open(plan_path, 'w', encoding='utf-8') as f:
+                json.dump(strategic_plan, f, indent=2, ensure_ascii=False)
+
+        # 保存 EvalResult
+        if eval_result is not None:
+            eval_path = os.path.join(trace_dir, f"{prefix}_eval.json")
+            with open(eval_path, 'w', encoding='utf-8') as f:
+                json.dump(eval_result, f, indent=2, ensure_ascii=False)
+
+        self.logger.info(f"  💾 Trace data saved: {prefix}")
+
+    def save_rollback_event(
+        self,
+        iteration: int,
+        rollback_reason: str,
+        from_state_id: str,
+        to_state_id: str,
+        penalty_before: float,
+        penalty_after: float
+    ):
+        """
+        记录回退事件（Phase 4）
+
+        Args:
+            iteration: 触发回退的迭代次数
+            rollback_reason: 回退原因
+            from_state_id: 回退前的状态ID
+            to_state_id: 回退后的状态ID
+            penalty_before: 回退前的惩罚分
+            penalty_after: 回退后的惩罚分
+        """
+        rollback_log_path = os.path.join(self.run_dir, "rollback_events.jsonl")
+
+        event = {
+            "iteration": iteration,
+            "timestamp": datetime.now().isoformat(),
+            "reason": rollback_reason,
+            "from_state": from_state_id,
+            "to_state": to_state_id,
+            "penalty_before": penalty_before,
+            "penalty_after": penalty_after
+        }
+
+        # 追加到 JSONL 文件
+        with open(rollback_log_path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(event, ensure_ascii=False) + '\n')
+
+        self.logger.warning(f"  ⚠️ Rollback event logged: {from_state_id} → {to_state_id}")
 
 
 def get_logger(name: str) -> Any:

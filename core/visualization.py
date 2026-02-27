@@ -149,14 +149,48 @@ def plot_evolution_trace(csv_path: str, output_path: str):
     # 创建子图
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
-    # 1. 温度演化
+    # 1. 温度演化（智能Y轴限制，剔除极值）
     ax = axes[0, 0]
-    ax.plot(df['iteration'], df['max_temp'], 'r-o', label='Max Temp', linewidth=2)
+
+    # 定义合理的温度范围（工程上限）
+    TEMP_UPPER_LIMIT = 150.0  # °C
+    TEMP_PENALTY_THRESHOLD = 500.0  # 超过此值视为惩罚分
+
+    # 分离正常值和惩罚值
+    normal_mask = df['max_temp'] < TEMP_PENALTY_THRESHOLD
+    penalty_mask = df['max_temp'] >= TEMP_PENALTY_THRESHOLD
+
+    # 绘制正常温度曲线
+    if normal_mask.any():
+        ax.plot(df.loc[normal_mask, 'iteration'],
+                df.loc[normal_mask, 'max_temp'],
+                'r-o', label='Max Temp', linewidth=2, markersize=6)
+
+    # 标记惩罚点（用红色叉号在图表顶部）
+    if penalty_mask.any():
+        penalty_iters = df.loc[penalty_mask, 'iteration']
+        # 在 Y 轴上限位置标记失败点
+        ax.plot(penalty_iters,
+                [TEMP_UPPER_LIMIT * 0.95] * len(penalty_iters),
+                'rx', markersize=12, markeredgewidth=3,
+                label='Failed (Penalty)', zorder=10)
+        # 添加文本标注
+        for iter_num in penalty_iters:
+            ax.annotate('FAIL',
+                       xy=(iter_num, TEMP_UPPER_LIMIT * 0.95),
+                       xytext=(0, -15), textcoords='offset points',
+                       ha='center', fontsize=8, color='red', weight='bold')
+
     ax.set_xlabel('Iteration')
     ax.set_ylabel('Temperature (°C)')
-    ax.set_title('Temperature Evolution')
+    ax.set_title('Temperature Evolution (Y-axis limited to engineering range)')
+    ax.set_ylim(bottom=0, top=TEMP_UPPER_LIMIT)  # 强制限制Y轴范围
     ax.grid(True, alpha=0.3)
     ax.legend()
+
+    # 添加安全区域标记
+    ax.axhline(y=60, color='orange', linestyle='--', alpha=0.5, linewidth=1, label='Warning (60°C)')
+    ax.fill_between(df['iteration'], 0, 60, alpha=0.1, color='green', label='Safe Zone')
 
     # 2. 间隙演化
     ax = axes[0, 1]

@@ -35,8 +35,9 @@ geometry:
 
 # 仿真配置
 simulation:
-  backend: "comsol"  # matlab | comsol | simplified
+  backend: "comsol"  # matlab | comsol | simplified (Phase 4+: 强制使用真实 COMSOL，严禁捷径！)
   type: "COMSOL"  # 保留兼容性
+  mode: "dynamic"  # static | dynamic (静态参数更新 vs 动态STEP导入)
 
   # MATLAB配置（当type=MATLAB时使用）
   matlab_workspace: "E:/Simulations/Matlab"
@@ -75,6 +76,7 @@ optimization:
   allowed_operators:
     - "MOVE"
     - "ROTATE"
+    - "DEFORM"  # Phase 3: FFD 变形算子
 
   solver_method: "bounded"
   solver_tolerance: 0.000001

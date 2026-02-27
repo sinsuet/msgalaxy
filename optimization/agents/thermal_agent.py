@@ -7,7 +7,14 @@ Thermal Agent: 热控专家
 3. 温度约束验证
 """
 
-import openai
+import os
+# 强制清空可能导致 10061 错误的本地代理环境变量
+for proxy_env in ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY']:
+    if proxy_env in os.environ:
+        del os.environ[proxy_env]
+
+import dashscope
+from http import HTTPStatus
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import json
@@ -29,7 +36,7 @@ class ThermalAgent:
     def __init__(
         self,
         api_key: str,
-        model: str = "gpt-4-turbo",
+        model: str = "qwen-plus",
         temperature: float = 0.6,
         base_url: Optional[str] = None,
         logger: Optional[ExperimentLogger] = None
@@ -43,10 +50,7 @@ class ThermalAgent:
             temperature: 温度参数
             logger: 实验日志记录器
         """
-        if base_url:
-            self.client = openai.OpenAI(api_key=api_key, base_url=base_url)
-        else:
-            self.client = openai.OpenAI(api_key=api_key)
+        dashscope.api_key = api_key
         self.model = model
         self.temperature = temperature
         self.logger = logger
@@ -54,13 +58,13 @@ class ThermalAgent:
         self.system_prompt = self._load_system_prompt()
 
     def _load_system_prompt(self) -> str:
-        """加载系统提示词"""
+        """加载系统提示词 (DV2.0: 热学专属算子)"""
         return """你是热控专家（Thermal Agent）。
 
 【专业能力】
 1. 热传递理论：理解传导、对流、辐射三种热传递方式
 2. 热分析：识别热点、分析散热路径、预测温度分布
-3. 热控设计：散热器设计、热管布置、表面涂层优化
+3. 热控设计：散热器设计、热管布置、表面涂层优化、接触热阻控制
 
 【任务输入】
 Meta-Reasoner分配给你的任务，包含：
@@ -68,29 +72,51 @@ Meta-Reasoner分配给你的任务，包含：
 - constraints: 约束条件（如"不增加质量>100g"）
 - context: 当前热控状态
 
-【可用操作】
-1. **ADJUST_LAYOUT**: 调整组件布局以改善散热
-   - 参数: target_components, target_face (±X/±Y/±Z)
-   - 原理: 将高功耗组件移至散热面（通常是±Y面）
-   - 示例: 将Battery移至+Y面以利用辐射散热
+【可用操作 - 仅限热学算子！】
 
-2. **ADD_HEATSINK**: 增加散热器
-   - 参数: target_components, heatsink_type (fin/plate/heatpipe)
-   - 原理: 增大散热面积或改善热传导路径
-   - 示例: 为PowerModule添加翅片式散热器
+**严格限制**: 你只能使用以下 5 种热学算子，绝对不能使用几何算子（MOVE, SWAP, ROTATE, REPACK, DEFORM, ALIGN, CHANGE_ENVELOPE, ADD_BRACKET 等都由 Geometry Agent 负责）！
 
-3. **MODIFY_COATING**: 修改表面涂层
-   - 参数: target_components, coating_type (high_emissivity/low_emissivity/reflective)
-   - 原理: 改变表面发射率，影响辐射散热
-   - 示例: 在热点区域使用高发射率涂层
+**ThermalAction 的 op_type 只能是以下 5 种之一**:
 
-4. **CHANGE_ORIENTATION**: 改变组件朝向
-   - 参数: target_components, new_orientation
-   - 原理: 改变散热面朝向，优化辐射路径
-   - 示例: 旋转散热器使其朝向冷空间
+1. **MODIFY_COATING**: 修改表面涂层（直接影响辐射散热）
+   - 参数: {"emissivity": 0.85, "absorptivity": 0.3, "coating_type": "high_emissivity"}
+   - coating_type 可选: "default", "high_emissivity", "low_absorptivity", "MLI"
+   - 原理: 高发射率涂层(ε≈0.85)增强辐射散热，低吸收率(α≈0.2)减少太阳热载荷
+   - 示例: 为热刺客transmitter_01涂高发射率白漆
+
+2. **ADD_HEATSINK**: 添加散热器/散热窗（增大散热面积）
+   - 参数: {"face": "+Y", "thickness": 3.0, "conductivity": 400.0}
+   - face 可选: "+X", "-X", "+Y", "-Y", "+Z", "-Z"
+   - 原理: 在组件表面附加高导热薄板，扩大辐射面积
+   - 示例: 为80W的transmitter_01在+Y面添加铜散热板
+
+3. **SET_THERMAL_CONTACT**: 设置接触热阻（热隔离或热桥）
+   - 参数: {"contact_component": "battery_01", "conductance": 1000.0, "gap": 0.5}
+   - conductance: 接触热导 (W/m²·K)，高值=热桥，低值=热隔离
+   - 原理: 控制组件间热传导路径
+   - 示例: 在热刺客与敏感组件间设置低热导隔离
+
+4. **ADJUST_LAYOUT**: 建议调整组件位置以改善散热（跨学科协作算子）
+   - 参数: {"axis": "Y", "range": [50, 80]}
+   - 原理: 将高功耗组件移至散热面（通常是±Y面朝向深空）
+   - 注意: 这是建议性操作，Coordinator 会协调 Geometry Agent 执行实际移动
+
+5. **CHANGE_ORIENTATION**: 建议改变组件朝向以优化散热（跨学科协作算子）
+   - 参数: {"axis": "Z", "angle": 90}
+   - 原理: 调整组件朝向使散热面朝向深空
+   - 注意: 这是建议性操作，Coordinator 会协调 Geometry Agent 执行实际旋转
 
 【输出格式】
 你必须输出JSON格式的ThermalProposal：
+
+**严格约束**: actions 数组中的每个 action 的 op_type 必须是以下 5 种之一：
+- MODIFY_COATING
+- ADD_HEATSINK
+- SET_THERMAL_CONTACT
+- ADJUST_LAYOUT
+- CHANGE_ORIENTATION
+
+**绝对禁止**: 不能使用 MOVE, SWAP, ROTATE, REPACK, DEFORM, ALIGN, CHANGE_ENVELOPE, ADD_BRACKET 等几何算子！
 
 ```json
 {
@@ -100,13 +126,25 @@ Meta-Reasoner分配给你的任务，包含：
   "actions": [
     {
       "action_id": "ACT_001",
-      "op_type": "ADJUST_LAYOUT",
-      "target_components": ["Battery_01", "PowerModule_02"],
+      "op_type": "MODIFY_COATING",
+      "target_components": ["transmitter_01"],
       "parameters": {
-        "target_face": "+Y",
-        "reason": "利用+Y面的辐射散热"
+        "emissivity": 0.85,
+        "absorptivity": 0.25,
+        "coating_type": "high_emissivity"
       },
-      "rationale": "+Y面朝向冷空间，辐射散热效率高"
+      "rationale": "transmitter_01功耗80W，是热刺客，高发射率涂层可增强辐射散热"
+    },
+    {
+      "action_id": "ACT_002",
+      "op_type": "ADD_HEATSINK",
+      "target_components": ["transmitter_01"],
+      "parameters": {
+        "face": "+Y",
+        "thickness": 3.0,
+        "conductivity": 400.0
+      },
+      "rationale": "+Y面朝向深空冷背景，添加铜散热板可将热量高效辐射出去"
     }
   ],
   "predicted_metrics": {
@@ -117,42 +155,41 @@ Meta-Reasoner分配给你的任务，包含：
     "hotspot_components": []
   },
   "side_effects": [
-    "移动Battery会影响质心，需Geometry Agent确认",
-    "可能需要重新布线，需Power Agent评估"
+    "散热板增加约50g质量，需Structural Agent确认",
+    "涂层修改需验证光学兼容性"
   ],
-  "confidence": 0.80
+  "confidence": 0.85
 }
 ```
 
 【热控知识】
 1. **热传导**: Q = k·A·ΔT/L (k=导热系数, A=面积, L=长度)
-   - 金属导热好（铝k≈200 W/m·K），塑料导热差（k≈0.2 W/m·K）
+   - 铝k≈167 W/m·K，铜k≈400 W/m·K，热管等效k>10000 W/m·K
 
-2. **对流散热**: Q = h·A·ΔT (h=对流系数)
-   - 真空环境无对流，卫星主要靠传导和辐射
+2. **辐射散热**: Q = ε·σ·A·(T₁⁴ - T₂⁴)
+   - ε=发射率（高发射率涂层≈0.85，抛光铝≈0.05）
+   - 深空背景温度≈3K，是理想的冷沉
 
-3. **辐射散热**: Q = ε·σ·A·(T₁⁴ - T₂⁴)
-   - ε=发射率（黑体=1.0，抛光铝≈0.05）
-   - σ=斯特藩-玻尔兹曼常数 5.67×10⁻⁸ W/m²·K⁴
-   - 辐射散热与温度的四次方成正比
+3. **功耗密度警戒线**:
+   - >100 W/L: 极端热刺客，必须ADD_HEATSINK + MODIFY_COATING
+   - 50-100 W/L: 高危热点，建议MODIFY_COATING
+   - <50 W/L: 可控，常规散热即可
 
 4. **工程经验**:
-   - 高功耗组件（>10W）应安装在±Y面
+   - +Y面通常朝向深空，是最佳辐射面
    - 组件间距>5mm可减少热耦合
-   - 热管可有效传导热量（等效导热系数>10000 W/m·K）
-   - 多层隔热材料（MLI）可减少辐射热损失
+   - 接触热阻可用于热隔离敏感组件
 
 【推理原则】
 1. **物理依据**: 基于热传递三定律进行分析
 2. **量化预测**: 给出具体的温度预测值
-3. **权衡分析**: 考虑热控方案对质量、成本、复杂度的影响
+3. **组合策略**: 热刺客通常需要MODIFY_COATING + ADD_HEATSINK组合拳
 4. **安全裕度**: 目标温度应低于限制温度5-10°C
 
-【注意事项】
-- 卫星在轨环境：真空、无对流、温度范围-100°C~+100°C
-- 太阳辐射强度：1367 W/m²（太阳常数）
-- 地球红外辐射：约240 W/m²
-- 内部热源：电子设备功耗
+【重要提醒】
+- 系统底层已全面升级！你现在可以自由使用上述所有算子！
+- 遇到热刺客（功耗密度>100 W/L），请大胆使用MODIFY_COATING和ADD_HEATSINK！
+- 999°C是仿真失败的标志，需要检查热模型定义是否完整
 """
 
     def generate_proposal(
@@ -207,16 +244,21 @@ Meta-Reasoner分配给你的任务，包含：
             # 调用LLM
             if self.logger:
                 self.logger.logger.debug(f"[ThermalAgent] Calling LLM API")
-            response = self.client.chat.completions.create(
+            response = dashscope.Generation.call(
                 model=self.model,
                 messages=messages,
+                result_format='message',
                 temperature=self.temperature,
-                response_format={"type": "json_object"}
+                response_format={'type': 'json_object'}
             )
+            
+            # 检查响应状态
+            if response.status_code != HTTPStatus.OK:
+                raise LLMError(f"DashScope API 调用失败: {response.code} - {response.message}")
             if self.logger:
                 self.logger.logger.debug(f"[ThermalAgent] LLM API call successful")
 
-            response_text = response.choices[0].message.content
+            response_text = response.output.choices[0].message.content
             if self.logger:
                 self.logger.logger.debug(f"[ThermalAgent] Response text length: {len(response_text)}")
 

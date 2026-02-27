@@ -396,12 +396,22 @@ class AgentCoordinator:
         # 聚合预期指标
         expected_metrics = self._aggregate_expected_metrics(proposals)
 
+        # 提取各学科的第一个提案（用于执行层）
+        geometry_proposal = proposals["geometry"][0] if proposals["geometry"] else None
+        thermal_proposal = proposals["thermal"][0] if proposals["thermal"] else None
+        structural_proposal = proposals["structural"][0] if proposals["structural"] else None
+        power_proposal = proposals["power"][0] if proposals["power"] else None
+
         plan = OptimizationPlan(
             plan_id=f"EXEC_{datetime.now().strftime('%Y%m%d%H%M%S')}",
             iteration=strategic_plan.iteration,
             strategic_plan_id=strategic_plan.plan_id,
             selected_proposals=selected_proposal_ids,
             execution_sequence=execution_sequence,
+            geometry_proposal=geometry_proposal,
+            thermal_proposal=thermal_proposal,
+            structural_proposal=structural_proposal,
+            power_proposal=power_proposal,
             expected_metrics=expected_metrics,
             rollback_enabled=True,
             checkpoint_state=current_state.model_dump_json()
