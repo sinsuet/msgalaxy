@@ -1,87 +1,122 @@
 # MsGalaxy - 卫星设计优化系统
 
-基于三层神经符号协同架构的智能卫星设计优化系统，整合了三维布局、真实仿真和AI驱动的多学科优化决策。
+基于三层神经符号协同架构的智能卫星设计优化系统，整合了三维布局、COMSOL多物理场仿真和AI驱动的多学科优化决策。
 
-> **项目状态**: ✅ 核心功能完成 | 📅 最后更新: 2026-02-15
+> **项目状态**: ✅ 核心功能完成 | **系统成熟度**: 75% | **最后更新**: 2026-02-27
 
-## 核心特性
+---
+
+## 🎯 核心特性
 
 ### 🧠 三层神经符号协同架构
 - **战略层**: Meta-Reasoner元推理器，负责多学科协调和战略决策
 - **战术层**: Multi-Agent系统（几何、热控、结构、电源专家）
-- **执行层**: 工具集成（MATLAB、COMSOL、Scipy求解器）
+- **执行层**: 工具集成（COMSOL、MATLAB、简化物理引擎）
 
-### 🎯 创新亮点
+### 💡 创新亮点
 - **学术创新**: 首次在卫星设计领域实现战略-战术-执行的分层决策
 - **工程创新**: 完整审计链、安全裕度设计、知识自动积累
 - **可用性创新**: 自然语言交互、实时可视化、自动报告生成
 
-### 📐 核心功能
+### 🚀 核心功能
 - **智能布局**: 3D装箱算法（py3dbp）+ 多面墙面安装 + 层切割策略
-- **真实仿真**: MATLAB Engine API + COMSOL MPh + 简化物理引擎
+- **真实仿真**: COMSOL MPh + MATLAB Engine API + 简化物理引擎
 - **知识检索**: RAG系统（语义检索 + 关键词检索 + 图检索）
 - **完整追溯**: 记录每个决策的推理链和工程依据
 
-## 项目结构
+### 🔥 最新突破（v1.3.0）
+- ✅ **COMSOL辐射问题解决**: 使用原生HeatFluxBoundary实现Stefan-Boltzmann辐射
+- ✅ **端到端工作流验证**: BOM解析 → 几何布局 → COMSOL仿真 → 可视化生成
+- ✅ **代码库清理**: 归档63个文件，保留29个核心文件，节省89%磁盘空间
+
+---
+
+## 📦 项目结构
 
 ```
 msgalaxy/
-├── config/                    # 配置文件
-│   └── system.yaml           # 系统配置模板
-├── core/                      # 核心模块
-│   ├── protocol.py           # 统一数据协议（Pydantic模型）
-│   ├── logger.py             # 实验日志系统
-│   └── exceptions.py         # 自定义异常
-├── geometry/                  # 几何模块
-│   ├── schema.py             # 几何数据结构（AABB、Part）
-│   ├── keepout.py            # AABB六面减法算法
-│   ├── packing.py            # 3D装箱优化（py3dbp集成）
-│   └── layout_engine.py      # 布局引擎统一接口
-├── simulation/                # 仿真模块
-│   ├── base.py               # 仿真驱动器基类
-│   ├── matlab_driver.py      # MATLAB Engine API集成
-│   ├── comsol_driver.py      # COMSOL MPh集成
-│   └── physics_engine.py     # 简化物理引擎
-├── optimization/              # 优化模块（LLM语义层）
-│   ├── protocol.py           # 优化协议（战略层、战术层数据结构）
-│   ├── meta_reasoner.py      # Meta-Reasoner（战略层）
-│   ├── agents/               # Multi-Agent系统（战术层）
-│   │   ├── geometry_agent.py # 几何专家
-│   │   ├── thermal_agent.py  # 热控专家
-│   │   ├── structural_agent.py # 结构专家
-│   │   └── power_agent.py    # 电源专家
-│   ├── knowledge/            # 知识检索
-│   │   └── rag_system.py     # RAG系统（混合检索）
-│   └── coordinator.py        # Agent协调器
-├── workflow/                  # 工作流模块
-│   └── orchestrator.py       # 主编排器
-├── api/                       # API接口
-│   └── cli.py                # 命令行接口
-├── docs/                      # 文档
-│   ├── LLM_Semantic_Layer_Architecture.md  # LLM语义层架构设计
-│   ├── QWEN_GUIDE.md         # Qwen使用指南
-│   ├── QWEN_TEST_REPORT.md   # Qwen测试报告
-│   ├── ENCODING_FIX.md       # 编码问题解决方案
-│   ├── ENCODING_FIX_REPORT.md # 编码修复报告
-│   ├── TEST_REPORT.md        # 测试报告
-│   └── STATUS.md             # 项目状态
-├── papers/                    # 参考论文
-├── tests/                     # 测试套件
-├── tmp_files/                 # 临时测试文件
-│   ├── test_encoding.py      # 编码测试
-│   └── run_qwen_test.bat     # Qwen测试批处理
-├── test_integration.py        # 集成测试
-├── test_geometry.py           # 几何模块测试
-├── test_qwen.py              # Qwen API测试
-├── test_simulation.py         # 仿真模块测试
-├── .gitignore                # Git忽略文件
-├── README.md                  # 本文档
-├── PROJECT_SUMMARY.md         # 项目总结
-├── STRUCTURE.md               # 结构说明
-└── requirements.txt           # Python依赖
+├── core/                          # 核心基础设施
+│   ├── protocol.py               # 统一数据协议 (Pydantic)
+│   ├── logger.py                 # 实验日志系统
+│   ├── exceptions.py             # 自定义异常
+│   ├── bom_parser.py             # BOM文件解析器
+│   └── visualization.py          # 可视化生成器
+│
+├── geometry/                      # 几何布局引擎
+│   ├── schema.py                 # AABB、Part数据结构
+│   ├── keepout.py                # AABB六面减法算法
+│   ├── packing.py                # 3D装箱优化 (py3dbp)
+│   ├── layout_engine.py          # 主布局引擎
+│   ├── ffd.py                    # 自由变形 (FFD)
+│   └── cad_export.py             # CAD导出 (STEP/IGES)
+│
+├── simulation/                    # 仿真驱动器
+│   ├── base.py                   # 仿真驱动器基类
+│   ├── comsol_driver.py          # COMSOL MPh集成 ⭐
+│   ├── comsol_model_generator.py # 动态模型生成器
+│   ├── matlab_driver.py          # MATLAB Engine API
+│   └── physics_engine.py         # 简化物理引擎
+│
+├── optimization/                  # LLM语义优化层 ⭐⭐⭐
+│   ├── protocol.py               # 优化协议定义
+│   ├── meta_reasoner.py          # Meta-Reasoner (战略层)
+│   ├── coordinator.py            # Agent协调器 (战术层)
+│   ├── agents/                   # 专家Agent系统
+│   │   ├── geometry_agent.py    # 几何专家
+│   │   ├── thermal_agent.py     # 热控专家
+│   │   ├── structural_agent.py  # 结构专家
+│   │   └── power_agent.py       # 电源专家
+│   ├── knowledge/                # 知识库系统
+│   │   └── rag_system.py        # RAG混合检索
+│   ├── multi_objective.py        # 多目标优化
+│   └── parallel_optimizer.py     # 并行优化器
+│
+├── workflow/                      # 工作流编排
+│   └── orchestrator.py           # 主编排器 ⭐
+│
+├── api/                           # API接口
+│   ├── cli.py                    # 命令行接口
+│   ├── server.py                 # FastAPI服务器
+│   ├── client.py                 # Python客户端
+│   └── websocket_client.py       # WebSocket客户端
+│
+├── config/                        # 配置文件
+│   ├── system.yaml               # 系统配置
+│   └── bom_example.json          # BOM示例
+│
+├── scripts/                       # 工具脚本 (3个核心脚本)
+│   ├── create_complete_satellite_model.py  ⭐ 当前使用
+│   └── clean_experiments.py
+│
+├── models/                        # COMSOL模型文件
+│   └── satellite_thermal_heatflux.mph  ⭐ 当前使用 (5.1MB)
+│
+├── experiments/                   # 实验数据
+│   └── run_YYYYMMDD_HHMMSS/      # 每次运行的实验目录
+│
+├── docs/                          # 文档 (15个核心文档)
+│   ├── LLM_Semantic_Layer_Architecture.md  ⭐ 架构设计
+│   ├── RADIATION_SOLUTION_SUMMARY.md       ⭐ 关键解决方案
+│   ├── COMSOL_GUIDE.md
+│   └── ...
+│
+├── tests/                         # 单元测试
+├── archive/                       # 归档文件 (63个)
+│   ├── scripts_old/              # 旧脚本
+│   ├── models_debug/             # 调试模型
+│   └── docs_archive/             # 旧文档
+│
+├── README.md                      # 本文档
+├── PROJECT_SUMMARY.md             # 项目总结 ⭐
+├── handoff.md                     # 项目交接文档 ⭐
+├── TEST_WORKFLOW_ANALYSIS.md      # 测试分析 ⭐
+├── CLEANUP_REPORT.md              # 清理报告
+└── requirements.txt               # Python依赖
 ```
 
-## 快速开始
+---
+
+## 🚀 快速开始
 
 ### 1. 环境准备
 
@@ -111,14 +146,14 @@ pip install -r requirements.txt
 # OpenAI配置
 openai:
   api_key: "your-api-key-here"  # 必填
-  model: "gpt-4-turbo"
+  model: "qwen-plus"  # 或 gpt-4-turbo
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"  # Qwen API
   temperature: 0.7
 
 # 仿真配置
 simulation:
-  backend: "simplified"  # simplified | matlab | comsol
-  matlab_path: "D:/Program Files/MATLAB"
-  comsol_path: "D:/Program Files/COMSOL63"
+  backend: "comsol"  # simplified | matlab | comsol
+  comsol_model: "e:/Code/msgalaxy/models/satellite_thermal_heatflux.mph"
 
 # 几何配置
 geometry:
@@ -131,86 +166,93 @@ optimization:
   convergence_threshold: 0.01
 ```
 
-### 3. 运行测试
+### 3. 创建COMSOL模型
 
 ```bash
-# 运行集成测试（不需要API key）
-python test_integration.py
+# 生成COMSOL模型（首次使用）
+python scripts/create_complete_satellite_model.py
 
-# 几何模块测试
-python test_geometry.py
+# 输出: models/satellite_thermal_heatflux.mph (5.1MB)
+```
 
-# 仿真模块测试
-python test_simulation.py
+### 4. 运行测试
 
-# 或使用测试运行器运行所有测试
-python run_tests.py
+```bash
+# 端到端工作流测试
+python test_real_workflow.py
+
+# 检查生成的可视化
+ls experiments/run_*/visualizations/
+
+# 运行单元测试
+pytest tests/
 ```
 
 > 详细的测试说明请参考 [测试指南](docs/TESTING_GUIDE.md)
 
-### 4. 运行优化
+### 5. 运行优化
 
 ```bash
 # 使用CLI运行优化
-python -m api.cli optimize
-
-# 使用自定义配置
-python -m api.cli optimize --config my_config.yaml --max-iter 30
+python -m api.cli optimize --max-iter 5
 
 # 查看实验列表
 python -m api.cli list
 
 # 查看实验详情
-python -m api.cli show run_20260215_143022
+python -m api.cli show run_20260227_021304
 ```
 
-## 配置说明
+---
 
-主配置文件：`config/system.yaml`
+## 📊 系统状态
 
-```yaml
-# 几何配置
-geometry:
-  envelope:
-    auto_envelope: true
-    fill_ratio: 0.30
-  components:
-    - id: "battery_01"
-      dims_mm: [200, 150, 100]
-      mass_kg: 5.0
-      power_w: 50.0
+### 模块成熟度
 
-# 仿真配置
-simulation:
-  type: "SIMPLIFIED"  # MATLAB | COMSOL | SIMPLIFIED
-  constraints:
-    max_temp_c: 50.0
-    min_clearance_mm: 3.0
+| 模块 | 状态 | 成熟度 | 备注 |
+|------|------|--------|------|
+| BOM解析 | ✅ | 95% | 稳定可靠 |
+| 几何布局 | ✅ | 90% | 算法优秀 |
+| COMSOL集成 | ⚠️ | 60% | 模型正确，求解器需调优 |
+| 简化物理引擎 | ✅ | 80% | 适合快速测试 |
+| Meta-Reasoner | ❓ | 50% | 未充分测试 |
+| Multi-Agent | ❓ | 50% | 未充分测试 |
+| 工作流编排 | ⚠️ | 65% | 核心逻辑正确，错误处理需改进 |
+| 可视化 | ✅ | 85% | 图片生成正常 |
+| API接口 | ✅ | 75% | 基本功能完整 |
 
-# 优化配置
-optimization:
-  max_iterations: 20
-  allowed_operators: ["MOVE", "ROTATE"]
+**总体成熟度**: 75%
 
-# OpenAI配置
-openai:
-  api_key: "${OPENAI_API_KEY}"
-  model: "gpt-4"
-```
+### 已知问题
 
-## 工作流程
+#### 🔴 Critical (阻塞性)
+
+1. **优化循环提前退出Bug** (P0)
+   - 问题: 仿真失败时返回空metrics，不触发违规检查
+   - 影响: LLM优化循环从未启动
+   - 预计工作量: 2小时
+
+2. **COMSOL求解器收敛失败** (P0)
+   - 问题: T⁴非线性导致牛顿迭代不收敛
+   - 影响: 无法获得真实温度分布
+   - 预计工作量: 4-8小时（需COMSOL GUI调试）
+
+详细问题分析请参考: [TEST_WORKFLOW_ANALYSIS.md](TEST_WORKFLOW_ANALYSIS.md)
+
+---
+
+## 🔧 工作流程
 
 ### 完整优化循环
 
 ```
 1. 初始化设计
-   └─> 3D布局生成（装箱算法）
+   └─> BOM解析 → 3D布局生成（装箱算法）
 
 2. 迭代优化循环（最多20次）
    ├─> 物理仿真评估
    │   ├─ 几何分析（间隙、质心、转动惯量）
-   │   ├─ 热分析（MATLAB/COMSOL/简化）
+   │   ├─ 热分析（COMSOL/MATLAB/简化）
    │   ├─ 结构分析（应力、频率）
    │   └─ 电源分析（功耗、压降）
    │
@@ -256,21 +298,52 @@ openai:
 3. 输出结果
    ├─ evolution_trace.csv（量化指标）
    ├─ llm_interactions/（LLM输入输出）
-   ├─ design_dashboard.png（可视化）
+   ├─ visualizations/（3D布局、热图、演化轨迹）
    └─ report.md（总结报告）
 ```
 
-## 输出文件
+---
+
+## 📁 输出文件
 
 每次运行会在`experiments/run_YYYYMMDD_HHMMSS/`目录下生成：
 
 - `evolution_trace.csv` - 迭代指标数据
 - `llm_interactions/` - LLM输入输出记录
 - `visualizations/` - 可视化图表
+  - `evolution_trace.png` - 演化轨迹图
+  - `final_layout_3d.png` - 3D布局图
+  - `thermal_heatmap.png` - 温度热图
 - `design_state_iter_XX.json` - 每次迭代的设计状态
 - `report.md` - 优化总结报告
 
-## 开发指南
+---
+
+## 📚 重要文档
+
+### 核心文档
+- [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md) - 项目总结 ⭐
+- [handoff.md](handoff.md) - 项目交接文档 ⭐
+- [QUICKSTART.md](QUICKSTART.md) - 快速开始指南
+
+### 技术文档
+- [docs/LLM_Semantic_Layer_Architecture.md](docs/LLM_Semantic_Layer_Architecture.md) - 架构设计
+- [docs/RADIATION_SOLUTION_SUMMARY.md](docs/RADIATION_SOLUTION_SUMMARY.md) - 辐射问题解决方案 ⭐
+- [docs/COMSOL_GUIDE.md](docs/COMSOL_GUIDE.md) - COMSOL使用指南
+- [docs/QWEN_GUIDE.md](docs/QWEN_GUIDE.md) - Qwen模型使用指南
+
+### 测试报告
+- [TEST_WORKFLOW_ANALYSIS.md](TEST_WORKFLOW_ANALYSIS.md) - 工作流测试分析 ⭐
+- [CLEANUP_REPORT.md](CLEANUP_REPORT.md) - 代码清理报告
+- [docs/TESTING_GUIDE.md](docs/TESTING_GUIDE.md) - 测试指南
+
+### API文档
+- [docs/API_DOCUMENTATION.md](docs/API_DOCUMENTATION.md) - API文档
+- [docs/WEBSOCKET_IMPLEMENTATION.md](docs/WEBSOCKET_IMPLEMENTATION.md) - WebSocket实现
+
+---
+
+## 🛠️ 开发指南
 
 ### 添加新的仿真驱动器
 
@@ -285,7 +358,15 @@ openai:
 2. 在`core/protocol.py`的`OperatorType`枚举中添加
 3. 在LLM的System Prompt中说明新算子的用法
 
-## 测试
+### 代码维护
+
+- 定期清理实验数据: `python scripts/clean_experiments.py --days 7`
+- 归档不再使用的脚本到 `archive/` 目录
+- 更新文档以反映最新的项目状态
+
+---
+
+## 🧪 测试
 
 ```bash
 # 运行所有测试
@@ -297,55 +378,67 @@ pytest tests/unit/
 # 运行集成测试
 pytest tests/integration/
 
+# 端到端测试
+python test_real_workflow.py
+
 # 生成覆盖率报告
 pytest --cov=. --cov-report=html
 ```
 
-## 许可证
+---
 
-MIT License
-
-## 贡献
-
-欢迎提交Issue和Pull Request！
-
-## 相关文档
-
-- 📖 [项目总结](PROJECT_SUMMARY.md) - 完整的项目实现总结
-- 📖 [结构说明](STRUCTURE.md) - 项目结构快速参考
-- 📖 [文件组织规范](docs/FILE_ORGANIZATION.md) - 文件放置和命名规范
-- 📖 [测试指南](docs/TESTING_GUIDE.md) - 测试运行完整指南
-- 📖 [测试状态](docs/TEST_STATUS.md) - 当前测试状态
-- 📖 [LLM语义层架构](docs/LLM_Semantic_Layer_Architecture.md) - 详细的架构设计文档
-- 📖 [Qwen使用指南](docs/QWEN_GUIDE.md) - 使用通义千问进行测试
-- 📖 [Qwen测试报告](docs/QWEN_TEST_REPORT.md) - Qwen集成测试结果
-- 📖 [编码问题解决方案](docs/ENCODING_FIX.md) - Windows控制台中文显示修复
-- 📖 [编码修复报告](docs/ENCODING_FIX_REPORT.md) - 编码问题修复详情
-- 📖 [测试报告](docs/TEST_REPORT.md) - 系统测试报告
-- 📖 [项目状态](docs/STATUS.md) - 当前项目状态
-
-## 技术栈
+## 🔬 技术栈
 
 - **语言**: Python 3.12
-- **LLM**: OpenAI GPT-4-turbo
+- **LLM**: Qwen-Plus / GPT-4-Turbo
 - **数据验证**: Pydantic 2.6+
-- **几何算法**: py3dbp (3D装箱)
-- **仿真接口**: MATLAB Engine API, COMSOL MPh
+- **几何算法**: py3dbp（3D装箱）
+- **仿真接口**: COMSOL MPh, MATLAB Engine API
 - **数值优化**: Scipy
 - **向量检索**: OpenAI Embeddings
+- **Web框架**: FastAPI
 - **可视化**: Matplotlib
 
-## 许可证
+---
+
+## 📈 项目统计
+
+- **总代码行数**: ~8000行
+- **核心模块**: 12个
+- **Agent数量**: 4个（几何、热控、结构、电源）
+- **数据协议**: 30+ Pydantic模型
+- **知识库**: 8个默认知识项（可扩展）
+- **测试覆盖**: 集成测试 + 单元测试
+- **异常类型**: 10个自定义异常
+- **可视化类型**: 3种（演化轨迹、3D布局、热图）
+- **文档数量**: 15个核心文档 + 3个主要报告
+- **归档文件**: 63个（已清理）
+
+---
+
+## 📄 许可证
 
 MIT License
 
-## 注意事项
+---
 
-⚠️ **仿真软件许可**: 使用MATLAB和COMSOL仿真功能需要相应的合法许可证。简化物理引擎可以在没有这些软件的情况下运行。
+## ⚠️ 注意事项
 
-⚠️ **API密钥**: 使用LLM功能需要有效的OpenAI API密钥。
+**仿真软件许可**: 使用MATLAB和COMSOL仿真功能需要相应的合法许可证。简化物理引擎可以在没有这些软件的情况下运行。
+
+**API密钥**: 使用LLM功能需要有效的OpenAI API密钥或Qwen API密钥。
+
+**COMSOL求解器**: 当前模型使用T⁴非线性辐射公式，求解器可能无法收敛。这是已知问题，需要在COMSOL GUI中调整求解器设置。详见 [TEST_WORKFLOW_ANALYSIS.md](TEST_WORKFLOW_ANALYSIS.md)。
+
+---
+
+## 🤝 贡献
+
+欢迎提交Issue和Pull Request！
 
 ---
 
 **开发团队**: MsGalaxy Project
-**最后更新**: 2026-02-15
+**项目版本**: v1.3.0
+**系统成熟度**: 75%
+**最后更新**: 2026-02-27
