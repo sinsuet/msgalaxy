@@ -230,7 +230,10 @@ class OperationExecutor:
             return
 
         strategy = parameters.get("strategy", "greedy")
-        clearance = parameters.get("clearance", 20.0)
+        clearance = parameters.get(
+            "clearance",
+            self.layout_engine.config.get("clearance_mm", 5.0)
+        )
 
         logger.info(f"    重新装箱: strategy={strategy}, clearance={clearance}")
 
@@ -240,13 +243,15 @@ class OperationExecutor:
 
         # 更新组件位置
         for part in packing_result.placed:
-            pos = part.get_actual_position()
+            pos_min = part.get_actual_position()
+            dims = np.array([float(part.dims[0]), float(part.dims[1]), float(part.dims[2])], dtype=float)
+            center_pos = pos_min + dims / 2.0
             for idx, comp in enumerate(state.components):
                 if comp.id == part.id:
                     state.components[idx].position = Vector3D(
-                        x=float(pos[0]),
-                        y=float(pos[1]),
-                        z=float(pos[2])
+                        x=float(center_pos[0]),
+                        y=float(center_pos[1]),
+                        z=float(center_pos[2])
                     )
                     break
 

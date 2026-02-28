@@ -99,7 +99,23 @@ class ExperimentLogger:
             "solver_cost",
             "llm_tokens",
             "penalty_score",  # Phase 4: 惩罚分
-            "state_id"        # Phase 4: 状态ID
+            "state_id",       # Phase 4: 状态ID
+            # 高信息密度字段（用于分析迭代有效性）
+            "avg_temp",
+            "min_temp",
+            "temp_gradient",
+            "cg_offset",
+            "num_collisions",
+            "penalty_violation",
+            "penalty_temp",
+            "penalty_clearance",
+            "penalty_cg",
+            "penalty_collision",
+            "delta_penalty",
+            "delta_cg_offset",
+            "delta_max_temp",
+            "delta_min_clearance",
+            "effectiveness_score",
         ]
         with open(self.csv_path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
@@ -160,19 +176,40 @@ class ExperimentLogger:
         Args:
             data: 指标数据字典
         """
+        def _fmt_float(value: Any, digits: int = 2) -> str:
+            try:
+                return f"{float(value):.{digits}f}"
+            except (TypeError, ValueError):
+                return ""
+
         row = [
             data.get("iteration", 0),
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            f"{data.get('max_temp', 0):.2f}",
-            f"{data.get('min_clearance', 0):.2f}",
-            f"{data.get('total_mass', 0):.2f}",
-            f"{data.get('total_power', 0):.2f}",
+            data.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            _fmt_float(data.get('max_temp', 0), 2),
+            _fmt_float(data.get('min_clearance', 0), 2),
+            _fmt_float(data.get('total_mass', 0), 2),
+            _fmt_float(data.get('total_power', 0), 2),
             data.get("num_violations", 0),
             data.get("is_safe", False),
-            f"{data.get('solver_cost', 0):.4f}",
+            _fmt_float(data.get('solver_cost', 0), 4),
             data.get("llm_tokens", 0),
-            f"{data.get('penalty_score', 0):.2f}",  # Phase 4
-            data.get("state_id", "")                 # Phase 4
+            _fmt_float(data.get('penalty_score', 0), 2),  # Phase 4
+            data.get("state_id", ""),                    # Phase 4
+            _fmt_float(data.get('avg_temp', 0), 2),
+            _fmt_float(data.get('min_temp', 0), 2),
+            _fmt_float(data.get('temp_gradient', 0), 2),
+            _fmt_float(data.get('cg_offset', 0), 2),
+            int(data.get('num_collisions', 0)),
+            _fmt_float(data.get('penalty_violation', 0), 2),
+            _fmt_float(data.get('penalty_temp', 0), 2),
+            _fmt_float(data.get('penalty_clearance', 0), 2),
+            _fmt_float(data.get('penalty_cg', 0), 2),
+            _fmt_float(data.get('penalty_collision', 0), 2),
+            _fmt_float(data.get('delta_penalty', 0), 2),
+            _fmt_float(data.get('delta_cg_offset', 0), 2),
+            _fmt_float(data.get('delta_max_temp', 0), 2),
+            _fmt_float(data.get('delta_min_clearance', 0), 2),
+            _fmt_float(data.get('effectiveness_score', 0), 2),
         ]
 
         with open(self.csv_path, 'a', newline='', encoding='utf-8') as f:

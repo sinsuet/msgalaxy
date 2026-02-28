@@ -41,10 +41,8 @@ class ViolationType(str, Enum):
 
 
 class SimulationType(str, Enum):
-    """仿真类型"""
-    MATLAB = "MATLAB"
+    """仿真类型 (v2.0.3: 仅支持COMSOL动态导入)"""
     COMSOL = "COMSOL"
-    SIMPLIFIED = "SIMPLIFIED"
 
 
 # ============ 几何数据结构 ============

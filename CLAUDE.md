@@ -6,17 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MsGalaxy is an intelligent satellite design optimization system based on a three-layer neuro-symbolic collaborative architecture. It integrates 3D layout, real-world simulation (COMSOL), and AI-driven multi-disciplinary optimization.
 
-**Current Version**: v2.0.2.1
-**System Maturity**: 99%
-**Last Updated**: 2026-02-28
+**Current Version**: v2.0.4
+**System Maturity**: 99.6%
+**Last Updated**: 2026-03-01
 
 **Language**: The codebase uses Chinese comments and documentation. All user-facing messages are in Chinese.
 
-**Tech Stack**: Python 3.12, Qwen-Plus/GPT-4-Turbo, Pydantic 2.6+, py3dbp (3D bin packing), pythonocc-core (STEP export), COMSOL MPh, Scipy
+**Tech Stack**: Python 3.12, qwen3-max, Pydantic 2.6+, py3dbp (3D bin packing), pythonocc-core (STEP export), COMSOL MPh, Scipy
 
 ## Important Documents
 
-**CRITICAL**: Always refer to [handoff.md](handoff.md) for the most up-to-date project status, architecture decisions, and implementation details. This is the single source of truth for the project.
+**CRITICAL**: Always refer to [HANDOFF.md](HANDOFF.md) for the most up-to-date project status, architecture decisions, and implementation details. This is the single source of truth for the project.
 
 Other key documents:
 - [README.md](README.md) - Project overview and quick start
@@ -43,29 +43,26 @@ pip install mph
 
 ### Testing
 ```bash
-# Run end-to-end workflow test (10 iterations)
-python test_real_workflow.py
+# Run graded workflow test (recommended L1 quick check)
+PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python run/run_L1_simple.py
 
 # Check generated visualizations
 ls experiments/run_*/visualizations/
 
 # View complete log
 cat experiments/run_*/run_log.txt
-
-# Run pytest suite
-pytest tests/ -v
 ```
 
 ### Running Optimization
 ```bash
 # Run optimization with CLI
-python -m api.cli optimize --max-iter 10
+PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python -m api.cli optimize --max-iter 10
 
 # List experiments
-python -m api.cli list
+PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python -m api.cli list
 
 # Show experiment details
-python -m api.cli show run_20260228_000935
+PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python -m api.cli show run_20260228_000935
 ```
 
 ## Architecture
@@ -136,7 +133,7 @@ The optimization loop:
 ### Key Modules
 
 - **Geometry**: 3D bin packing ([geometry/packing.py](geometry/packing.py)), AABB keepout zones ([geometry/keepout.py](geometry/keepout.py)), FFD deformation ([geometry/ffd.py](geometry/ffd.py)), STEP export ([geometry/cad_export_occ.py](geometry/cad_export_occ.py))
-- **Simulation**: COMSOL driver with dynamic STEP import ([simulation/comsol_driver.py](simulation/comsol_driver.py)), structural physics ([simulation/structural_physics.py](simulation/structural_physics.py)), simplified physics ([simulation/physics_engine.py](simulation/physics_engine.py))
+- **Simulation**: COMSOL driver with dynamic STEP import ([simulation/comsol_driver.py](simulation/comsol_driver.py)), structural physics ([simulation/structural_physics.py](simulation/structural_physics.py))
 - **Optimization**: RAG system ([optimization/knowledge/rag_system.py](optimization/knowledge/rag_system.py)), multi-objective optimization ([optimization/multi_objective.py](optimization/multi_objective.py))
 - **Logging**: Experiment logger with run_log.txt ([core/logger.py](core/logger.py))
 - **API**: CLI ([api/cli.py](api/cli.py)), REST server ([api/server.py](api/server.py))
@@ -147,9 +144,10 @@ Main config file: [config/system.yaml](config/system.yaml)
 
 Key sections:
 - `openai`: API key, model, temperature, base_url (supports Qwen)
-- `simulation`: Backend type (comsol), mode (dynamic/static), paths to COMSOL
+- `simulation`: Backend type (comsol), runtime constraints
 - `geometry`: Envelope dimensions, clearance, fill ratio
 - `optimization`: Max iterations, convergence threshold, allowed operators
+- `knowledge`: RAG settings (`base_path`, `enable_semantic`, `embedding_model`)
 
 Environment variables can be used with `${VAR_NAME}` syntax (e.g., `${OPENAI_API_KEY}`).
 
@@ -168,13 +166,18 @@ Contents:
 - `llm_interactions/`: LLM request/response JSON files
 - `step_files/`: STEP geometry files
 - `mph_models/`: COMSOL model files
-- `visualizations/`: PNG charts (evolution trace, 3D layout, thermal heatmap)
+- `visualizations/`: PNG charts + summary
+  - `evolution_trace.png`
+  - `final_layout_3d.png`
+  - `layout_evolution.png`
+  - `thermal_heatmap.png`
+  - `visualization_summary.txt`
 - `design_state_iter_XX.json`: Design state snapshots
 
 ## Important Notes
 
 ### Windows Encoding
-The codebase handles Windows GBK encoding issues. The fix is already implemented in [test_real_workflow.py](test_real_workflow.py:19-26):
+The codebase handles Windows GBK encoding issues. Apply this guard for any entry script (e.g. under `run/`):
 ```python
 if sys.platform == 'win32':
     try:
@@ -195,9 +198,11 @@ if sys.platform == 'win32':
 - Use relative paths from workspace root
 - The shell environment uses Unix-style paths even on Windows
 - Quote paths with spaces: `cd "path with spaces/file.txt"`
+- `scripts/`, `tests/`, `logs/` are treated as local-only assets by default and are not tracked for distribution.
 
 ### COMSOL Integration
 - **Mode**: Dynamic STEP import (not static parameter adjustment)
+- **Static Mode**: Fully removed from runtime path; no prebuilt `model.mph` dependency
 - **Numerical Stability**: Implemented in v2.0.2
   - Numerical stability anchor: weak convective boundary (h=0.1 W/(m²·K))
   - Global thermal network: thin layer with h_gap=10 W/(m²·K)
@@ -206,9 +211,10 @@ if sys.platform == 'win32':
   - HeatFluxBoundary (not ConvectiveHeatFlux)
 
 ### LLM Integration
-- System uses Qwen-Plus or GPT-4-Turbo
+- System default model is `qwen3-max`
 - Meta-Reasoner and agents use structured prompts with Chain-of-Thought
-- RAG system uses OpenAI embeddings for semantic search
+- RAG semantic retrieval uses OpenAI-compatible embeddings with configured `base_url`
+- Recommended embedding model on DashScope: `text-embedding-v4`
 - Thermal Agent: strictly limited to 5 thermal operators
 - Geometry Agent: aggressive center of mass balancing strategy (100-200mm strides)
 
@@ -236,6 +242,7 @@ if sys.platform == 'win32':
 
 ## Version History
 
+- **v2.0.4** (2026-03-01): Static-mode removal, run script adaptation, .mph save-lock fix, richer metrics/visualization, RAG base_url embedding fix
 - **v2.0.2.1** (2026-02-28): COMSOL API fixes (ThinLayer `ds`, HeatFluxBoundary)
 - **v2.0.2** (2026-02-28): Ultimate fixes (numerical stability anchor, global thermal network, aggressive CG balancing)
 - **v2.0.1** (2026-02-27): Bug fixes (Thermal Agent prompt, run_log.txt)
@@ -247,7 +254,7 @@ if sys.platform == 'win32':
 
 ## Current Status
 
-**System Maturity**: 99%
+**System Maturity**: 99.6%
 
 **Completed**:
 - ✅ DV2.0 ten-operator architecture
@@ -258,18 +265,23 @@ if sys.platform == 'win32':
 - ✅ Complete Trace audit log
 - ✅ COMSOL numerical stability fixes
 - ✅ Aggressive center of mass balancing
+- ✅ Static-mode legacy removal (dynamic-only runtime path)
+- ✅ .mph save-lock mitigation (unique naming + retry fallback)
+- ✅ Richer trace metrics and effectiveness scoring
+- ✅ Visualization upgrades (layout evolution, deterministic thermal proxy, violation emphasis)
+- ✅ RAG base_url embedding fix for DashScope-compatible deployments
 
 **Next Steps**:
-- Phase 5: End-to-end optimization loop validation
 - Phase 6: Production readiness (Docker, CI/CD, monitoring)
+- Physics expansion (multi-material, finer contact resistance, solar flux boundary)
 
 ## References
 
-- [handoff.md](handoff.md) - Project handoff document ⭐⭐⭐ (MOST IMPORTANT)
+- [HANDOFF.md](HANDOFF.md) - Project handoff document ⭐⭐⭐ (MOST IMPORTANT)
 - [README.md](README.md) - Project overview
 - [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md) - Technical summary
 - [RULES.md](RULES.md) - Development guidelines
 - [docs/archive/](docs/archive/) - Archived documents (Phase 2/3, v2.0.2 fixes, test reports)
 
 # currentDate
-Today's date is 2026-02-28.
+Today's date is 2026-03-01.

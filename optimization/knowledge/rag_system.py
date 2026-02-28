@@ -22,12 +22,24 @@ from core.exceptions import LLMError
 class RAGSystem:
     """RAG知识检索系统"""
 
+    @staticmethod
+    def _default_embedding_model(base_url: Optional[str]) -> str:
+        """
+        根据Provider选择默认embedding模型。
+        DashScope OpenAI兼容接口推荐使用 text-embedding-v4。
+        """
+        if base_url and "dashscope" in base_url.lower():
+            return "text-embedding-v4"
+        return "text-embedding-3-large"
+
     def __init__(
         self,
         api_key: str,
         knowledge_base_path: str = "data/knowledge_base",
-        embedding_model: str = "text-embedding-3-large",
-        logger: Optional[ExperimentLogger] = None
+        embedding_model: Optional[str] = None,
+        base_url: Optional[str] = None,
+        enable_semantic: bool = True,
+        logger: Optional[ExperimentLogger] = None,
     ):
         """
         初始化RAG系统
@@ -36,10 +48,18 @@ class RAGSystem:
             api_key: OpenAI API密钥
             knowledge_base_path: 知识库路径
             embedding_model: Embedding模型
+            base_url: OpenAI兼容接口地址（如DashScope）
+            enable_semantic: 是否启用语义检索
             logger: 日志记录器
         """
-        self.client = openai.OpenAI(api_key=api_key)
-        self.embedding_model = embedding_model
+        self.base_url = base_url
+        self.enable_semantic = bool(enable_semantic)
+        self.embedding_model = embedding_model or self._default_embedding_model(base_url)
+
+        client_kwargs: Dict[str, Any] = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        self.client = openai.OpenAI(**client_kwargs)
         self.logger = logger
 
         self.knowledge_base_path = Path(knowledge_base_path)
@@ -137,6 +157,12 @@ class RAGSystem:
 
     def _compute_embeddings(self):
         """计算所有知识项的embedding"""
+        if not self.enable_semantic:
+            self.embeddings = None
+            if self.logger:
+                self.logger.logger.info("RAG semantic retrieval disabled by config; using keyword retrieval only")
+            return
+
         if not self.knowledge_items:
             return
 
@@ -159,7 +185,14 @@ class RAGSystem:
 
         except Exception as e:
             if self.logger:
-                self.logger.logger.warning(f"Failed to compute embeddings: {e}")
+                status_code = getattr(e, "status_code", None)
+                if status_code == 401:
+                    self.logger.logger.warning(
+                        "Failed to compute embeddings (401 Unauthorized). "
+                        f"embedding_model={self.embedding_model}, base_url={self.base_url or 'https://api.openai.com/v1'}"
+                    )
+                else:
+                    self.logger.logger.warning(f"Failed to compute embeddings: {e}")
                 self.logger.logger.warning("RAG 语义检索将被禁用，仅使用关键词检索")
             # 设置空 embeddings，后续检索时会跳过语义检索
             self.embeddings = None
@@ -196,7 +229,7 @@ class RAGSystem:
         results = []
 
         # 1. 语义检索
-        if use_semantic and self.embeddings is not None:
+        if self.enable_semantic and use_semantic and self.embeddings is not None:
             semantic_results = self._semantic_search(context, top_k * 2)
             results.extend(semantic_results)
 
@@ -234,7 +267,8 @@ class RAGSystem:
             # 计算查询embedding
             response = self.client.embeddings.create(
                 model=self.embedding_model,
-                input=query_text
+                input=query_text,
+                timeout=30.0
             )
             query_embedding = np.array(response.data[0].embedding)
 

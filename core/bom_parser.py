@@ -34,6 +34,7 @@ class BOMComponent:
     material: Optional[str] = None
     thermal_conductivity: Optional[float] = None
     max_temp: Optional[float] = None
+    thermal_contacts: Optional[Dict[str, float]] = None
     notes: Optional[str] = None
 
 
@@ -158,6 +159,11 @@ class BOMParser:
                     item['thermal_conductivity'] = float(row['thermal_conductivity'])
                 if 'max_temp' in row and row['max_temp']:
                     item['max_temp'] = float(row['max_temp'])
+                if 'thermal_contacts' in row and row['thermal_contacts']:
+                    try:
+                        item['thermal_contacts'] = json.loads(row['thermal_contacts'])
+                    except Exception:
+                        logger.warning(f"CSV thermal_contacts 解析失败，忽略: {row['thermal_contacts']}")
                 if 'notes' in row and row['notes']:
                     item['notes'] = row['notes']
 
@@ -218,6 +224,7 @@ class BOMParser:
                 material=item.get('material'),
                 thermal_conductivity=item.get('thermal_conductivity'),
                 max_temp=item.get('max_temp'),
+                thermal_contacts=item.get('thermal_contacts'),
                 notes=item.get('notes')
             )
         except Exception as e:

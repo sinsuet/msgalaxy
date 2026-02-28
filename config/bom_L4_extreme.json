@@ -15,7 +15,7 @@
       "material": "aluminum",
       "thermal_conductivity": 167.0,
       "max_temp": 55.0,
-      "notes": "主控计算机，中等发热"
+      "notes": "L4极限级：主控计算机"
     },
     {
       "id": "battery_01",
@@ -32,7 +32,7 @@
       "material": "aluminum",
       "thermal_conductivity": 237.0,
       "max_temp": 45.0,
-      "notes": "主电池组，高发热高质量"
+      "notes": "L4极限级：主电池组，高发热"
     },
     {
       "id": "battery_02",
@@ -49,7 +49,7 @@
       "material": "aluminum",
       "thermal_conductivity": 237.0,
       "max_temp": 45.0,
-      "notes": "备份电池组，高发热高质量"
+      "notes": "L4极限级：备份电池组"
     },
     {
       "id": "payload_camera",
@@ -66,7 +66,24 @@
       "material": "aluminum",
       "thermal_conductivity": 167.0,
       "max_temp": 40.0,
-      "notes": "主载荷，极大体积，制造空间拥挤"
+      "notes": "L4极限级：主载荷，极大体积"
+    },
+    {
+      "id": "payload_secondary",
+      "name": "次级载荷",
+      "dimensions": {
+        "x": 150,
+        "y": 120,
+        "z": 180
+      },
+      "mass": 6.0,
+      "power": 15.0,
+      "category": "payload",
+      "quantity": 1,
+      "material": "aluminum",
+      "thermal_conductivity": 167.0,
+      "max_temp": 50.0,
+      "notes": "L4极限级：次级载荷，增加空间压力"
     },
     {
       "id": "reaction_wheel_01",
@@ -83,7 +100,7 @@
       "material": "steel",
       "thermal_conductivity": 50.0,
       "max_temp": 70.0,
-      "notes": "高密度飞轮，小体积大质量"
+      "notes": "L4极限级：高密度飞轮X"
     },
     {
       "id": "reaction_wheel_02",
@@ -100,7 +117,7 @@
       "material": "steel",
       "thermal_conductivity": 50.0,
       "max_temp": 70.0,
-      "notes": "高密度飞轮，小体积大质量"
+      "notes": "L4极限级：高密度飞轮Y"
     },
     {
       "id": "transmitter_01",
@@ -117,7 +134,51 @@
       "material": "aluminum",
       "thermal_conductivity": 167.0,
       "max_temp": 50.0,
-      "notes": "通信应答机，极高功耗密度，局部热点"
+      "notes": "L4极限级：通信应答机，极高功耗密度"
+    },
+    {
+      "id": "transmitter_02",
+      "name": "Ka波段应答机",
+      "dimensions": {
+        "x": 70,
+        "y": 55,
+        "z": 35
+      },
+      "mass": 1.0,
+      "power": 50.0,
+      "category": "comm",
+      "quantity": 1,
+      "material": "aluminum",
+      "thermal_conductivity": 167.0,
+      "max_temp": 50.0,
+      "notes": "L4极限级：第二个高热源，双热点挑战"
+    },
+    {
+      "id": "star_tracker",
+      "name": "星敏感器",
+      "dimensions": {
+        "x": 60,
+        "y": 60,
+        "z": 120
+      },
+      "mass": 1.5,
+      "power": 8.0,
+      "category": "adcs",
+      "quantity": 1,
+      "material": "aluminum",
+      "thermal_conductivity": 167.0,
+      "max_temp": 45.0,
+      "notes": "L4极限级：星敏感器，细长几何体，增加布局难度"
     }
-  ]
+  ],
+  "envelope": {
+    "x": 500,
+    "y": 500,
+    "z": 600
+  },
+  "constraints": {
+    "max_temperature": 85.0,
+    "max_cg_offset": 50.0,
+    "min_clearance": 5.0
+  }
 }

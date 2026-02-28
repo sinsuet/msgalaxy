@@ -238,7 +238,8 @@ class GeometryAction(BaseModel):
     action_id: str
     op_type: Literal[
         "MOVE", "ROTATE", "SWAP", "REPACK", "DEFORM",  # 基础几何算子
-        "ALIGN", "CHANGE_ENVELOPE", "ADD_BRACKET"       # DV2.0 新增算子
+        "ALIGN", "CHANGE_ENVELOPE", "ADD_BRACKET",      # DV2.0 新增算子
+        "ADD_HEATSINK"                                  # 几何层热学辅助算子
     ]
     component_id: str
     parameters: Dict[str, Any]  # 操作参数，如 {"axis": "X", "range": [-5, 0]} 或 {"deform_type": "stretch_z", "magnitude": 15.0}

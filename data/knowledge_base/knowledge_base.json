@@ -2102,5 +2102,1909 @@
         "max_temp": 0.3323129023186766
       }
     }
+  },
+  {
+    "item_id": "K153",
+    "category": "case",
+    "title": "迭代1案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志，表明热模型未正确设置（如缺失材料属性、热源定义或边界条件），并非真实物理高温；\n2. 质心偏移达144.74 mm（远超20 mm阈值）\n解决方案: 同步修复热模型失效问题，并执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 1,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K154",
+    "category": "case",
+    "title": "迭代2案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非真实高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达144.74 mm（远超20 mm阈值），且各分量均显\n解决方案: 同步执行热模型修复与质心驱动的组件全局重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 2,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K155",
+    "category": "case",
+    "title": "迭代3案例: 问题诊断：\n1. 温度全为999.0°C —— 这是热仿真失",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C —— 这是热仿真失效的典型标志（未收敛/边界条件缺失/组件热属性未定义），而非真实物理高温；\n2. 质心偏移达144.74 mm（远超20 mm阈值），且三个\n解决方案: 同步修复热模型并执行质心驱动的组件全局重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 3,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K156",
+    "category": "case",
+    "title": "迭代4案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非物理高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达144.74 mm（远超20 mm阈值），且三个分量均\n解决方案: 同步修复热模型失效问题并执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 4,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K157",
+    "category": "case",
+    "title": "迭代5案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非真实高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达144.74 mm（远超20 mm阈值），三个分量均显\n解决方案: 同步修复热模型配置并执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 5,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K158",
+    "category": "case",
+    "title": "迭代6案例: 问题诊断：\n1. 温度指标全为999.0°C，结合历史案例（",
+    "content": "问题: 问题诊断：\n1. 温度指标全为999.0°C，结合历史案例（迭代3-5）可明确判断这是热仿真失效的典型表现，而非真实高温，原因可能包括：热属性未定义、边界条件缺失或模型未收敛；\n2. 质心偏移达144\n解决方案: 同步修复热仿真模型并执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 6,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K159",
+    "category": "case",
+    "title": "迭代7案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非真实高温），通常由热属性未定义、边界条件缺失或模型未收敛导致；\n2. 质心偏移达144.74 mm（远超20 mm阈值），三个分量均严\n解决方案: 同步修复热仿真模型并执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 7,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K160",
+    "category": "case",
+    "title": "迭代8案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非真实高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达144.74 mm（远超20 mm阈值），且三个分量均\n解决方案: 同步修复热仿真模型与执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 8,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K161",
+    "category": "case",
+    "title": "迭代9案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非物理高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达144.74 mm（远超20 mm阈值），且三个分量均\n解决方案: 同步修复热模型失效问题并执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 9,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K162",
+    "category": "case",
+    "title": "迭代10案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非真实高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达144.74 mm（远超20 mm阈值），且各分量均显\n解决方案: 同步修复热模型并执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 10,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K163",
+    "category": "case",
+    "title": "迭代1案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未定义热属性、边界条件缺失或求解未收敛），并非真实物理高温；\n2. 质心偏移达140.33 mm（远超20 mm阈值），三个分量均显著\n解决方案: 同步修复热模型有效性并执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 1,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K164",
+    "category": "case",
+    "title": "迭代2案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非真实高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达57.81 mm（远超20 mm阈值），且各分量[34\n解决方案: 同步修复热模型并执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 2,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K165",
+    "category": "case",
+    "title": "迭代3案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非真实高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达91.68 mm（远超20 mm阈值），且三个分量均显\n解决方案: 同步修复热模型并执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 3,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K166",
+    "category": "case",
+    "title": "迭代4案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未收敛、边界条件缺失、材料/热源属性未定义），并非真实物理高温；\n2. 质心偏移达38.53 mm（计算自[34.38, -17.40\n解决方案: 同步修复热仿真模型并基于质心敏感度重新布局组件\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 4,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K167",
+    "category": "case",
+    "title": "迭代5案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非物理高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达72.20 mm（远超20.00 mm阈值），X和Y方\n解决方案: 同步修复热模型有效性并执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 5,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K168",
+    "category": "case",
+    "title": "迭代6案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未定义热属性、边界条件缺失或求解未收敛），并非真实物理高温；\n2. 质心偏移达48.44 mm（远超20 mm阈值），表明当前组件布局\n解决方案: 同步修复热仿真模型并执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 6,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K169",
+    "category": "case",
+    "title": "迭代7案例: 问题诊断：\n1. 温度全为999.0°C —— 这是热仿真失",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C —— 这是热仿真失效的典型标志（非真实高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达44.45 mm（远超20 mm阈值），分量\n解决方案: 同步修复热模型失效问题，并基于质心约束重新布局组件\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 7,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K170",
+    "category": "case",
+    "title": "迭代8案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非物理高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达77.01 mm（远超20 mm阈值），说明当前布局严\n解决方案: 同步执行热模型重建与质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 8,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K171",
+    "category": "case",
+    "title": "迭代9案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未收敛、边界条件缺失、组件热属性未定义），而非真实物理高温；\n2. 质心偏移为[-7.57, -1.57, 0.23] mm，仍在合理\n解决方案: 修复热仿真模型配置，确保热属性、边界条件和热源定义完整有效\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 9,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K172",
+    "category": "case",
+    "title": "迭代10案例: 问题诊断：\n1. 所有温度值为999.0°C，这是热仿真失效",
+    "content": "问题: 问题诊断：\n1. 所有温度值为999.0°C，这是热仿真失效的典型标志（如未收敛、边界条件缺失、材料或热源属性未定义），而非真实物理高温；\n2. 质心偏移为[-7.57, -1.57, 0.23] m\n解决方案: 优先修复热仿真模型，同步验证当前几何布局的热兼容性\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 10,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K173",
+    "category": "case",
+    "title": "迭代1案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未定义热属性、边界条件缺失或求解未收敛），并非真实物理高温；\n2. 质心偏移达140.33 mm（远超20 mm阈值），三个分量均显著\n解决方案: 同步修复热仿真模型并执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': -954.1260042040416}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 1,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": -954.1260042040416
+      }
+    }
+  },
+  {
+    "item_id": "K174",
+    "category": "case",
+    "title": "迭代2案例: 问题诊断：当前质心偏移矢量为[-35.62, -38.24,",
+    "content": "问题: 问题诊断：当前质心偏移矢量为[-35.62, -38.24, -21.99] mm，其模长约为56.70 mm，远超20.00 mm的阈值。这表明组件布局严重偏向卫星负象限（-X, -Y, -Z），可\n解决方案: 基于质心敏感度分析，对全部3个组件进行全局重定位，同时验证热模型完整性\n效果: 失败\n指标改进: {'max_temp': 69.44524398405741}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 2,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 69.44524398405741
+      }
+    }
+  },
+  {
+    "item_id": "K175",
+    "category": "case",
+    "title": "迭代3案例: 问题诊断：当前质心偏移为56.70 mm（合成值），远超20",
+    "content": "问题: 问题诊断：当前质心偏移为56.70 mm（合成值），远超20.0 mm阈值，且各分量（X: -35.62, Y: -38.24, Z: -21.99）均显著偏离，表明组件布局严重偏向负象限。热、结构、\n解决方案: 基于质心敏感度分析，对全部3个组件进行全局重定位，实现质心平衡\n效果: 成功\n指标改进: {'max_temp': -27.782970129548687}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 3,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": -27.782970129548687
+      }
+    }
+  },
+  {
+    "item_id": "K176",
+    "category": "case",
+    "title": "迭代4案例: 问题诊断：当前质心偏移总量为75.92 mm（计算自[54.",
+    "content": "问题: 问题诊断：当前质心偏移总量为75.92 mm（计算自[54.93, 52.32, 3.01]），远超20.0 mm阈值，严重影响姿态控制稳定性。几何布局虽无干涉、间隙充足，但组件分布严重不对称。\n\n策\n解决方案: 基于质心敏感度分析，对全部3个组件进行全局重定位，实现质心回归\n效果: 成功\n指标改进: {'max_temp': 981.908974333599}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 4,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 981.908974333599
+      }
+    }
+  },
+  {
+    "item_id": "K177",
+    "category": "case",
+    "title": "迭代6案例: 问题诊断：当前质心偏移达56.70 mm（远超20 mm阈值",
+    "content": "问题: 问题诊断：当前质心偏移达56.70 mm（远超20 mm阈值），且三个分量均显著偏离（X: -35.62, Y: -38.24, Z: -21.99 mm），表明现有3个组件布局严重偏向负象限。热、结\n解决方案: 基于质心敏感度分析，对3个组件进行全局重定位以满足质心约束\n效果: 失败\n指标改进: {'max_temp': 954.1260042040371}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 6,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 954.1260042040371
+      }
+    }
+  },
+  {
+    "item_id": "K178",
+    "category": "case",
+    "title": "迭代7案例: 问题诊断：当前质心偏移为56.70 mm（远超20.0 mm",
+    "content": "问题: 问题诊断：当前质心偏移为56.70 mm（远超20.0 mm阈值），三个分量均显著偏离（X: -35.62, Y: -38.24, Z: -21.99），表明组件布局整体偏向负象限。热、结构、电源指标\n解决方案: 执行质心驱动的全局组件重定位，将质心偏移控制在20mm以内\n效果: 成功\n指标改进: {'max_temp': 954.1260042040444}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 7,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 954.1260042040444
+      }
+    }
+  },
+  {
+    "item_id": "K179",
+    "category": "case",
+    "title": "迭代9案例: 问题诊断：当前质心偏移达56.70 mm（远超20.0 mm",
+    "content": "问题: 问题诊断：当前质心偏移达56.70 mm（远超20.0 mm阈值），三个分量均显著偏离（X: -35.62, Y: -38.24, Z: -21.99 mm），表明组件布局严重偏向负象限。热、结构、电\n解决方案: 基于质心敏感度分析，对全部3个组件进行联合重定位，以满足质心偏移约束\n效果: 成功\n指标改进: {'max_temp': 3.331620636690104}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 9,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 3.331620636690104
+      }
+    }
+  },
+  {
+    "item_id": "K180",
+    "category": "case",
+    "title": "迭代10案例: 问题诊断：当前质心偏移总量达75.38 mm（远超20 mm",
+    "content": "问题: 问题诊断：当前质心偏移总量达75.38 mm（远超20 mm阈值），且各分量均显著偏离（X:52.15, Y:49.54, Z:-22.54 mm），表明组件布局严重不对称。虽然热、结构、电源指标均满\n解决方案: 以质心最小化为目标，对全部3个组件进行全局重定位，同时保持热控性能\n效果: 失败\n指标改进: {'max_temp': 15.574724678851567}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 10,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 15.574724678851567
+      }
+    }
+  },
+  {
+    "item_id": "K181",
+    "category": "case",
+    "title": "迭代11案例: 问题诊断：当前质心偏移为75.38 mm（远超20 mm阈值",
+    "content": "问题: 问题诊断：当前质心偏移为75.38 mm（远超20 mm阈值），且三个分量均显著偏离（X:52.15, Y:49.54, Z:-22.54），表明组件布局严重不对称。虽然几何间隙、热控、结构和电源指标\n解决方案: 执行质心驱动的全局组件重定位，将三个组件重新布局以最小化质心偏移\n效果: 成功\n指标改进: {'max_temp': 950.7943835673472}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 11,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 950.7943835673472
+      }
+    }
+  },
+  {
+    "item_id": "K182",
+    "category": "case",
+    "title": "迭代13案例: 问题诊断：当前质心偏移为56.70 mm（远超20 mm阈值",
+    "content": "问题: 问题诊断：当前质心偏移为56.70 mm（远超20 mm阈值），且三个分量均显著偏离（X: -35.62, Y: -38.24, Z: -21.99），表明组件布局严重不对称。热、结构、电源指标均良好\n解决方案: 以质心最小化为目标，对全部3个组件进行全局重定位\n效果: 失败\n指标改进: {'max_temp': 954.1260042040436}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 13,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 954.1260042040436
+      }
+    }
+  },
+  {
+    "item_id": "K183",
+    "category": "case",
+    "title": "迭代14案例: 问题诊断：当前质心偏移为56.70 mm（远超20.0 mm",
+    "content": "问题: 问题诊断：当前质心偏移为56.70 mm（远超20.0 mm阈值），三个分量均显著偏离（X: -35.62, Y: -38.24, Z: -21.99），表明组件布局整体偏向负象限。热、结构、电源指标\n解决方案: 基于质心敏感度分析，对全部3个组件进行全局重定位，实现质心回归原点\n效果: 成功\n指标改进: {'max_temp': -32.90634083206464}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 14,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": -32.90634083206464
+      }
+    }
+  },
+  {
+    "item_id": "K184",
+    "category": "case",
+    "title": "迭代15案例: 问题诊断：当前质心偏移达73.57 mm（远超20 mm阈值",
+    "content": "问题: 问题诊断：当前质心偏移达73.57 mm（远超20 mm阈值），且X、Y分量均超过50 mm，表明组件布局严重不对称。热控、结构、电源指标均良好，说明当前性能瓶颈仅在于几何布局失衡。\n\n策略选择：采用\n解决方案: 基于质心敏感度分析，对全部3个组件进行全局重定位，实现布局对称化\n效果: 成功\n指标改进: {'max_temp': 0.0004210794605796764}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 15,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0004210794605796764
+      }
+    }
+  },
+  {
+    "item_id": "K185",
+    "category": "case",
+    "title": "迭代16案例: 问题诊断：当前质心偏移达62.97 mm（由[45.76, ",
+    "content": "问题: 问题诊断：当前质心偏移达62.97 mm（由[45.76, 43.15, 3.01]计算得出），远超20 mm阈值，表明组件布局严重不对称。虽然几何间隙、热控、结构和电源指标均满足要求，但姿态控制系统\n解决方案: 基于质心敏感度分析，对全部3个组件进行全局重定位，确保质心偏移<20mm\n效果: 成功\n指标改进: {'max_temp': 22.279599278472062}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 16,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 22.279599278472062
+      }
+    }
+  },
+  {
+    "item_id": "K186",
+    "category": "case",
+    "title": "迭代17案例: 问题诊断：当前质心偏移合量为24.63 mm（X=18.54",
+    "content": "问题: 问题诊断：当前质心偏移合量为24.63 mm（X=18.54, Y=15.93, Z=3.01），超过20.00 mm阈值，主要由X和Y方向偏移主导。热、结构、电源指标均良好，说明当前布局在功能上可行\n解决方案: 基于质心敏感度分析，对高贡献组件进行微调以回调质心\n效果: 成功\n指标改进: {'max_temp': -2.1362731771827725}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 17,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": -2.1362731771827725
+      }
+    }
+  },
+  {
+    "item_id": "K187",
+    "category": "case",
+    "title": "迭代18案例: 问题诊断：当前质心偏移为22.69 mm（计算自[17.15",
+    "content": "问题: 问题诊断：当前质心偏移为22.69 mm（计算自[17.15, 14.54, 3.01]的欧氏范数），略超20.00 mm阈值。虽然其他指标（热、结构、电源）均良好，但姿态控制系统对质心敏感，必须修正\n解决方案: 基于质心敏感度分析，对现有组件进行微调以降低质心偏移\n效果: 成功\n指标改进: {'max_temp': 1.318725721029864}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 18,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 1.318725721029864
+      }
+    }
+  },
+  {
+    "item_id": "K188",
+    "category": "case",
+    "title": "迭代1案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未定义热属性、边界条件缺失或求解不收敛），并非真实物理高温；\n2. 质心偏移达83.66 mm（远超20 mm阈值），表明当前组件布局\n解决方案: 同步修复热模型并执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 1,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K189",
+    "category": "case",
+    "title": "迭代2案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志，表明热模型未正确设置（如缺失材料属性、热源定义或边界条件），并非真实物理高温；\n2. 质心偏移达55.24 mm（远超20 mm阈值），\n解决方案: 同步修复热仿真模型并执行质心驱动的组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 2,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K190",
+    "category": "case",
+    "title": "迭代3案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非真实高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达62.03 mm（远超20 mm阈值），且Y分量主导（\n解决方案: 同步修复热模型并执行质心驱动的组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 3,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K191",
+    "category": "case",
+    "title": "迭代4案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非物理高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达37.89 mm（远超20 mm阈值），且各分量均显著\n解决方案: 同步修复热模型并执行质心驱动的组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 4,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K192",
+    "category": "case",
+    "title": "迭代5案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非物理高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达37.89 mm（远超20 mm阈值），且各分量均显著\n解决方案: 同步执行热模型重建与质心驱动的组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 5,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K193",
+    "category": "case",
+    "title": "迭代6案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未定义热属性、边界条件缺失或求解不收敛），并非真实物理高温；\n2. 质心偏移达40.66 mm（远超20 mm阈值），且各分量均显著偏\n解决方案: 同步修复热仿真模型并执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 6,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K194",
+    "category": "case",
+    "title": "迭代7案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未收敛、边界条件缺失、热属性未定义），并非真实物理高温；\n2. 质心偏移达40.66 mm（远超20 mm阈值），且各分量均显著偏离，\n解决方案: 同步修复热仿真模型并执行质心驱动的组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 7,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K195",
+    "category": "case",
+    "title": "迭代8案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未定义热属性、边界条件缺失或模型未收敛），并非真实物理高温；\n2. 质心偏移达30.85 mm（计算自[-11.09, -21.23,\n解决方案: 同步修复热模型有效性，并执行质心驱动的组件重定位以满足姿态控制要求\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 8,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K196",
+    "category": "case",
+    "title": "迭代9案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非物理高温），表明热模型未收敛或缺失关键定义（如材料属性、热源设置、边界条件）；\n2. 质心偏移已达[-11.09, -3.54, 10\n解决方案: 同步修复热模型定义并执行质心敏感度驱动的组件微调\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 9,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K197",
+    "category": "case",
+    "title": "迭代10案例: 问题诊断：\n1. 所有温度值为999.0°C，这是热仿真失效",
+    "content": "问题: 问题诊断：\n1. 所有温度值为999.0°C，这是热仿真失效的典型标志（如未收敛、边界条件缺失、组件热属性未定义），而非真实物理高温；\n2. 质心偏移为[-11.09, -3.54, 14.46] m\n解决方案: 同步修复热模型并微调组件位置以改善质心和热仿真收敛性\n效果: 失败\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 10,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K198",
+    "category": "case",
+    "title": "迭代11案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非真实高温），通常由热属性未定义、边界条件缺失或模型未收敛导致；\n2. 质心偏移已达[-11.09, -3.54, 14.46] mm，\n解决方案: 同步修复热模型并基于质心敏感度微调关键组件位置\n效果: 失败\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 11,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K199",
+    "category": "case",
+    "title": "迭代12案例: 问题诊断：\n1. 所有温度值为999.0°C，这是热仿真失效",
+    "content": "问题: 问题诊断：\n1. 所有温度值为999.0°C，这是热仿真失效的典型标志（如未收敛、边界条件缺失、材料/热源属性未定义），而非真实物理高温；\n2. 质心偏移已达[-11.09, -3.54, 14.46\n解决方案: 同步修复热模型失效问题，并对质心进行预防性微调\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 12,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K200",
+    "category": "case",
+    "title": "迭代13案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非物理高温），表明热模型未收敛、边界条件缺失或组件热属性未正确定义；\n2. 质心偏移Z分量高达18.89mm，接近20mm阈值，X/Y方\n解决方案: 同步修复热仿真模型并执行质心驱动的关键组件重定位\n效果: 失败\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 13,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K201",
+    "category": "case",
+    "title": "迭代14案例: 问题诊断：\n1. 所有温度值为999.0°C，这是热仿真失效",
+    "content": "问题: 问题诊断：\n1. 所有温度值为999.0°C，这是热仿真失效的典型标志（如未收敛、边界条件缺失、热属性未定义），而非真实物理高温；\n2. 质心Z向偏移达18.89 mm，虽未超±20 mm阈值，但已接\n解决方案: 同步修复热模型并执行质心驱动的轻度全局重定位，恢复热仿真有效性并改善质量分布\n效果: 失败\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 14,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K202",
+    "category": "case",
+    "title": "迭代15案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非物理高温），表明热模型未收敛、边界条件缺失或组件热属性未正确定义；\n2. 质心偏移Z分量达18.89 mm，虽未超±20 mm阈值，但\n解决方案: 同步修复热模型并执行质心敏感度驱动的组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 15,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K203",
+    "category": "case",
+    "title": "迭代16案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非物理高温），表明热模型未收敛、边界条件缺失、或组件热属性未正确定义；\n2. 几何指标正常（最小间隙5.0mm，无干涉），结构与电源指标\n解决方案: 修复热仿真模型，确保热属性、边界条件和热源定义完整有效\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 16,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K204",
+    "category": "case",
+    "title": "迭代17案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非真实高温），通常由热模型未收敛、边界条件缺失、材料属性未定义或热源未正确设置导致；\n2. 几何指标正常（最小间隙5.0mm，无碰撞），\n解决方案: 优先修复热仿真模型，同时验证当前几何布局的热兼容性\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 17,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K205",
+    "category": "case",
+    "title": "迭代18案例: 问题诊断：温度全为999.0°C是热仿真失效的典型标志（非真",
+    "content": "问题: 问题诊断：温度全为999.0°C是热仿真失效的典型标志（非真实高温），通常由以下原因导致：(1)组件缺失热属性定义；(2)边界条件未设置；(3)热源未正确关联；(4)模型未收敛。历史案例（迭代3-5）\n解决方案: 同步修复热仿真模型并验证几何布局的热建模兼容性\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 18,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K206",
+    "category": "case",
+    "title": "迭代19案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非真实高温），表明热模型未收敛、边界条件缺失或组件热属性未正确定义；\n2. 质心偏移为[-5.19, -3.54, 1.20] mm，虽\n解决方案: 修复热仿真模型并验证几何-热属性一致性，恢复有效温度场计算\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 19,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K207",
+    "category": "case",
+    "title": "迭代20案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未收敛、边界条件缺失、热属性未定义），而非真实物理高温；\n2. 几何指标正常（最小间隙5.0mm，无碰撞），质心偏移[-5.19, -\n解决方案: 修复热仿真模型，确保边界条件、材料属性和热源定义完整有效\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 20,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K208",
+    "category": "case",
+    "title": "迭代21案例: 问题诊断：\n1. 所有温度值为999.0°C，这是热仿真失效",
+    "content": "问题: 问题诊断：\n1. 所有温度值为999.0°C，这是热仿真失效的典型标志（如未收敛、边界条件缺失、材料或热源属性未定义），而非真实物理高温；\n2. 几何指标正常（最小间隙5.0mm，无碰撞），结构和电源\n解决方案: 修复热仿真模型配置，确保边界条件、材料属性和热源定义完整有效\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 21,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K209",
+    "category": "case",
+    "title": "迭代22案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未收敛、边界条件缺失、材料/热源属性未定义），而非真实物理高温；\n2. 质心偏移[-5.19, -3.54, 1.20] mm在合理范\n解决方案: 修复热仿真模型配置，确保边界条件、材料属性和热源定义完整有效\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 22,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K210",
+    "category": "case",
+    "title": "迭代23案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未收敛、边界条件缺失、材料/热源属性未定义），而非真实物理高温；\n2. 质心偏移为[-5.19, -3.54, 1.20] mm，仍在\n解决方案: 修复热仿真模型配置，确保边界条件、材料属性和热源定义完整有效\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 23,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K211",
+    "category": "case",
+    "title": "迭代24案例: 问题诊断：\n1. 所有温度值为999.0°C是热仿真失效的典",
+    "content": "问题: 问题诊断：\n1. 所有温度值为999.0°C是热仿真失效的典型标志（如未收敛、缺失热属性、边界条件错误），并非真实物理高温；\n2. 几何和结构指标正常（最小间隙5mm、无碰撞、应力/频率达标），说明布\n解决方案: 修复热仿真模型配置，确保热属性、边界条件和热源定义完整有效\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 24,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K212",
+    "category": "case",
+    "title": "迭代25案例: 问题诊断：\n1. 所有温度值为999.0°C，这是热仿真失效",
+    "content": "问题: 问题诊断：\n1. 所有温度值为999.0°C，这是热仿真失效的典型标志（非物理高温），表明热模型未收敛、边界条件缺失、或组件热属性未正确定义；\n2. 几何指标正常（最小间隙5.0mm，无碰撞），质心偏\n解决方案: 修复热仿真模型配置，确保温度结果有效\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 25,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K213",
+    "category": "case",
+    "title": "迭代1案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未定义热属性、边界条件缺失或求解不收敛），并非真实物理高温；\n2. 质心偏移达110.66 mm（远超20 mm阈值），表明当前7个组\n解决方案: 同步修复热仿真模型并执行质心驱动的组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 1,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K214",
+    "category": "case",
+    "title": "迭代2案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未定义热属性、边界条件缺失或求解器未收敛），并非真实物理高温；\n2. 质心偏移达81.96 mm（远超20 mm阈值），三个分量均显著\n解决方案: 同步执行热模型修复与质心驱动的组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 2,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K215",
+    "category": "case",
+    "title": "迭代3案例: 问题诊断：\n1. 温度指标全为999.0°C —— 这是热仿",
+    "content": "问题: 问题诊断：\n1. 温度指标全为999.0°C —— 这是热仿真失效的典型标志（如未收敛、边界条件缺失、材料/热源属性未定义），并非真实物理高温；\n2. 质心偏移达55.77 mm（计算自[-27.82\n解决方案: 同步修复热仿真模型并执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 3,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K216",
+    "category": "case",
+    "title": "迭代4案例: 问题诊断：\n1. 温度指标全为999.0°C —— 这是热仿",
+    "content": "问题: 问题诊断：\n1. 温度指标全为999.0°C —— 这是热仿真失效的典型标志，表明热模型未收敛、边界条件缺失或组件热属性未定义，而非真实物理高温；\n2. 质心偏移达55.77 mm（远超20.0 mm\n解决方案: 同步修复热模型有效性并执行质心驱动的组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 4,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K217",
+    "category": "case",
+    "title": "迭代5案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未定义热属性、缺失边界条件或求解不收敛），并非真实物理高温；\n2. 质心偏移达72.37 mm（由分量[-27.82, -66.70,\n解决方案: 同步修复热仿真模型并执行质心驱动的组件全局重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 5,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K218",
+    "category": "case",
+    "title": "迭代6案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未定义热属性、边界条件缺失或求解不收敛），并非真实物理高温；\n2. 质心偏移达44.22 mm（计算自[-27.82, -34.14,\n解决方案: 同步修复热仿真模型并执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 6,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K219",
+    "category": "case",
+    "title": "迭代7案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非物理高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达65.98 mm（远超20 mm阈值），Y方向偏移尤为\n解决方案: 同步执行热模型修复与质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 7,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K220",
+    "category": "case",
+    "title": "迭代1案例: 问题诊断：\n1. 温度全为999.0°C —— 这是热仿真失",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C —— 这是热仿真失效的典型标志，表明热模型未收敛或缺失关键定义（如组件热属性、边界条件、热源设置），并非真实高温；\n2. 质心偏移达110.66 mm（远超2\n解决方案: 同步修复热模型并执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 1,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K221",
+    "category": "case",
+    "title": "迭代2案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未定义热属性、边界条件缺失或求解不收敛），并非真实物理高温；\n2. 质心偏移达80.72 mm（计算自[-63.20, -37.95,\n解决方案: 同步修复热仿真模型并执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 2,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K222",
+    "category": "case",
+    "title": "迭代3案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非真实高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达80.72 mm（远超20 mm阈值），且各分量均显著\n解决方案: 同步修复热模型有效性并执行质心驱动的全局组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 3,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K223",
+    "category": "case",
+    "title": "迭代4案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未定义热属性、边界条件缺失或求解不收敛），并非真实物理高温；\n2. 质心偏移达59.60 mm（远超20 mm阈值），且各分量均显著偏\n解决方案: 同步修复热仿真模型并执行质心驱动的组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 4,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K224",
+    "category": "case",
+    "title": "迭代5案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非真实高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达35.61 mm（远超20 mm阈值），X/Y分量尤为\n解决方案: 同步修复热仿真模型并执行质心驱动的组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 5,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K225",
+    "category": "case",
+    "title": "迭代6案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非真实高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达37.06 mm（远超20 mm阈值），Y向偏移尤为严\n解决方案: 同步修复热仿真模型并执行质心驱动的组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 6,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K226",
+    "category": "case",
+    "title": "迭代7案例: 问题诊断：温度全为999.0°C是热仿真失效的典型标志，而非",
+    "content": "问题: 问题诊断：温度全为999.0°C是热仿真失效的典型标志，而非真实物理高温。结合历史案例（迭代3、4、5），该现象通常由以下原因导致：(1) 热边界条件缺失；(2) 组件未定义热属性；(3) 热源未正确\n解决方案: 同步修复热模型并进行轻度质心优化\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 7,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K227",
+    "category": "case",
+    "title": "迭代8案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非真实高温），通常由热模型未收敛、边界条件缺失、或组件热属性未定义导致；\n2. 质心偏移为[-9.11, -2.49, 1.21] mm\n解决方案: 修复热仿真模型并微调组件位置以改善质心平衡\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 8,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K228",
+    "category": "case",
+    "title": "迭代9案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非物理高温），表明热模型未收敛、边界条件缺失或组件热属性未正确定义；\n2. 质心偏移为[-7.00, -2.49, 1.21] mm，虽\n解决方案: 同步修复热仿真模型并验证几何-热模型一致性，避免因模型脱节导致仿真失效\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 9,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K229",
+    "category": "case",
+    "title": "迭代10案例: 问题诊断：温度全为999.0°C是热仿真失效的典型标志（如未",
+    "content": "问题: 问题诊断：温度全为999.0°C是热仿真失效的典型标志（如未收敛、边界条件缺失、材料或热源属性未定义），而非真实物理高温。此现象在历史案例（迭代3-5）中反复出现，均通过修复热模型+几何重定位解决。\n\n解决方案: 同步修复热仿真模型并微调高功耗组件位置以维持质心稳定\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 10,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K230",
+    "category": "case",
+    "title": "迭代11案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未收敛、边界条件缺失、材料/热源属性未定义），而非真实物理高温；\n2. 质心偏移为[-2.58, 6.28, 1.21] mm，虽未超\n解决方案: 同步修复热仿真模型并微调高功耗组件布局以优化散热与质心\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 11,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K231",
+    "category": "case",
+    "title": "迭代12案例: 问题诊断：\n1. 所有温度值为999.0°C，这是热仿真失效",
+    "content": "问题: 问题诊断：\n1. 所有温度值为999.0°C，这是热仿真失效的典型标志（如未收敛、边界条件缺失、热属性未定义），而非真实物理高温；\n2. 质心偏移为[-2.58, 6.28, 1.21] mm，在合理\n解决方案: 修复热仿真模型配置，同时验证当前几何布局的热属性完整性\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 12,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K232",
+    "category": "case",
+    "title": "迭代13案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未收敛、边界条件缺失、热属性未定义），而非真实物理高温；\n2. 质心偏移[−2.58, 6.28, 1.21] mm在可接受范围内（<\n解决方案: 修复热仿真模型，确保组件热属性、边界条件和热源定义完整有效\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 13,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K233",
+    "category": "case",
+    "title": "迭代14案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未收敛、边界条件缺失、热属性未定义），而非真实物理高温；\n2. 质心偏移[−2.58, 6.28, 1.21] mm在合理范围内（<±\n解决方案: 修复热仿真模型并验证组件热属性完整性，保持当前几何布局主体不变\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 14,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K234",
+    "category": "case",
+    "title": "迭代15案例: 问题诊断：热控指标全部为999.0°C，这是热仿真失效的典型",
+    "content": "问题: 问题诊断：热控指标全部为999.0°C，这是热仿真失效的典型标志（如未收敛、边界条件缺失、材料/热源属性未定义），而非真实物理高温。历史案例（迭代3-5）反复验证了这一模式，并指出必须同步修复热模型和\n解决方案: 同步修复热仿真模型并进行质心敏感度驱动的局部组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 15,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K235",
+    "category": "case",
+    "title": "迭代16案例: 问题诊断：温度全为999.0°C是热仿真失效的典型标志（如未",
+    "content": "问题: 问题诊断：温度全为999.0°C是热仿真失效的典型标志（如未收敛、边界条件缺失、材料/热源属性未定义），而非真实物理高温。这与历史案例3-5高度一致，表明当前热模型存在建模错误。\n\n策略选择：采用hy\n解决方案: 同步修复热仿真模型并验证当前几何布局的热兼容性\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 16,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K236",
+    "category": "case",
+    "title": "迭代17案例: 问题诊断：\n1. 所有温度值为999.0°C，这是热仿真失效",
+    "content": "问题: 问题诊断：\n1. 所有温度值为999.0°C，这是热仿真失效的典型标志（如未收敛、边界条件缺失、热属性未定义），而非真实物理高温；\n2. 几何指标正常（最小间隙5.0mm，质心偏移仅[-2.58, -\n解决方案: 修复热仿真模型配置，确保热属性、边界条件和热源定义完整有效\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 17,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K237",
+    "category": "case",
+    "title": "迭代1案例: 问题诊断：\n1. 温度值全为999.0°C，这是热仿真失效的",
+    "content": "问题: 问题诊断：\n1. 温度值全为999.0°C，这是热仿真失效的典型标志（如未定义热属性、边界条件缺失或求解未收敛），并非真实物理高温；\n2. 质心偏移达103.93 mm（远超20 mm阈值），三个分量\n解决方案: 同步修复热模型有效性并执行质心驱动的组件全局重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 1,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K238",
+    "category": "case",
+    "title": "迭代2案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非真实高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达106.18 mm（远超20 mm阈值），说明当前两个\n解决方案: 同步修复热模型有效性并执行质心驱动的双组件全局重定位\n效果: 成功\n指标改进: {'max_temp': -998.5894278931205}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 2,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": -998.5894278931205
+      }
+    }
+  },
+  {
+    "item_id": "K239",
+    "category": "case",
+    "title": "迭代3案例: 问题诊断：当前质心偏移为76.83 mm（合成值），远超20",
+    "content": "问题: 问题诊断：当前质心偏移为76.83 mm（合成值），远超20.0 mm阈值，且各分量均显著偏离（X: -60.24, Y: -35.54, Z: -31.81 mm），表明两个组件集中分布在卫星负象限\n解决方案: 对两个组件执行质心驱动的全局重定位，实现空间对称分布\n效果: 失败\n指标改进: {'max_temp': 998.5894278931203}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 3,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 998.5894278931203
+      }
+    }
+  },
+  {
+    "item_id": "K240",
+    "category": "case",
+    "title": "迭代4案例: 问题诊断：当前质心偏移合量为76.83 mm（由[-60.2",
+    "content": "问题: 问题诊断：当前质心偏移合量为76.83 mm（由[-60.24, -35.54, -31.81]计算得出），远超20.0 mm阈值，严重影响姿态控制稳定性。热、结构、电源指标均正常，说明问题集中在几何\n解决方案: 对两个组件执行质心驱动的全局联合重定位，实现布局对称性以满足质心约束\n效果: 成功\n指标改进: {'max_temp': -0.2589704330782183}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 4,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": -0.2589704330782183
+      }
+    }
+  },
+  {
+    "item_id": "K241",
+    "category": "case",
+    "title": "迭代5案例: 问题诊断：当前质心偏移达47.49 mm（远超20 mm阈值",
+    "content": "问题: 问题诊断：当前质心偏移达47.49 mm（远超20 mm阈值），且X、Y、Z三个方向均显著偏离，说明两个组件的布局严重不对称。热控、结构、电源指标均良好，表明问题纯粹源于几何布局失衡。\n\n策略选择：采\n解决方案: 对两个组件执行质心驱动的全局联合重定位，实现空间对称或力矩平衡布局\n效果: 成功\n指标改进: {'max_temp': 0.29006190695935175}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 5,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.29006190695935175
+      }
+    }
+  },
+  {
+    "item_id": "K242",
+    "category": "case",
+    "title": "迭代1案例: 问题诊断：\n1. 温度全为999.0°C —— 这是热仿真失",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C —— 这是热仿真失效的典型标志，表明热模型未收敛或缺失关键定义（如材料属性、边界条件、热源设置），并非真实高温；\n2. 质心偏移达103.93 mm（远超20\n解决方案: 同步修复热仿真模型并执行质心驱动的组件全局重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 1,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K243",
+    "category": "case",
+    "title": "迭代2案例: 问题诊断：\n1. 温度全为999.0°C —— 这是热仿真失",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C —— 这是热仿真失效的典型标志，表明热模型未收敛或缺失关键定义（如材料属性、热边界条件、热源设置），并非真实高温；\n2. 质心偏移达67.57 mm（远超20\n解决方案: 同步执行热模型修复与质心驱动的双组件全局重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 2,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K244",
+    "category": "case",
+    "title": "迭代3案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非物理高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达58.77 mm（远超20 mm阈值），且Z分量主导（\n解决方案: 同步修复热模型有效性并执行质心驱动的双组件全局重定位\n效果: 成功\n指标改进: {'max_temp': -998.8873748047167}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 3,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": -998.8873748047167
+      }
+    }
+  },
+  {
+    "item_id": "K245",
+    "category": "case",
+    "title": "迭代4案例: 问题诊断：当前质心偏移总量为32.59 mm（计算自[-5.",
+    "content": "问题: 问题诊断：当前质心偏移总量为32.59 mm（计算自[-5.24, -14.11, 28.91]），显著超出20.0 mm阈值，主要由Z方向偏移（+28.91 mm）主导。热、结构、电源指标均正常，说\n解决方案: 基于质心敏感度分析，对两个组件进行全局联合重定位，使系统质心回归容限范围内\n效果: 成功\n指标改进: {'max_temp': 0.08079250293616269}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 4,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.08079250293616269
+      }
+    }
+  },
+  {
+    "item_id": "K246",
+    "category": "case",
+    "title": "迭代5案例: 问题诊断：当前质心偏移为28.88 mm（计算自[-5.24",
+    "content": "问题: 问题诊断：当前质心偏移为28.88 mm（计算自[-5.24, 3.03, -28.24]），超过20.0 mm阈值，主要由Z向偏移主导（-28.24 mm）。热、结构、电源指标均良好，说明系统功能正\n解决方案: 基于质心敏感度分析，微调组件Z向位置以降低质心偏移\n效果: 成功\n指标改进: {'max_temp': -0.05532654222366773}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 5,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": -0.05532654222366773
+      }
+    }
+  },
+  {
+    "item_id": "K247",
+    "category": "case",
+    "title": "迭代1案例: 问题诊断：当前设计存在严重的几何干涉（最小间隙为-12.52",
+    "content": "问题: 问题诊断：当前设计存在严重的几何干涉（最小间隙为-12.52 mm，即组件重叠12.52 mm）和质心严重偏移（X方向达-26.67 mm，远超典型±20 mm安全裕度）。这是典型的初始布局未考虑空间\n解决方案: 对两个组件进行全局重定位，同步解决几何干涉与质心偏移问题\n效果: 成功\n指标改进: {'max_temp': -0.19862660209275873}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 1,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": -0.19862660209275873
+      }
+    }
+  },
+  {
+    "item_id": "K248",
+    "category": "case",
+    "title": "迭代2案例: 问题诊断：当前设计存在严重几何干涉（最小间隙为-12.52 ",
+    "content": "问题: 问题诊断：当前设计存在严重几何干涉（最小间隙为-12.52 mm，即重叠12.52 mm）且碰撞数量为1，表明两个组件在空间上发生物理重叠。质心偏移也较大（最大分量达17.94 mm），但尚在可接受范\n解决方案: 同步执行组件全局重定位以消除干涉，并重建热模型以激活有效热仿真\n效果: 成功\n指标改进: {'max_temp': 0.023246682222804793}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 2,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.023246682222804793
+      }
+    }
+  },
+  {
+    "item_id": "K249",
+    "category": "case",
+    "title": "迭代1案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未定义热属性、边界条件缺失或求解未收敛），并非真实物理高温；\n2. 质心偏移模长为51.74 mm（sqrt((-7.47)^2 + \n解决方案: 并行修复热仿真模型与执行质心驱动的局部组件重定位\n效果: 失败\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 1,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K250",
+    "category": "case",
+    "title": "迭代2案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非物理高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移模长为51.74 mm（计算自[-7.47, 34.07\n解决方案: 同步修复热模型定义与执行质心驱动的局部组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 2,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K251",
+    "category": "case",
+    "title": "迭代3案例: 问题诊断：\n1. 温度全为999.0°C —— 这是热仿真失",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C —— 这是热仿真失效的典型标志（非真实高温），表明热模型未收敛、边界条件缺失或组件热属性未定义；\n2. 质心偏移达69.54 mm（远超50.0 mm阈值），\n解决方案: 同步执行热模型修复与质心驱动的关键组件重定位\n效果: 失败\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 3,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K252",
+    "category": "case",
+    "title": "迭代4案例: 问题诊断：\n1. 温度指标全为999.0°C —— 这是热仿",
+    "content": "问题: 问题诊断：\n1. 温度指标全为999.0°C —— 这是热仿真失效的典型标志（如未收敛、边界条件缺失、组件热属性未定义），而非真实物理高温；\n2. 质心偏移达69.54 mm（远超50.0 mm阈值）\n解决方案: 并行修复热仿真模型与执行质心驱动的组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 4,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K253",
+    "category": "case",
+    "title": "迭代5案例: 问题诊断：\n1. 温度指标全为999.0°C是热仿真失效的典",
+    "content": "问题: 问题诊断：\n1. 温度指标全为999.0°C是热仿真失效的典型标志（非真实高温），通常由缺失热属性定义、边界条件未设置或网格/求解器不收敛导致；\n2. 质心偏移[−7.47, 26.70, 35.27\n解决方案: 同步修复热仿真模型并执行质心驱动的组件重定位\n效果: 失败\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 5,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K254",
+    "category": "case",
+    "title": "迭代6案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未收敛、边界条件缺失、材料或热源属性未定义），而非真实物理高温；\n2. 质心偏移已达[-7.47, 26.70, 35.27] mm，\n解决方案: 同步修复热仿真模型并执行质心驱动的组件重定位\n效果: 失败\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 6,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K255",
+    "category": "case",
+    "title": "迭代7案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非真实高温），通常由热属性未定义、边界条件缺失或网格/求解器未收敛导致；\n2. 质心偏移已达[-7.47, 26.70, 35.27] \n解决方案: 同步修复热仿真模型并基于质心敏感度重定位关键组件\n效果: 失败\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 7,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K256",
+    "category": "case",
+    "title": "迭代8案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（如未收敛、边界条件缺失、热属性未定义），而非真实物理高温；\n2. 质心偏移已达[-7.47, 26.70, 35.27] mm，总偏移量\n解决方案: 同步修复热仿真模型并执行质心驱动的组件重定位\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 8,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K257",
+    "category": "case",
+    "title": "迭代9案例: 问题诊断：\n1. 所有温度值为999.0°C，这是热仿真失效",
+    "content": "问题: 问题诊断：\n1. 所有温度值为999.0°C，这是热仿真失效的典型标志（如未收敛、边界条件缺失、材料/热源属性未定义），而非真实物理高温；\n2. 质心偏移已达[-7.47, 9.00, -0.11] \n解决方案: 同步修复热仿真模型并评估/预留质心调整裕度，为后续热控优化做准备\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 9,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K258",
+    "category": "case",
+    "title": "迭代10案例: 问题诊断：\n1. 所有温度值为999.0°C，这是热仿真失效",
+    "content": "问题: 问题诊断：\n1. 所有温度值为999.0°C，这是热仿真失效的典型标志（如未收敛、边界条件缺失、材料或热源属性未定义），而非真实物理高温；\n2. 质心偏移为[-7.47, 8.77, -0.11] m\n解决方案: 同步修复热仿真模型并执行质心敏感度驱动的预防性组件微调\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 10,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K259",
+    "category": "case",
+    "title": "迭代11案例: 问题诊断：温度全为999.0°C是热仿真失效的典型标志，而非",
+    "content": "问题: 问题诊断：温度全为999.0°C是热仿真失效的典型标志，而非真实物理高温。根据多个历史案例（迭代3、4、5），该现象通常由以下原因导致：(1) 组件未定义热属性；(2) 热边界条件缺失；(3) 热源未\n解决方案: 修复热仿真模型，确保热属性、边界条件和热源正确定义\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 11,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K260",
+    "category": "case",
+    "title": "迭代12案例: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标",
+    "content": "问题: 问题诊断：\n1. 温度全为999.0°C是热仿真失效的典型标志（非物理高温），通常由热模型未收敛、边界条件缺失、材料属性未定义或热源未正确设置导致；\n2. 质心偏移为[-7.47, 3.85, -0.\n解决方案: 同步修复热仿真模型并验证几何-热属性映射一致性，确保热分析有效\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 12,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K261",
+    "category": "case",
+    "title": "迭代13案例: 问题诊断：\n1. 所有热控指标显示为999.0°C，这是热仿",
+    "content": "问题: 问题诊断：\n1. 所有热控指标显示为999.0°C，这是热仿真失效的典型标志（如未收敛、边界条件缺失、材料或热源属性未定义），而非真实物理高温；\n2. 几何指标正常（最小间隙5.0mm，无碰撞），质心\n解决方案: 修复热仿真模型配置，确保热边界条件、材料属性和热源定义完整有效\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 13,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K262",
+    "category": "case",
+    "title": "迭代14案例: 问题诊断：温度全为999.0°C是热仿真失效的典型标志，而非",
+    "content": "问题: 问题诊断：温度全为999.0°C是热仿真失效的典型标志，而非真实物理高温。参考历史案例（迭代3-5），该现象通常由以下原因导致：(1) 热边界条件缺失；(2) 组件未定义热属性；(3) 热源未正确设置\n解决方案: 同步修复热模型并验证几何布局合理性，为后续热优化预留空间\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 14,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K263",
+    "category": "case",
+    "title": "迭代1案例: 问题诊断：当前质心偏移总量为51.74 mm（计算自[-7.",
+    "content": "问题: 问题诊断：当前质心偏移总量为51.74 mm（计算自[-7.47, 34.07, 38.22]），略超50.00 mm阈值。虽然几何间隙、结构、电源等指标均满足要求，但姿态控制系统对质心位置敏感，必须\n解决方案: 基于质心敏感度分析，微调关键组件位置以降低质心偏移\n效果: 失败\n指标改进: {'max_temp': -0.04564953516518244}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 1,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": -0.04564953516518244
+      }
+    }
+  },
+  {
+    "item_id": "K264",
+    "category": "case",
+    "title": "迭代2案例: 问题诊断：当前质心偏移矢量为[-7.47, 34.07, 3",
+    "content": "问题: 问题诊断：当前质心偏移矢量为[-7.47, 34.07, 38.22] mm，其欧氏范数为51.74 mm，略超50.00 mm阈值。虽然热、结构、电源指标均良好，但质心超标会影响姿态控制精度和燃料消\n解决方案: 基于质心敏感度分析，对关键组件进行微幅重定位以降低质心偏移\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 2,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K265",
+    "category": "case",
+    "title": "迭代3案例: 问题诊断：当前质心偏移为51.74 mm（计算自[-7.47",
+    "content": "问题: 问题诊断：当前质心偏移为51.74 mm（计算自[-7.47, 34.07, 38.22]），略超50.00 mm阈值。虽然其他指标（热、结构、电源）均在合理范围内，但姿态控制系统对质心敏感，必须修正\n解决方案: 基于质心敏感度分析，微调高影响力组件位置以降低质心偏移\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 3,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K266",
+    "category": "case",
+    "title": "迭代4案例: 问题诊断：当前质心偏移矢量为[-7.47, 32.59, 3",
+    "content": "问题: 问题诊断：当前质心偏移矢量为[-7.47, 32.59, 38.22] mm，其模长为50.78 mm，略超阈值50.00 mm。虽然热、结构、电源指标均表现优异（甚至温度异常低，可能为仿真未激活或无\n解决方案: 基于质心敏感度分析，微调1-2个关键组件位置以降低质心偏移\n效果: 成功\n指标改进: {'max_temp': 0.019100970962824704}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 4,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.019100970962824704
+      }
+    }
+  },
+  {
+    "item_id": "K267",
+    "category": "case",
+    "title": "迭代1案例: 问题诊断：当前质心偏移为51.74 mm（略超50.00 m",
+    "content": "问题: 问题诊断：当前质心偏移为51.74 mm（略超50.00 mm阈值），主要由Y和Z分量贡献（34.07 mm 和 38.22 mm），表明组件布局在Y-Z平面存在不对称性。热控、结构、电源指标均良好，\n解决方案: 基于质心敏感度分析，对关键组件进行微调以降低质心偏移\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 1,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K268",
+    "category": "case",
+    "title": "迭代1案例: 问题诊断：当前质心偏移为148.75 mm（由分量[143.",
+    "content": "问题: 问题诊断：当前质心偏移为148.75 mm（由分量[143.84, 31.65, -20.88]合成），远超50.00 mm阈值，主要偏差来自X方向（143.84 mm）。热控指标异常（全为0°C）表\n解决方案: 执行质心驱动的全局组件重定位，并同步激活/验证热模型有效性\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 1,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K269",
+    "category": "case",
+    "title": "迭代2案例: 问题诊断：当前质心偏移为127.65 mm（合成值），远超5",
+    "content": "问题: 问题诊断：当前质心偏移为127.65 mm（合成值），远超50.00 mm阈值，且X分量高达121.89 mm，表明组件布局严重偏向+X侧。热控、结构、电源指标均正常，说明问题集中于几何布局失衡。\n\n\n解决方案: 执行质心驱动的全局组件重定位，并同步验证热模型有效性\n效果: 失败\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 2,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K270",
+    "category": "case",
+    "title": "迭代3案例: 问题诊断：当前质心偏移为127.65 mm（合成值），远超5",
+    "content": "问题: 问题诊断：当前质心偏移为127.65 mm（合成值），远超50.00 mm阈值，且X分量高达121.89 mm，表明质量分布严重偏向+X方向。热控指标异常（全为0°C）与历史案例高度相似，是热仿真未激\n解决方案: 同步执行质心驱动的全局组件重定位与热模型修复，确保多学科协同\n效果: 成功\n指标改进: {'max_temp': 0.004589627029417898}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 3,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.004589627029417898
+      }
+    }
+  },
+  {
+    "item_id": "K271",
+    "category": "case",
+    "title": "迭代4案例: 问题诊断：当前质心偏移为88.18 mm（由分量[79.61",
+    "content": "问题: 问题诊断：当前质心偏移为88.18 mm（由分量[79.61, 31.65, -20.88]合成），远超50.00 mm阈值，构成重要约束违反。其他学科指标（热、结构、电源）均表现良好甚至异常理想（如\n解决方案: 基于质心敏感度分析，对高质心贡献组件进行全局重定位，以满足质心约束\n效果: 成功\n指标改进: {'max_temp': 0.002543812828434966}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 4,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.002543812828434966
+      }
+    }
+  },
+  {
+    "item_id": "K272",
+    "category": "case",
+    "title": "迭代5案例: 问题诊断：当前质心偏移总量为88.18 mm（由分量[79.",
+    "content": "问题: 问题诊断：当前质心偏移总量为88.18 mm（由分量[79.61, 31.65, -20.88]计算得出），远超50.00 mm阈值，构成重要约束违反。热控、结构、电源指标均正常（温度接近0°C说明热\n解决方案: 基于质心敏感度分析，对关键质量组件进行全局重定位以恢复质心平衡\n效果: 失败\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 5,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K273",
+    "category": "case",
+    "title": "迭代6案例: 问题诊断：当前质心偏移总量为88.18 mm（由分量[79.",
+    "content": "问题: 问题诊断：当前质心偏移总量为88.18 mm（由分量[79.61, 31.65, -20.88]计算得出），远超50.00 mm的硬约束。几何布局已满足最小间隙要求，热控、结构、电源指标均良好，说明问\n解决方案: 基于质心敏感度分析，对高质/高体积组件进行全局重定位，以大幅降低质心偏移\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 6,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K274",
+    "category": "case",
+    "title": "迭代7案例: 问题诊断：当前质心偏移总量为63.03 mm（计算自[50.",
+    "content": "问题: 问题诊断：当前质心偏移总量为63.03 mm（计算自[50.34, 31.65, -20.88]），超过50.00 mm的硬约束。虽然几何间隙、热控、结构和电源指标均良好，但姿态控制系统对质心位置敏感\n解决方案: 基于质心敏感度分析，微调高质心贡献组件位置以降低总质心偏移\n效果: 成功\n指标改进: {'max_temp': 0.0014604389103851645}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 7,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0014604389103851645
+      }
+    }
+  },
+  {
+    "item_id": "K275",
+    "category": "case",
+    "title": "迭代8案例: 问题诊断：当前质心偏移的欧氏范数为 sqrt(48.62² ",
+    "content": "问题: 问题诊断：当前质心偏移的欧氏范数为 sqrt(48.62² + 31.65² + (-20.88)²) ≈ 61.65 mm，已超过50.00 mm的硬约束。虽然几何间隙、热控、结构和电源指标均良好（\n解决方案: 在保持主体布局稳定的前提下，对高质心敏感度组件进行局部重定位，并同步激活/验证热模型\n效果: 失败\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 8,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K276",
+    "category": "case",
+    "title": "迭代9案例: 问题诊断：当前质心偏移的合成值为 sqrt(48.62² +",
+    "content": "问题: 问题诊断：当前质心偏移的合成值为 sqrt(48.62² + 31.65² + (-20.88)²) ≈ 61.65 mm，已超过50.00 mm的硬约束。虽然几何间隙、热控、结构和电源指标均满足要求\n解决方案: 基于质心敏感度分析，微调关键组件位置以降低质心偏移，同时验证热仿真模型有效性\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 9,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K277",
+    "category": "case",
+    "title": "迭代10案例: 问题诊断：当前质心偏移的欧氏范数为59.12 mm（计算自[",
+    "content": "问题: 问题诊断：当前质心偏移的欧氏范数为59.12 mm（计算自[45.36, 31.65, -20.88]），超过50 mm阈值，构成重要约束违反。几何间隙、热控、结构、电源等其他指标均良好，说明系统功能\n解决方案: 基于质心敏感度分析，对高贡献组件进行局部位置微调，降低整体质心偏移\n效果: 失败\n指标改进: {'max_temp': -0.0009702012515617753}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 10,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": -0.0009702012515617753
+      }
+    }
+  },
+  {
+    "item_id": "K278",
+    "category": "case",
+    "title": "迭代11案例: 问题诊断：当前质心偏移总幅值为59.12 mm（分量[45.",
+    "content": "问题: 问题诊断：当前质心偏移总幅值为59.12 mm（分量[45.36, 31.65, -20.88]），已超过50.00 mm的硬约束。虽然几何、热控、结构、电源等指标均满足要求，但姿态控制系统对质心位置\n解决方案: 在保持大部分布局不变的前提下，识别并重定位对质心贡献最大的1-2个组件，以降低整体质心偏移\n效果: 失败\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 11,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K279",
+    "category": "case",
+    "title": "迭代12案例: 问题诊断：当前质心偏移总量为59.12 mm（计算自[45.",
+    "content": "问题: 问题诊断：当前质心偏移总量为59.12 mm（计算自[45.36, 31.65, -20.88]），已超过50.00 mm的硬约束。虽然几何间隙、热控、结构和电源指标均满足要求，但姿态控制系统对质心位\n解决方案: 基于质心敏感度分析，选择性重定位高影响力组件，同时保持热控等良好性能\n效果: 失败\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 12,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K280",
+    "category": "case",
+    "title": "迭代13案例: 问题诊断：当前质心偏移为59.12 mm（超过50.0 mm",
+    "content": "问题: 问题诊断：当前质心偏移为59.12 mm（超过50.0 mm阈值），主要由X和Y分量主导（45.36, 31.65）。热控、结构、电源指标均良好，说明系统功能正常，但姿态控制风险升高。\n\n策略选择：采\n解决方案: 基于质心敏感度分析，微调1-2个关键组件位置以降低质心偏移\n效果: 成功\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 13,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K281",
+    "category": "case",
+    "title": "迭代14案例: 问题诊断：当前质心偏移总量为59.12 mm（计算自[45.",
+    "content": "问题: 问题诊断：当前质心偏移总量为59.12 mm（计算自[45.36, 31.65, -20.88]），已超过50.00 mm的硬约束，主要由X和Y方向偏移主导。热、结构、电源指标均良好，说明系统功能正常\n解决方案: 基于质心敏感度分析，微调关键组件位置以降低整体质心偏移\n效果: 成功\n指标改进: {'max_temp': -1.1368683772161603e-13}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 14,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": -1.1368683772161603e-13
+      }
+    }
+  },
+  {
+    "item_id": "K282",
+    "category": "case",
+    "title": "迭代15案例: 问题诊断：当前质心偏移合量为59.12 mm，已超过50.0",
+    "content": "问题: 问题诊断：当前质心偏移合量为59.12 mm，已超过50.00 mm的硬约束阈值，其中X分量45.36 mm是主要贡献项。几何布局虽满足最小间隙（5.00 mm），但组件分布明显偏向+X方向。热控、结\n解决方案: 基于质心敏感度分析，微调高影响力组件位置以降低质心偏移\n效果: 成功\n指标改进: {'max_temp': 2.124678132986446e-06}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 15,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": 2.124678132986446e-06
+      }
+    }
+  },
+  {
+    "item_id": "K283",
+    "category": "case",
+    "title": "迭代16案例: 问题诊断：当前质心偏移合量为57.96 mm，已超过50.0",
+    "content": "问题: 问题诊断：当前质心偏移合量为57.96 mm，已超过50.00 mm的硬约束阈值，主要由X（43.84 mm）和Y（31.65 mm）方向偏移主导。热控、结构、电源指标均表现优异（温度接近0°C、应力\n解决方案: 基于质心敏感度分析，对1-2个高贡献组件进行微调以降低质心偏移\n效果: 成功\n指标改进: {'max_temp': -0.0012380856219920133}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 16,
+      "success": true,
+      "metrics_improvement": {
+        "max_temp": -0.0012380856219920133
+      }
+    }
+  },
+  {
+    "item_id": "K284",
+    "category": "case",
+    "title": "迭代17案例: 问题诊断：当前质心偏移合量为57.96 mm，已超过50.0",
+    "content": "问题: 问题诊断：当前质心偏移合量为57.96 mm，已超过50.00 mm的硬约束。虽然各分量（X:43.84, Y:31.65, Z:-20.88）均未单独超标，但其矢量和超出限制，表明整体质量分布偏向某\n解决方案: 在保持整体布局稳定的前提下，对质心敏感的重型组件进行定向微调，以降低质心偏移\n效果: 失败\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 17,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
+  },
+  {
+    "item_id": "K285",
+    "category": "case",
+    "title": "迭代18案例: 问题诊断：当前质心偏移模长为57.96 mm，已超过50.0",
+    "content": "问题: 问题诊断：当前质心偏移模长为57.96 mm，已超过50.00 mm的硬约束。虽然各分量（X:43.84, Y:31.65, Z:-20.88）尚未极端失衡，但整体偏移显著，可能影响姿态控制精度和燃料\n解决方案: 在保留当前良好热-结构-电源布局的前提下，对质心敏感组件进行局部重定位，以降低整体质心偏移\n效果: 失败\n指标改进: {'max_temp': 0.0007605591892456687}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 18,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 0.0007605591892456687
+      }
+    }
+  },
+  {
+    "item_id": "K286",
+    "category": "case",
+    "title": "迭代19案例: 问题诊断：当前设计中质心偏移量为57.96 mm（超出50.",
+    "content": "问题: 问题诊断：当前设计中质心偏移量为57.96 mm（超出50.00 mm阈值），主要由X=43.84 mm和Y=31.65 mm分量主导，说明质量分布整体偏向+X和+Y方向。热控、结构、电源指标均表现优\n解决方案: 在保持热/结构/电源性能的前提下，对高质心敏感度组件进行定向微调，降低质心偏移\n效果: 失败\n指标改进: {'max_temp': 5.684341886080802e-14}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 19,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 5.684341886080802e-14
+      }
+    }
+  },
+  {
+    "item_id": "K287",
+    "category": "case",
+    "title": "迭代20案例: 问题诊断：当前质心偏移合量为57.96 mm，已超过50.0",
+    "content": "问题: 问题诊断：当前质心偏移合量为57.96 mm，已超过50.00 mm阈值，主要由X（43.84 mm）和Y（31.65 mm）分量主导。热、结构、电源指标均良好，说明当前布局在功能上可行，但质量分布不\n解决方案: 基于质心敏感度分析，对高影响力组件进行微调以降低质心偏移，同时验证热模型有效性\n效果: 失败\n指标改进: {'max_temp': 5.684341886080802e-14}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 20,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 5.684341886080802e-14
+      }
+    }
+  },
+  {
+    "item_id": "K288",
+    "category": "case",
+    "title": "迭代21案例: 问题诊断：当前质心偏移为57.96 mm（计算自[43.84",
+    "content": "问题: 问题诊断：当前质心偏移为57.96 mm（计算自[43.84, 31.65, -20.88]），已超过50.00 mm的硬约束。虽然几何间隙、热控、结构、电源等指标均满足要求，但姿态控制系统对质心位置\n解决方案: 基于质心敏感度分析，对关键组件进行微调以降低质心偏移\n效果: 失败\n指标改进: {'max_temp': 0.0}",
+    "relevance_score": 0.0,
+    "metadata": {
+      "iteration": 21,
+      "success": false,
+      "metrics_improvement": {
+        "max_temp": 0.0
+      }
+    }
   }
 ]

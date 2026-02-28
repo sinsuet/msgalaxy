@@ -15,7 +15,7 @@
       "material": "aluminum",
       "thermal_conductivity": 200.0,
       "max_temp": 85.0,
-      "notes": "极重载荷，故意制造严重质心偏移，预期触发 ADD_BRACKET 或大跨度 MOVE"
+      "notes": "L2进阶级：极重载荷，制造质心偏移，触发 ADD_BRACKET 或大跨度 MOVE"
     },
     {
       "id": "transmitter_hot",
@@ -32,7 +32,7 @@
       "material": "aluminum",
       "thermal_conductivity": 200.0,
       "max_temp": 85.0,
-      "notes": "体积极小功耗极高的局部热点，预期触发 ADD_HEATSINK、MODIFY_COATING、ALIGN"
+      "notes": "L2进阶级：体积极小功耗极高的局部热点，触发 ADD_HEATSINK、MODIFY_COATING"
     },
     {
       "id": "reaction_wheel",
@@ -49,7 +49,7 @@
       "material": "aluminum",
       "thermal_conductivity": 200.0,
       "max_temp": 85.0,
-      "notes": "高密度配重块，预期触发 CHANGE_ENVELOPE（圆柱体）并配合 MOVE 平衡质心"
+      "notes": "L2进阶级：高密度配重块，触发 CHANGE_ENVELOPE（圆柱体）并配合 MOVE 平衡质心"
     }
   ],
   "envelope": {

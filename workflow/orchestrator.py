@@ -10,9 +10,12 @@ Workflow Orchestrator: 主工作流编排器
 
 import os
 import re
+import json
+import time
 from typing import Optional, Dict, Any
 from pathlib import Path
 import yaml
+import numpy as np
 from dotenv import load_dotenv
 
 # 加载.env文件
@@ -24,9 +27,17 @@ from core.exceptions import SatelliteDesignError
 
 from geometry.layout_engine import LayoutEngine
 from simulation.base import SimulationDriver
-from simulation.matlab_driver import MatlabDriver
 from simulation.comsol_driver import ComsolDriver
-from simulation.physics_engine import SimplifiedPhysicsEngine
+
+try:
+    from simulation.matlab_driver import MatlabDriver
+except ImportError:
+    MatlabDriver = None
+
+try:
+    from simulation.physics_engine import SimplifiedPhysicsEngine
+except ImportError:
+    SimplifiedPhysicsEngine = None
 
 from optimization.meta_reasoner import MetaReasoner
 from optimization.agents import GeometryAgent, ThermalAgent, StructuralAgent, PowerAgent
@@ -53,6 +64,10 @@ class WorkflowOrchestrator:
             config_path: 配置文件路径
         """
         self.config = self._load_config(config_path)
+        self.default_constraints = self._normalize_constraints(
+            self.config.get("simulation", {}).get("constraints", {})
+        )
+        self.runtime_constraints = dict(self.default_constraints)
 
         # 初始化日志
         self.logger = ExperimentLogger(
@@ -92,6 +107,96 @@ class WorkflowOrchestrator:
         else:
             return obj
 
+    def _normalize_constraints(self, raw_constraints: Optional[Dict[str, Any]]) -> Dict[str, float]:
+        """标准化约束配置（统一键名与默认值）"""
+        raw_constraints = raw_constraints or {}
+        return {
+            "max_temp_c": float(raw_constraints.get("max_temp_c", 60.0)),
+            "min_clearance_mm": float(raw_constraints.get("min_clearance_mm", 3.0)),
+            "max_cg_offset_mm": float(raw_constraints.get("max_cg_offset_mm", 20.0)),
+            "min_safety_factor": float(raw_constraints.get("min_safety_factor", 2.0)),
+        }
+
+    def _extract_bom_overrides(self, bom_file: str) -> tuple[Dict[str, float], Dict[str, Dict[str, Any]]]:
+        """
+        从 BOM 文件中提取约束覆盖与组件扩展热学属性。
+
+        Returns:
+            (constraints_override, component_props_by_id)
+        """
+        path = Path(bom_file)
+        if not path.exists():
+            return {}, {}
+
+        if path.suffix.lower() not in {".json", ".yaml", ".yml"}:
+            return {}, {}
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                if path.suffix.lower() == ".json":
+                    raw = json.load(f)
+                else:
+                    raw = yaml.safe_load(f)
+        except Exception as e:
+            self.logger.logger.warning(f"Failed to parse BOM overrides from {bom_file}: {e}")
+            return {}, {}
+
+        if not isinstance(raw, dict):
+            return {}, {}
+
+        constraint_override = {}
+        raw_constraints = raw.get("constraints", {})
+        if isinstance(raw_constraints, dict):
+            if "max_temperature" in raw_constraints:
+                constraint_override["max_temp_c"] = float(raw_constraints["max_temperature"])
+            if "min_clearance" in raw_constraints:
+                constraint_override["min_clearance_mm"] = float(raw_constraints["min_clearance"])
+            if "max_cg_offset" in raw_constraints:
+                constraint_override["max_cg_offset_mm"] = float(raw_constraints["max_cg_offset"])
+
+        component_props_by_id: Dict[str, Dict[str, Any]] = {}
+        items = raw.get("components", [])
+        if isinstance(items, list):
+            quantity_map: Dict[str, int] = {}
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                comp_id = item.get("id")
+                if not comp_id:
+                    continue
+                quantity_map[comp_id] = int(item.get("quantity", 1))
+
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                base_id = item.get("id")
+                if not base_id:
+                    continue
+                quantity = int(item.get("quantity", 1))
+                thermal_contacts = item.get("thermal_contacts", {})
+                if not isinstance(thermal_contacts, dict):
+                    thermal_contacts = {}
+
+                for idx in range(1, quantity + 1):
+                    comp_id = base_id if quantity == 1 else f"{base_id}_{idx:02d}"
+                    mapped_contacts = {}
+                    for target_id_raw, conductance in thermal_contacts.items():
+                        target_id = str(target_id_raw)
+                        target_qty = quantity_map.get(target_id)
+                        if target_qty is not None and target_qty > 1:
+                            mapped_idx = min(idx, target_qty)
+                            target_id = f"{target_id}_{mapped_idx:02d}"
+                        mapped_contacts[target_id] = float(conductance)
+
+                    component_props_by_id[comp_id] = {
+                        "thermal_contacts": mapped_contacts,
+                        "emissivity": item.get("emissivity"),
+                        "absorptivity": item.get("absorptivity"),
+                        "coating_type": item.get("coating_type"),
+                    }
+
+        return constraint_override, component_props_by_id
+
     def _initialize_modules(self):
         """初始化所有模块"""
         # 1. 几何模块
@@ -103,6 +208,8 @@ class WorkflowOrchestrator:
         sim_backend = sim_config.get("backend", "simplified")
 
         if sim_backend == "matlab":
+            if MatlabDriver is None:
+                raise SatelliteDesignError("simulation.matlab_driver 不可用，无法使用 matlab backend")
             self.sim_driver = MatlabDriver(
                 matlab_path=sim_config.get("matlab_path"),
                 script_path=sim_config.get("matlab_script")
@@ -110,6 +217,8 @@ class WorkflowOrchestrator:
         elif sim_backend == "comsol":
             self.sim_driver = ComsolDriver(config=sim_config)
         else:
+            if SimplifiedPhysicsEngine is None:
+                raise SatelliteDesignError("simulation.physics_engine 不可用，无法使用 simplified backend")
             self.sim_driver = SimplifiedPhysicsEngine(config=sim_config)
 
         # 3. LLM模块
@@ -172,9 +281,13 @@ class WorkflowOrchestrator:
         )
 
         # RAG System
+        knowledge_config = self.config.get("knowledge", {})
         self.rag_system = RAGSystem(
             api_key=api_key,
-            knowledge_base_path=self.config.get("knowledge", {}).get("base_path", "data/knowledge_base"),
+            knowledge_base_path=knowledge_config.get("base_path", "data/knowledge_base"),
+            embedding_model=knowledge_config.get("embedding_model"),
+            base_url=base_url,
+            enable_semantic=bool(knowledge_config.get("enable_semantic", True)),
             logger=self.logger
         )
 
@@ -203,6 +316,14 @@ class WorkflowOrchestrator:
             最终设计状态
         """
         self.logger.logger.info(f"Starting optimization (max_iter={max_iterations})")
+        self.runtime_constraints = dict(self.default_constraints)
+        self._last_trace_metrics = None  # 用于计算迭代增量
+        self.logger.logger.info(
+            "Runtime constraints initialized: "
+            f"T<= {self.runtime_constraints['max_temp_c']:.2f}°C, "
+            f"clearance>= {self.runtime_constraints['min_clearance_mm']:.2f}mm, "
+            f"CG<= {self.runtime_constraints['max_cg_offset_mm']:.2f}mm"
+        )
 
         # 1. 初始化设计状态
         current_state = self._initialize_design_state(bom_file)
@@ -221,7 +342,8 @@ class WorkflowOrchestrator:
                 current_metrics, violations = self._evaluate_design(current_state, iteration)
 
                 # Phase 4: 计算惩罚分并记录到状态池
-                penalty_score = self._calculate_penalty_score(current_metrics, violations)
+                penalty_breakdown = self._calculate_penalty_breakdown(current_metrics, violations)
+                penalty_score = penalty_breakdown["total"]
                 eval_result = EvaluationResult(
                     state_id=current_state.state_id,
                     iteration=iteration,
@@ -239,21 +361,64 @@ class WorkflowOrchestrator:
                 self.state_history[current_state.state_id] = (current_state.copy(deep=True), eval_result)
                 self.logger.logger.info(f"  状态记录: {current_state.state_id}, 惩罚分={penalty_score:.2f}")
 
+                curr_max_temp = float(current_metrics["thermal"].max_temp)
+                curr_min_clearance = float(current_metrics["geometry"].min_clearance)
+                curr_cg_offset = float(current_metrics["geometry"].cg_offset_magnitude)
+                curr_num_collisions = int(current_metrics["geometry"].num_collisions)
+                curr_solver_cost = float(current_metrics.get("diagnostics", {}).get("solver_cost", 0.0))
+
+                prev_metrics = self._last_trace_metrics
+                if prev_metrics is None:
+                    delta_penalty = 0.0
+                    delta_cg_offset = 0.0
+                    delta_max_temp = 0.0
+                    delta_min_clearance = 0.0
+                else:
+                    delta_penalty = penalty_score - prev_metrics["penalty_score"]
+                    delta_cg_offset = curr_cg_offset - prev_metrics["cg_offset"]
+                    delta_max_temp = curr_max_temp - prev_metrics["max_temp"]
+                    delta_min_clearance = curr_min_clearance - prev_metrics["min_clearance"]
+
+                current_snapshot = {
+                    "penalty_score": penalty_score,
+                    "cg_offset": curr_cg_offset,
+                    "max_temp": curr_max_temp,
+                    "min_clearance": curr_min_clearance,
+                    "num_violations": len(violations),
+                }
+                effectiveness_score = self._compute_effectiveness_score(prev_metrics, current_snapshot)
+
                 # 记录迭代数据
                 self.logger.log_metrics({
                     'iteration': iteration,
                     'timestamp': __import__('datetime').datetime.now().isoformat(),
-                    'max_temp': current_metrics['thermal'].max_temp,
-                    'min_clearance': current_metrics['geometry'].min_clearance,
+                    'max_temp': curr_max_temp,
+                    'avg_temp': float(current_metrics['thermal'].avg_temp),
+                    'min_temp': float(current_metrics['thermal'].min_temp),
+                    'temp_gradient': float(current_metrics['thermal'].temp_gradient),
+                    'min_clearance': curr_min_clearance,
+                    'cg_offset': curr_cg_offset,
+                    'num_collisions': curr_num_collisions,
                     'total_mass': sum(c.mass for c in current_state.components),
                     'total_power': current_metrics['power'].total_power,
                     'num_violations': len(violations),
                     'is_safe': len(violations) == 0,
-                    'solver_cost': 0,
+                    'solver_cost': curr_solver_cost,
                     'llm_tokens': 0,
                     'penalty_score': penalty_score,  # Phase 4: 记录惩罚分
+                    'penalty_violation': penalty_breakdown["violation"],
+                    'penalty_temp': penalty_breakdown["temp"],
+                    'penalty_clearance': penalty_breakdown["clearance"],
+                    'penalty_cg': penalty_breakdown["cg"],
+                    'penalty_collision': penalty_breakdown["collision"],
+                    'delta_penalty': delta_penalty,
+                    'delta_cg_offset': delta_cg_offset,
+                    'delta_max_temp': delta_max_temp,
+                    'delta_min_clearance': delta_min_clearance,
+                    'effectiveness_score': effectiveness_score,
                     'state_id': current_state.state_id  # Phase 4: 记录状态ID
                 })
+                self._last_trace_metrics = current_snapshot
 
                 # 保存设计状态（用于3D可视化）
                 self.logger.save_design_state(iteration, current_state.dict())
@@ -304,6 +469,7 @@ class WorkflowOrchestrator:
 
                 # 2.4 Meta-Reasoner生成战略计划
                 strategic_plan = self.meta_reasoner.generate_strategic_plan(context)
+                self._inject_runtime_constraints_to_plan(strategic_plan)
                 self.logger.logger.info(f"Strategic plan: {strategic_plan.strategy_type}")
 
                 # Phase 4: 保存 StrategicPlan 到 Trace
@@ -321,6 +487,43 @@ class WorkflowOrchestrator:
 
                 # 2.6 执行优化计划
                 new_state = self._execute_plan(execution_plan, current_state)
+                execution_meta = (
+                    (new_state.metadata or {}).get("execution_meta", {})
+                    if hasattr(new_state, "metadata")
+                    else {}
+                )
+
+                # no-op 直接拒绝：避免“无变化状态”重复触发高成本仿真
+                if not bool(execution_meta.get("state_changed", True)):
+                    self.logger.logger.warning(
+                        "✗ New state rejected: 执行计划未产生几何/属性变化，跳过本轮仿真"
+                    )
+                    failure_desc = (
+                        f"迭代{iteration}: 计划无有效变更 "
+                        f"(执行={execution_meta.get('executed_actions', 0)}, "
+                        f"生效={execution_meta.get('effective_actions', 0)})"
+                    )
+                    self.recent_failures.append(failure_desc)
+                    if len(self.recent_failures) > 3:
+                        self.recent_failures = self.recent_failures[-3:]
+                    continue
+
+                # 候选态几何门控：不通过则直接拒绝，避免无效 COMSOL 调用
+                candidate_feasible, cand_clearance, cand_collisions = self._is_geometry_feasible(new_state)
+                if not candidate_feasible:
+                    self.logger.logger.warning(
+                        "✗ New state rejected before simulation: "
+                        f"几何不可行 (min_clearance={cand_clearance:.2f}mm, "
+                        f"collisions={cand_collisions})"
+                    )
+                    failure_desc = (
+                        f"迭代{iteration}: 候选几何不可行 "
+                        f"(min_clearance={cand_clearance:.2f}mm, collisions={cand_collisions})"
+                    )
+                    self.recent_failures.append(failure_desc)
+                    if len(self.recent_failures) > 3:
+                        self.recent_failures = self.recent_failures[-3:]
+                    continue
 
                 # Phase 4: 为新状态设置版本树信息
                 new_state.state_id = f"state_iter_{iteration:02d}_b"
@@ -374,11 +577,22 @@ class WorkflowOrchestrator:
 
     def _initialize_design_state(self, bom_file: Optional[str]) -> DesignState:
         """初始化设计状态"""
+        component_props_by_id: Dict[str, Dict[str, Any]] = {}
         if bom_file:
             # 从BOM文件加载
             from core.bom_parser import BOMParser
 
             self.logger.logger.info(f"Loading BOM from: {bom_file}")
+            constraint_override, component_props_by_id = self._extract_bom_overrides(bom_file)
+            if constraint_override:
+                self.runtime_constraints.update(constraint_override)
+                self.logger.logger.info(
+                    "BOM constraints override applied: "
+                    f"T<= {self.runtime_constraints['max_temp_c']:.2f}°C, "
+                    f"clearance>= {self.runtime_constraints['min_clearance_mm']:.2f}mm, "
+                    f"CG<= {self.runtime_constraints['max_cg_offset_mm']:.2f}mm"
+                )
+
             bom_components = BOMParser.parse(bom_file)
 
             # 验证BOM
@@ -412,21 +626,47 @@ class WorkflowOrchestrator:
             from geometry.layout_engine import LayoutEngine
             self.layout_engine = LayoutEngine(config=geom_config)
 
+        # 设置随机种子以确保布局可重复
+        import random
+        import numpy as np
+        random.seed(42)
+        np.random.seed(42)
+
         # 使用默认布局
         packing_result = self.layout_engine.generate_layout()
 
         # 转换为DesignState
         components = []
         for part in packing_result.placed:
-            pos = part.get_actual_position()
+            pos_min = part.get_actual_position()
+            dims = np.array([float(part.dims[0]), float(part.dims[1]), float(part.dims[2])], dtype=float)
+            # LayoutEngine 输出的是最小角坐标；系统其他模块统一使用中心点坐标。
+            center_pos = pos_min + dims / 2.0
+            comp_props = component_props_by_id.get(part.id, {})
             comp_geom = ComponentGeometry(
                 id=part.id,
-                position=Vector3D(x=float(pos[0]), y=float(pos[1]), z=float(pos[2])),
+                position=Vector3D(
+                    x=float(center_pos[0]),
+                    y=float(center_pos[1]),
+                    z=float(center_pos[2])
+                ),
                 dimensions=Vector3D(x=float(part.dims[0]), y=float(part.dims[1]), z=float(part.dims[2])),
                 rotation=Vector3D(x=0, y=0, z=0),
                 mass=part.mass,
                 power=part.power,
-                category=part.category if hasattr(part, 'category') else 'unknown'
+                category=part.category if hasattr(part, 'category') else 'unknown',
+                thermal_contacts=comp_props.get("thermal_contacts", {}) or {},
+                emissivity=(
+                    float(comp_props.get("emissivity"))
+                    if comp_props.get("emissivity") is not None
+                    else 0.8
+                ),
+                absorptivity=(
+                    float(comp_props.get("absorptivity"))
+                    if comp_props.get("absorptivity") is not None
+                    else 0.3
+                ),
+                coating_type=comp_props.get("coating_type") or "default",
             )
             components.append(comp_geom)
 
@@ -473,10 +713,10 @@ class WorkflowOrchestrator:
         # 2. 仿真评估
         from core.protocol import SimulationRequest, SimulationType
 
-        # 2.1 如果使用动态COMSOL模式，先导出STEP文件
+        # 2.1 COMSOL 后端统一使用动态导入模式，先导出 STEP 文件
         sim_params = {}
         sim_config = self.config.get("simulation", {})
-        if sim_config.get("mode") == "dynamic" and sim_config.get("backend") == "comsol":
+        if sim_config.get("backend") == "comsol":
             step_file = self._export_design_to_step(design_state, iteration)
             sim_params["step_file"] = str(step_file)
             self.logger.logger.info(f"  导出STEP文件用于动态仿真: {step_file}")
@@ -485,12 +725,14 @@ class WorkflowOrchestrator:
         sim_params["experiment_dir"] = str(self.logger.run_dir)
 
         sim_request = SimulationRequest(
-            sim_type=SimulationType.SIMPLIFIED,
+            sim_type=SimulationType.COMSOL,
             design_state=design_state,
             parameters=sim_params
         )
 
+        sim_start = time.perf_counter()
         sim_result = self.sim_driver.run_simulation(sim_request)
+        solver_cost = time.perf_counter() - sim_start
 
         thermal_metrics = ThermalMetrics(
             max_temp=sim_result.metrics.get("max_temp", 0),
@@ -528,7 +770,10 @@ class WorkflowOrchestrator:
             "geometry": geometry_metrics,
             "thermal": thermal_metrics,
             "structural": structural_metrics,
-            "power": power_metrics
+            "power": power_metrics,
+            "diagnostics": {
+                "solver_cost": solver_cost
+            }
         }
 
         return metrics, violations
@@ -577,14 +822,113 @@ class WorkflowOrchestrator:
         # 计算转动惯量
         moi = calculate_moment_of_inertia(design_state)
 
+        min_clearance, num_collisions = self._calculate_pairwise_clearance(design_state)
+
         return GeometryMetrics(
-            min_clearance=5.0,  # TODO: 实现真实的间隙计算
+            min_clearance=min_clearance,
             com_offset=com_offset_vector,
             cg_offset_magnitude=cg_offset,
             moment_of_inertia=list(moi),
             packing_efficiency=75.0,  # TODO: 实现真实的装填率计算
-            num_collisions=0  # TODO: 实现碰撞检测
+            num_collisions=num_collisions
         )
+
+    def _calculate_pairwise_clearance(self, design_state: DesignState) -> tuple[float, int]:
+        """
+        计算组件两两间最小净间隙与碰撞对数（基于中心点坐标 + 轴对齐包围盒）。
+
+        Returns:
+            (min_clearance_mm, num_collisions)
+        """
+        if len(design_state.components) < 2:
+            return float("inf"), 0
+
+        min_signed_clearance = float("inf")
+        collision_pairs = 0
+
+        comps = design_state.components
+        for i in range(len(comps)):
+            a = comps[i]
+            ax, ay, az = a.position.x, a.position.y, a.position.z
+            ahx, ahy, ahz = a.dimensions.x / 2.0, a.dimensions.y / 2.0, a.dimensions.z / 2.0
+
+            for j in range(i + 1, len(comps)):
+                b = comps[j]
+                bx, by, bz = b.position.x, b.position.y, b.position.z
+                bhx, bhy, bhz = b.dimensions.x / 2.0, b.dimensions.y / 2.0, b.dimensions.z / 2.0
+
+                sep_x = abs(ax - bx) - (ahx + bhx)
+                sep_y = abs(ay - by) - (ahy + bhy)
+                sep_z = abs(az - bz) - (ahz + bhz)
+
+                if sep_x <= 0 and sep_y <= 0 and sep_z <= 0:
+                    # 重叠：将“最小间隙”记为负值，幅度为最浅穿透深度。
+                    penetration = min(-sep_x, -sep_y, -sep_z)
+                    signed_clearance = -penetration
+                    collision_pairs += 1
+                else:
+                    gap_x = max(sep_x, 0.0)
+                    gap_y = max(sep_y, 0.0)
+                    gap_z = max(sep_z, 0.0)
+                    signed_clearance = float((gap_x ** 2 + gap_y ** 2 + gap_z ** 2) ** 0.5)
+
+                min_signed_clearance = min(min_signed_clearance, signed_clearance)
+
+        return min_signed_clearance, collision_pairs
+
+    def _is_geometry_feasible(self, design_state: DesignState) -> tuple[bool, float, int]:
+        """
+        几何可行性快速判定（用于仿真前门控与动作缩放）。
+
+        判据：
+        - 无碰撞对（num_collisions == 0）
+        - 最小净间隙不低于运行时阈值
+        """
+        min_clearance, num_collisions = self._calculate_pairwise_clearance(design_state)
+        min_clearance_limit = float(self.runtime_constraints.get("min_clearance_mm", 3.0))
+        feasible = num_collisions == 0 and min_clearance >= (min_clearance_limit - 1e-6)
+        return feasible, float(min_clearance), int(num_collisions)
+
+    def _state_fingerprint(self, design_state: DesignState) -> tuple:
+        """
+        生成设计状态指纹，用于检测 no-op / 零变化执行。
+        """
+        comp_fp = []
+        for comp in design_state.components:
+            thermal_contacts = tuple(
+                sorted(
+                    (str(k), round(float(v), 6))
+                    for k, v in (getattr(comp, "thermal_contacts", {}) or {}).items()
+                )
+            )
+            heatsink = tuple(
+                sorted((str(k), str(v)) for k, v in (getattr(comp, "heatsink", {}) or {}).items())
+            )
+            bracket = tuple(
+                sorted((str(k), str(v)) for k, v in (getattr(comp, "bracket", {}) or {}).items())
+            )
+            comp_fp.append(
+                (
+                    comp.id,
+                    round(float(comp.position.x), 6),
+                    round(float(comp.position.y), 6),
+                    round(float(comp.position.z), 6),
+                    round(float(comp.dimensions.x), 6),
+                    round(float(comp.dimensions.y), 6),
+                    round(float(comp.dimensions.z), 6),
+                    round(float(comp.rotation.x), 6),
+                    round(float(comp.rotation.y), 6),
+                    round(float(comp.rotation.z), 6),
+                    str(getattr(comp, "envelope_type", "box")),
+                    round(float(getattr(comp, "emissivity", 0.8)), 6),
+                    round(float(getattr(comp, "absorptivity", 0.3)), 6),
+                    str(getattr(comp, "coating_type", "default")),
+                    thermal_contacts,
+                    heatsink,
+                    bracket,
+                )
+            )
+        return tuple(sorted(comp_fp, key=lambda x: x[0]))
 
     def _check_violations(
         self,
@@ -595,9 +939,13 @@ class WorkflowOrchestrator:
     ) -> list[ViolationItem]:
         """检查约束违反"""
         violations = []
+        min_clearance_limit = self.runtime_constraints.get("min_clearance_mm", 3.0)
+        max_cg_offset_limit = self.runtime_constraints.get("max_cg_offset_mm", 20.0)
+        max_temp_limit = self.runtime_constraints.get("max_temp_c", 60.0)
+        min_safety_factor = self.runtime_constraints.get("min_safety_factor", 2.0)
 
         # 几何约束
-        if geometry_metrics.min_clearance < 3.0:
+        if geometry_metrics.min_clearance < min_clearance_limit:
             violations.append(ViolationItem(
                 violation_id=f"V_GEOM_{len(violations)}",
                 violation_type="geometry",
@@ -605,11 +953,22 @@ class WorkflowOrchestrator:
                 description="最小间隙不足",
                 affected_components=[],
                 metric_value=geometry_metrics.min_clearance,
-                threshold=3.0
+                threshold=min_clearance_limit
+            ))
+
+        if geometry_metrics.num_collisions > 0:
+            violations.append(ViolationItem(
+                violation_id=f"V_COLLISION_{len(violations)}",
+                violation_type="geometry",
+                severity="critical",
+                description="存在组件几何重叠",
+                affected_components=[],
+                metric_value=float(geometry_metrics.num_collisions),
+                threshold=0.0
             ))
 
         # 质心偏移约束
-        if geometry_metrics.cg_offset_magnitude > 20.0:
+        if geometry_metrics.cg_offset_magnitude > max_cg_offset_limit:
             violations.append(ViolationItem(
                 violation_id=f"V_CG_{len(violations)}",
                 violation_type="geometry",
@@ -617,11 +976,11 @@ class WorkflowOrchestrator:
                 description="质心偏移过大，影响姿态控制",
                 affected_components=[],
                 metric_value=geometry_metrics.cg_offset_magnitude,
-                threshold=20.0
+                threshold=max_cg_offset_limit
             ))
 
         # 热控约束
-        if thermal_metrics.max_temp > 60.0:
+        if thermal_metrics.max_temp > max_temp_limit:
             violations.append(ViolationItem(
                 violation_id=f"V_THERM_{len(violations)}",
                 violation_type="thermal",
@@ -629,11 +988,11 @@ class WorkflowOrchestrator:
                 description="温度超标",
                 affected_components=[],
                 metric_value=thermal_metrics.max_temp,
-                threshold=60.0
+                threshold=max_temp_limit
             ))
 
         # 结构约束
-        if structural_metrics.safety_factor < 2.0:
+        if structural_metrics.safety_factor < min_safety_factor:
             violations.append(ViolationItem(
                 violation_id=f"V_STRUCT_{len(violations)}",
                 violation_type="structural",
@@ -641,7 +1000,7 @@ class WorkflowOrchestrator:
                 description="安全系数不足",
                 affected_components=[],
                 metric_value=structural_metrics.safety_factor,
-                threshold=2.0
+                threshold=min_safety_factor
             ))
 
         return violations
@@ -662,7 +1021,12 @@ class WorkflowOrchestrator:
         # RAG检索相关知识
         context_pack = GlobalContextPack(
             iteration=iteration,
-            design_state_summary=f"设计包含{len(design_state.components)}个组件",
+            design_state_summary=(
+                f"设计包含{len(design_state.components)}个组件。"
+                f"当前硬约束: 温度≤{self.runtime_constraints.get('max_temp_c', 60.0):.2f}°C, "
+                f"最小间隙≥{self.runtime_constraints.get('min_clearance_mm', 3.0):.2f}mm, "
+                f"质心偏移≤{self.runtime_constraints.get('max_cg_offset_mm', 20.0):.2f}mm"
+            ),
             geometry_metrics=metrics["geometry"],
             thermal_metrics=metrics["thermal"],
             structural_metrics=metrics["structural"],
@@ -688,6 +1052,37 @@ class WorkflowOrchestrator:
 
         return context_pack
 
+    def _inject_runtime_constraints_to_plan(self, strategic_plan) -> None:
+        """
+        将运行时硬约束注入到 StrategicPlan 的任务中，避免 Agent 使用过期阈值。
+        """
+        if not strategic_plan or not getattr(strategic_plan, "tasks", None):
+            return
+
+        limits = {
+            "max_temp_c": float(self.runtime_constraints.get("max_temp_c", 60.0)),
+            "min_clearance_mm": float(self.runtime_constraints.get("min_clearance_mm", 3.0)),
+            "max_cg_offset_mm": float(self.runtime_constraints.get("max_cg_offset_mm", 20.0)),
+            "min_safety_factor": float(self.runtime_constraints.get("min_safety_factor", 2.0)),
+        }
+        hard_constraint_text = (
+            "硬约束(必须满足): "
+            f"max_temp<= {limits['max_temp_c']:.2f}°C, "
+            f"min_clearance>= {limits['min_clearance_mm']:.2f}mm, "
+            f"cg_offset<= {limits['max_cg_offset_mm']:.2f}mm"
+        )
+
+        for task in strategic_plan.tasks:
+            if not isinstance(task.context, dict):
+                task.context = {}
+            task.context.setdefault("constraint_limits", limits.copy())
+            task.context.setdefault("max_temp_limit_c", limits["max_temp_c"])
+            task.context.setdefault("min_clearance_limit_mm", limits["min_clearance_mm"])
+            task.context.setdefault("max_cg_offset_limit_mm", limits["max_cg_offset_mm"])
+
+            if hard_constraint_text not in task.constraints:
+                task.constraints.append(hard_constraint_text)
+
     def _execute_plan(self, execution_plan, current_state: DesignState) -> DesignState:
         """
         执行优化计划
@@ -707,15 +1102,25 @@ class WorkflowOrchestrator:
             新的设计状态
         """
         import copy
-        from geometry.ffd import FFDDeformer
-        import numpy as np
 
         # 深拷贝当前状态
         new_state = copy.deepcopy(current_state)
+        start_fingerprint = self._state_fingerprint(current_state)
+        requested_targets = 0
+        executed_actions = 0
+        effective_actions = 0
 
         # 如果execution_plan为空，直接返回
         if not execution_plan:
             self.logger.logger.warning("执行计划为空")
+            new_state.metadata = dict(new_state.metadata or {})
+            new_state.metadata["execution_meta"] = {
+                "requested_actions": 0,
+                "requested_targets": 0,
+                "executed_actions": 0,
+                "effective_actions": 0,
+                "state_changed": False,
+            }
             return new_state
 
         # 收集所有需要执行的操作（来自 geometry_proposal 和 thermal_proposal）
@@ -735,6 +1140,14 @@ class WorkflowOrchestrator:
 
         if not all_actions:
             self.logger.logger.info("无操作需要执行")
+            new_state.metadata = dict(new_state.metadata or {})
+            new_state.metadata["execution_meta"] = {
+                "requested_actions": 0,
+                "requested_targets": 0,
+                "executed_actions": 0,
+                "effective_actions": 0,
+                "state_changed": False,
+            }
             return new_state
 
         self.logger.logger.info(f"  📋 总计 {len(all_actions)} 个操作待执行")
@@ -752,21 +1165,43 @@ class WorkflowOrchestrator:
                 # 如果是批量操作（target_components），对每个组件执行
                 if target_components and isinstance(target_components, list):
                     self.logger.logger.info(f"  执行批量操作: {op_type} on {len(target_components)} 个组件")
+                    requested_targets += len(target_components)
                     for target_comp_id in target_components:
-                        self._execute_single_action(
+                        changed = self._execute_single_action(
                             new_state, op_type, target_comp_id, parameters
                         )
+                        executed_actions += 1
+                        if changed:
+                            effective_actions += 1
                 elif component_id:
                     self.logger.logger.info(f"  执行操作: {op_type} on {component_id}")
-                    self._execute_single_action(
+                    requested_targets += 1
+                    changed = self._execute_single_action(
                         new_state, op_type, component_id, parameters
                     )
+                    executed_actions += 1
+                    if changed:
+                        effective_actions += 1
                 else:
                     self.logger.logger.warning(f"  操作 {op_type} 缺少目标组件，跳过")
 
             except Exception as e:
                 self.logger.logger.error(f"  执行操作失败: {e}", exc_info=True)
                 continue
+
+        state_changed = self._state_fingerprint(new_state) != start_fingerprint
+        new_state.metadata = dict(new_state.metadata or {})
+        new_state.metadata["execution_meta"] = {
+            "requested_actions": len(all_actions),
+            "requested_targets": requested_targets,
+            "executed_actions": executed_actions,
+            "effective_actions": effective_actions,
+            "state_changed": state_changed,
+        }
+        if not state_changed:
+            self.logger.logger.warning(
+                "  ⚠ 执行完成但状态未发生变化（no-op），后续将跳过候选态仿真评估"
+            )
 
         # 更新迭代次数
         new_state.iteration = current_state.iteration + 1
@@ -779,7 +1214,7 @@ class WorkflowOrchestrator:
         op_type: str,
         component_id: str,
         parameters: dict
-    ):
+    ) -> bool:
         """
         执行单个操作（内部方法）
 
@@ -801,7 +1236,7 @@ class WorkflowOrchestrator:
 
         if comp_idx is None:
             self.logger.logger.warning(f"    组件 {component_id} 未找到，跳过")
-            return
+            return False
 
         # 记录操作前的状态（强力日志追踪）
         old_pos = [
@@ -814,23 +1249,127 @@ class WorkflowOrchestrator:
             new_state.components[comp_idx].dimensions.y,
             new_state.components[comp_idx].dimensions.z
         ]
+        old_rot = [
+            new_state.components[comp_idx].rotation.x,
+            new_state.components[comp_idx].rotation.y,
+            new_state.components[comp_idx].rotation.z,
+        ]
+
+        def _component_fp(comp_obj) -> tuple:
+            thermal_contacts = tuple(
+                sorted(
+                    (str(k), round(float(v), 6))
+                    for k, v in (getattr(comp_obj, "thermal_contacts", {}) or {}).items()
+                )
+            )
+            heatsink = tuple(
+                sorted((str(k), str(v)) for k, v in (getattr(comp_obj, "heatsink", {}) or {}).items())
+            )
+            bracket = tuple(
+                sorted((str(k), str(v)) for k, v in (getattr(comp_obj, "bracket", {}) or {}).items())
+            )
+            return (
+                round(float(comp_obj.position.x), 6),
+                round(float(comp_obj.position.y), 6),
+                round(float(comp_obj.position.z), 6),
+                round(float(comp_obj.dimensions.x), 6),
+                round(float(comp_obj.dimensions.y), 6),
+                round(float(comp_obj.dimensions.z), 6),
+                round(float(comp_obj.rotation.x), 6),
+                round(float(comp_obj.rotation.y), 6),
+                round(float(comp_obj.rotation.z), 6),
+                str(getattr(comp_obj, "envelope_type", "box")),
+                round(float(getattr(comp_obj, "emissivity", 0.8)), 6),
+                round(float(getattr(comp_obj, "absorptivity", 0.3)), 6),
+                str(getattr(comp_obj, "coating_type", "default")),
+                thermal_contacts,
+                heatsink,
+                bracket,
+            )
+
+        old_comp_fp = _component_fp(new_state.components[comp_idx])
 
         # 执行不同类型的操作
         if op_type == "MOVE":
             # 移动组件
-            axis = parameters.get("axis", "X")
+            axis = str(parameters.get("axis", "X")).upper()
             move_range = parameters.get("range", [0, 0])
-            # 取范围中点作为移动距离
-            delta = (move_range[0] + move_range[1]) / 2.0
+            if isinstance(move_range, (list, tuple)) and len(move_range) >= 2:
+                delta = (float(move_range[0]) + float(move_range[1])) / 2.0
+            elif isinstance(move_range, (int, float)):
+                delta = float(move_range)
+            else:
+                delta = float(parameters.get("delta", 0.0))
 
+            if axis not in {"X", "Y", "Z"}:
+                self.logger.logger.warning(f"    MOVE 轴非法: {axis}，跳过")
+                return False
+
+            if abs(delta) < 1e-9:
+                self.logger.logger.info("    MOVE 位移为 0，跳过")
+                return False
+
+            # 自适应缩放：优先尝试全步长，不可行时逐级回退
+            # 目标：避免大步长 MOVE 把候选态直接推入碰撞/间隙违规区。
+            scales = [1.0, 0.5, 0.25, 0.1, 0.05]
+            clearance_limit = float(self.runtime_constraints.get("min_clearance_mm", 3.0))
+            comp_ref = new_state.components[comp_idx]
             if axis == "X":
-                new_state.components[comp_idx].position.x += delta
+                original_value = float(comp_ref.position.x)
             elif axis == "Y":
-                new_state.components[comp_idx].position.y += delta
-            elif axis == "Z":
-                new_state.components[comp_idx].position.z += delta
+                original_value = float(comp_ref.position.y)
+            else:
+                original_value = float(comp_ref.position.z)
 
-            self.logger.logger.info(f"    移动 {axis} 轴 {delta:.2f} mm")
+            accepted_scale = None
+            accepted_delta = 0.0
+            last_probe = None
+
+            for scale in scales:
+                candidate_delta = delta * scale
+                candidate_value = original_value + candidate_delta
+                if axis == "X":
+                    comp_ref.position.x = candidate_value
+                elif axis == "Y":
+                    comp_ref.position.y = candidate_value
+                else:
+                    comp_ref.position.z = candidate_value
+
+                min_clearance, num_collisions = self._calculate_pairwise_clearance(new_state)
+                last_probe = (scale, candidate_delta, min_clearance, num_collisions)
+                is_feasible = (
+                    num_collisions == 0 and
+                    min_clearance >= (clearance_limit - 1e-6)
+                )
+                if is_feasible:
+                    accepted_scale = scale
+                    accepted_delta = candidate_delta
+                    break
+
+            if accepted_scale is None:
+                # 全部步长不可行，回滚位置并标记 no-op
+                if axis == "X":
+                    comp_ref.position.x = original_value
+                elif axis == "Y":
+                    comp_ref.position.y = original_value
+                else:
+                    comp_ref.position.z = original_value
+
+                if last_probe:
+                    _, _, probe_clearance, probe_collisions = last_probe
+                    self.logger.logger.warning(
+                        "    ⚠ MOVE 被几何门控拒绝: 所有缩放步长均不可行 "
+                        f"(最后探测 min_clearance={probe_clearance:.2f}mm, "
+                        f"collisions={probe_collisions})"
+                    )
+                else:
+                    self.logger.logger.warning("    ⚠ MOVE 被几何门控拒绝: 未找到可行步长")
+                return False
+
+            self.logger.logger.info(
+                f"    MOVE 自适应应用: {axis} 轴 {accepted_delta:.2f} mm "
+                f"(原始 {delta:.2f} mm, scale={accepted_scale:.2f})"
+            )
 
         elif op_type == "ROTATE":
             # 旋转组件
@@ -943,7 +1482,10 @@ class WorkflowOrchestrator:
         elif op_type == "REPACK":
             # 重新装箱
             strategy = parameters.get("strategy", "greedy")
-            clearance = parameters.get("clearance", 20.0)
+            clearance = parameters.get(
+                "clearance",
+                self.config.get("geometry", {}).get("clearance_mm", 5.0)
+            )
 
             self.logger.logger.info(f"    重新装箱: strategy={strategy}, clearance={clearance}")
 
@@ -953,13 +1495,15 @@ class WorkflowOrchestrator:
 
             # 更新组件位置
             for part in packing_result.placed:
-                pos = part.get_actual_position()
+                pos_min = part.get_actual_position()
+                dims = np.array([float(part.dims[0]), float(part.dims[1]), float(part.dims[2])], dtype=float)
+                center_pos = pos_min + dims / 2.0
                 for idx, comp in enumerate(new_state.components):
                     if comp.id == part.id:
                         new_state.components[idx].position = Vector3D(
-                            x=float(pos[0]),
-                            y=float(pos[1]),
-                            z=float(pos[2])
+                            x=float(center_pos[0]),
+                            y=float(center_pos[1]),
+                            z=float(center_pos[2])
                         )
                         break
 
@@ -1114,6 +1658,11 @@ class WorkflowOrchestrator:
             new_state.components[comp_idx].dimensions.y,
             new_state.components[comp_idx].dimensions.z
         ]
+        new_rot = [
+            new_state.components[comp_idx].rotation.x,
+            new_state.components[comp_idx].rotation.y,
+            new_state.components[comp_idx].rotation.z,
+        ]
         if old_pos != new_pos:
             self.logger.logger.info(
                 f"    📍 {component_id} 坐标变化: "
@@ -1126,6 +1675,15 @@ class WorkflowOrchestrator:
                 f"[{old_dims[0]:.2f}, {old_dims[1]:.2f}, {old_dims[2]:.2f}] → "
                 f"[{new_dims[0]:.2f}, {new_dims[1]:.2f}, {new_dims[2]:.2f}]"
             )
+        if old_rot != new_rot:
+            self.logger.logger.info(
+                f"    🔄 {component_id} 旋转变化: "
+                f"[{old_rot[0]:.2f}, {old_rot[1]:.2f}, {old_rot[2]:.2f}] → "
+                f"[{new_rot[0]:.2f}, {new_rot[1]:.2f}, {new_rot[2]:.2f}]"
+            )
+
+        new_comp_fp = _component_fp(new_state.components[comp_idx])
+        return bool(new_comp_fp != old_comp_fp)
 
     def _should_accept(
         self,
@@ -1134,9 +1692,27 @@ class WorkflowOrchestrator:
         old_violations: list,
         new_violations: list
     ) -> bool:
-        """判断是否接受新状态"""
-        # 简化策略：违反数量减少则接受
-        return len(new_violations) <= len(old_violations)
+        """判断是否接受新状态（违规数量 + 惩罚分双判据）"""
+        old_count = len(old_violations)
+        new_count = len(new_violations)
+
+        # 一级判据：违规数量必须不增加
+        if new_count < old_count:
+            return True
+        if new_count > old_count:
+            return False
+
+        # 二级判据：违规数量相同时，惩罚分不能恶化
+        old_penalty = self._calculate_penalty_score(old_metrics, old_violations)
+        new_penalty = self._calculate_penalty_score(new_metrics, new_violations)
+        if new_penalty <= old_penalty + 1e-6:
+            return True
+
+        self.logger.logger.info(
+            "  拒绝新状态: 违规数未减少且惩罚分恶化 "
+            f"({old_penalty:.2f} -> {new_penalty:.2f})"
+        )
+        return False
 
     def _learn_from_iteration(
         self,
@@ -1184,42 +1760,118 @@ class WorkflowOrchestrator:
 
     # ============ Phase 4: 回退机制辅助方法 ============
 
-    def _calculate_penalty_score(
+    def _calculate_penalty_breakdown(
         self,
         metrics: Dict[str, Any],
         violations: list[ViolationItem]
-    ) -> float:
+    ) -> Dict[str, float]:
         """
-        计算惩罚分（越低越好）
+        计算惩罚分分项（越低越好）
 
         Args:
             metrics: 性能指标
             violations: 违规列表
 
         Returns:
-            惩罚分
+            惩罚分分项与总分
         """
-        penalty = 0.0
+        penalty_violation = 0.0
+        penalty_temp = 0.0
+        penalty_clearance = 0.0
+        penalty_cg = 0.0
+        penalty_collision = 0.0
+        max_temp_limit = self.runtime_constraints.get("max_temp_c", 60.0)
+        min_clearance_limit = self.runtime_constraints.get("min_clearance_mm", 3.0)
+        max_cg_offset_limit = self.runtime_constraints.get("max_cg_offset_mm", 20.0)
 
         # 违规惩罚（每个违规 +100）
-        penalty += len(violations) * 100.0
+        penalty_violation += len(violations) * 100.0
 
-        # 温度惩罚（超过60°C）
+        # 温度惩罚
         max_temp = metrics.get('thermal').max_temp
-        if max_temp > 60.0:
-            penalty += (max_temp - 60.0) * 10.0
+        if max_temp > max_temp_limit:
+            penalty_temp += (max_temp - max_temp_limit) * 10.0
 
-        # 间隙惩罚（小于3mm）
+        # 间隙惩罚
         min_clearance = metrics.get('geometry').min_clearance
-        if min_clearance < 3.0:
-            penalty += (3.0 - min_clearance) * 50.0
+        if min_clearance < min_clearance_limit:
+            penalty_clearance += (min_clearance_limit - min_clearance) * 50.0
 
-        # 质心偏移惩罚（大于50mm）
+        # 质心偏移惩罚（与违规阈值一致）
         cg_offset = metrics.get('geometry').cg_offset_magnitude
-        if cg_offset > 50.0:
-            penalty += (cg_offset - 50.0) * 2.0
+        if cg_offset > max_cg_offset_limit:
+            penalty_cg += (cg_offset - max_cg_offset_limit) * 2.0
 
-        return penalty
+        # 碰撞惩罚（强惩罚，显式驱动远离重叠态）
+        num_collisions = metrics.get('geometry').num_collisions
+        if num_collisions > 0:
+            penalty_collision += num_collisions * 500.0
+
+        total = penalty_violation + penalty_temp + penalty_clearance + penalty_cg + penalty_collision
+        return {
+            "violation": penalty_violation,
+            "temp": penalty_temp,
+            "clearance": penalty_clearance,
+            "cg": penalty_cg,
+            "collision": penalty_collision,
+            "total": total,
+        }
+
+    def _calculate_penalty_score(
+        self,
+        metrics: Dict[str, Any],
+        violations: list[ViolationItem]
+    ) -> float:
+        """计算惩罚分总分（向后兼容）"""
+        return self._calculate_penalty_breakdown(metrics, violations)["total"]
+
+    def _compute_effectiveness_score(
+        self,
+        previous: Optional[Dict[str, float]],
+        current: Dict[str, float]
+    ) -> float:
+        """
+        计算单轮迭代有效性分数（-100 ~ 100，越高越好）。
+
+        分数由惩罚分改善、违规数量改善、以及关键连续指标改善共同决定。
+        """
+        if not previous:
+            return 0.0
+
+        prev_penalty = float(previous.get("penalty_score", 0.0))
+        curr_penalty = float(current.get("penalty_score", 0.0))
+
+        prev_cg = float(previous.get("cg_offset", 0.0))
+        curr_cg = float(current.get("cg_offset", 0.0))
+
+        prev_temp = float(previous.get("max_temp", 0.0))
+        curr_temp = float(current.get("max_temp", 0.0))
+
+        prev_clearance = float(previous.get("min_clearance", 0.0))
+        curr_clearance = float(current.get("min_clearance", 0.0))
+
+        prev_violations = float(previous.get("num_violations", 0.0))
+        curr_violations = float(current.get("num_violations", 0.0))
+
+        max_temp_limit = max(float(self.runtime_constraints.get("max_temp_c", 60.0)), 1.0)
+        min_clearance_limit = max(float(self.runtime_constraints.get("min_clearance_mm", 3.0)), 1.0)
+        max_cg_offset_limit = max(float(self.runtime_constraints.get("max_cg_offset_mm", 20.0)), 1.0)
+
+        # 归一化增益（>0 代表改善）
+        penalty_gain = (prev_penalty - curr_penalty) / max(prev_penalty, 1.0)
+        cg_gain = (prev_cg - curr_cg) / max_cg_offset_limit
+        temp_gain = (prev_temp - curr_temp) / max_temp_limit
+        clearance_gain = (curr_clearance - prev_clearance) / min_clearance_limit
+        violation_gain = prev_violations - curr_violations
+
+        score = 100.0 * (
+            0.55 * penalty_gain +
+            0.20 * cg_gain +
+            0.10 * temp_gain +
+            0.10 * clearance_gain +
+            0.05 * violation_gain
+        )
+        return float(np.clip(score, -100.0, 100.0))
 
     def _should_rollback(
         self,

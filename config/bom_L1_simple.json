@@ -1,0 +1,54 @@
+{
+  "components": [
+    {
+      "id": "payload_main",
+      "name": "主载荷",
+      "dimensions": {
+        "x": 100,
+        "y": 100,
+        "z": 100
+      },
+      "mass": 5.0,
+      "power": 5.0,
+      "category": "payload",
+      "quantity": 1,
+      "material": "aluminum",
+      "thermal_conductivity": 200.0,
+      "max_temp": 85.0,
+      "thermal_contacts": {
+        "battery_pack": 800.0
+      },
+      "notes": "L1入门级：主载荷，低功耗"
+    },
+    {
+      "id": "battery_pack",
+      "name": "电池组",
+      "dimensions": {
+        "x": 80,
+        "y": 80,
+        "z": 50
+      },
+      "mass": 2.0,
+      "power": 2.0,
+      "category": "power",
+      "quantity": 1,
+      "material": "aluminum",
+      "thermal_conductivity": 237.0,
+      "max_temp": 85.0,
+      "thermal_contacts": {
+        "payload_main": 800.0
+      },
+      "notes": "L1入门级：小型电池组，极低功耗"
+    }
+  ],
+  "envelope": {
+    "x": 600,
+    "y": 600,
+    "z": 800
+  },
+  "constraints": {
+    "max_temperature": 85.0,
+    "max_cg_offset": 50.0,
+    "min_clearance": 5.0
+  }
+}

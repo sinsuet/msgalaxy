@@ -331,7 +331,7 @@ Meta-Reasoner分配给你的任务，包含：
         # 添加完整的可用组件列表（防止幻觉）
         prompt += "\n## 可用组件列表（仅可引用以下组件ID）\n"
         for comp in current_state.components:
-            prompt += f"- {comp.id} ({comp.name})\n"
+            prompt += f"- {comp.id} (类别: {comp.category})\n"
         prompt += "\n⚠️ 重要：在 SET_THERMAL_CONTACT 中，contact_component 参数必须是上述列表中的组件ID，不能使用不存在的组件名称（如 chassis, main_structure, payload_heavy_mount 等）！\n"
 
         # 添加任务上下文

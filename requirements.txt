@@ -1,44 +1,94 @@
-# Core dependencies (Python 3.12 compatible)
+# ============================================================================
+# MsGalaxy v2.0.3 - 卫星设计优化系统依赖包
+# ============================================================================
+#
+# 安装说明：
+#   1. 创建 conda 环境: conda create -n msgalaxy python=3.12
+#   2. 激活环境: conda activate msgalaxy
+#   3. 安装依赖: pip install -r requirements.txt
+#   4. 安装 conda 专用包（见下方说明）
+#
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# 核心依赖 (Core Dependencies)
+# ----------------------------------------------------------------------------
 numpy>=1.26.0
 scipy>=1.12.0
-pydantic>=2.6.0
-pyyaml>=6.0
+pydantic>=2.6.0          # 数据验证和协议定义
+pyyaml>=6.0              # 配置文件解析
 
-# LLM integration
-dashscope>=1.20.0  # 阿里云 DashScope SDK (原生 Qwen API)
+# ----------------------------------------------------------------------------
+# LLM 集成 (LLM Integration)
+# ----------------------------------------------------------------------------
+dashscope>=1.20.0        # 阿里云 DashScope SDK (Qwen API)
+openai>=1.0.0            # OpenAI SDK (兼容 Qwen API)
 
-# Simulation interfaces
-# Note: Install MATLAB Engine manually from MATLAB installation:
-# cd "D:\Program Files\MATLAB\R20XXx\extern\engines\python"
-# python setup.py install
+# ----------------------------------------------------------------------------
+# 几何布局 (Geometry and Layout)
+# ----------------------------------------------------------------------------
+py3dbp>=1.1.0            # 3D 装箱算法
+
+# ----------------------------------------------------------------------------
+# CAD 导出 (CAD Export) - CRITICAL for v2.0.3
+# ----------------------------------------------------------------------------
+# pythonocc-core 必须通过 conda 安装:
+#   conda install -c conda-forge pythonocc-core
 #
-# Note: Install MPh for COMSOL:
-# pip install mph
+# 说明: pythonocc-core 是 v2.0.3 动态 STEP 导入架构的核心依赖
+#       用于生成符合 ISO 10303-21 标准的 STEP 文件供 COMSOL 导入
+#       pip 无法安装此包，必须使用 conda
 
-# Geometry and layout
-py3dbp>=1.1.0
-# cadquery>=2.3.0  # Install via conda: conda install -c conda-forge cadquery
+# ----------------------------------------------------------------------------
+# COMSOL 仿真接口 (COMSOL Simulation Interface)
+# ----------------------------------------------------------------------------
+mph>=1.2.0               # COMSOL Multiphysics Python 接口
+#
+# 说明: MPh 需要 COMSOL Multiphysics 已安装并配置环境变量
+#       Windows: 添加 COMSOL 安装目录到 PATH
+#       Linux/Mac: 设置 COMSOL_ROOT 环境变量
 
-# CAD export (CRITICAL for COMSOL dynamic STEP import)
-# pythonocc-core  # Install via conda: conda install -c conda-forge pythonocc-core
-# Note: pythonocc-core is REQUIRED for generating valid STEP files that COMSOL can import.
-# The simplified STEP exporter (geometry/cad_export.py) does NOT work with COMSOL.
-# See INSTALL_PYTHONOCC.md for installation instructions.
+# ----------------------------------------------------------------------------
+# Web 服务 (Web Services)
+# ----------------------------------------------------------------------------
+flask>=3.0.0             # REST API 服务器
+flask-cors>=4.0.0        # 跨域支持
+requests>=2.31.0         # HTTP 客户端
 
-# Web services
-flask>=3.0.0
-flask-cors>=4.0.0
-requests>=2.31.0
+# ----------------------------------------------------------------------------
+# 可视化 (Visualization)
+# ----------------------------------------------------------------------------
+matplotlib>=3.8.0        # 图表生成
 
-# Visualization
-matplotlib>=3.8.0
+# ----------------------------------------------------------------------------
+# 工具库 (Utilities)
+# ----------------------------------------------------------------------------
+python-dotenv>=1.0.0     # 环境变量管理
+click>=8.1.0             # CLI 工具
 
-# Utilities
-python-dotenv>=1.0.0
-click>=8.1.0
+# ----------------------------------------------------------------------------
+# 开发工具 (Development Tools)
+# ----------------------------------------------------------------------------
+pytest>=7.4.0            # 单元测试
+pytest-cov>=4.1.0        # 测试覆盖率
+black>=23.12.0           # 代码格式化
+flake8>=7.0.0            # 代码检查
 
-# Development
-pytest>=7.4.0
-pytest-cov>=4.1.0
-black>=23.12.0
-flake8>=7.0.0
+# ============================================================================
+# 安装后检查清单
+# ============================================================================
+#
+# 1. 验证 pythonocc-core 安装:
+#    python -c "from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox; print('✓ pythonocc-core OK')"
+#
+# 2. 验证 MPh 安装:
+#    python -c "import mph; print('✓ MPh OK')"
+#
+# 3. 验证 DashScope 安装:
+#    python -c "import dashscope; print('✓ DashScope OK')"
+#
+# 4. 运行 L1 测试验证完整环境:
+#    PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python run/run_L1_simple.py
+#
+# ============================================================================
+

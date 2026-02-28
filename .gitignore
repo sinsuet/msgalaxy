@@ -4,30 +4,14 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
 
 # Virtual Environment
-venv/
-ENV/
-env/
 
 # IDE
 .vscode/
-.idea/
 *.swp
 *.swo
 *~
@@ -44,7 +28,6 @@ experiments/
 *.log
 
 # Temporary files
-tmp_files/
 *.tmp
 *.bak
 workspace/
@@ -62,11 +45,14 @@ Thumbs.db
 
 # COMSOL
 *.mph~
-# COMSOL模型文件通常很大，不建议提交到git
-# 如需共享模型，请使用外部存储（如网盘）
-models/*.mph
-!models/README.md
 
 #docs
 archive/
 docs/
+memory/
+# Runtime logs
+logs/
+
+# Local-only runtime/developer assets (not distributed by default)
+scripts/
+tests/

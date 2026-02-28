@@ -2,14 +2,14 @@
 COMSOL仿真驱动器
 
 通过MPh库连接COMSOL Multiphysics进行多物理场仿真
-支持两种模式：
-1. 静态模型 + 参数更新（传统模式，向下兼容）
-2. 动态 STEP 导入 + Box Selection（新模式，支持拓扑重构）
+仅支持动态 STEP 导入 + Box Selection（v2.0+ 架构）
 """
 
 import os
-from typing import Dict, Any, Optional, List
+import re
+from typing import Dict, Any, Optional
 from pathlib import Path
+from datetime import datetime
 
 from simulation.base import SimulationDriver
 from core.protocol import SimulationRequest, SimulationResult, ViolationItem, DesignState
@@ -28,24 +28,14 @@ class ComsolDriver(SimulationDriver):
 
         Args:
             config: 配置字典，包含：
-                - comsol_model: COMSOL模型文件路径（.mph）
-                - comsol_parameters: 要更新的参数列表
-                - auto_generate_model: 是否自动生成模型（默认False）
                 - environment: 环境类型 ("orbit"或"ground"，默认"orbit")
-                - mode: 仿真模式 ("static" 或 "dynamic"，默认"static")
-                  * static: 静态模型 + 参数更新（传统模式）
-                  * dynamic: 动态 STEP 导入 + Box Selection（新模式）
         """
         super().__init__(config)
-        self.model_file = config.get('comsol_model', 'model.mph')
-        self.parameters = config.get('comsol_parameters', [])
-        self.auto_generate = config.get('auto_generate_model', False)
         self.environment = config.get('environment', 'orbit')
-        self.mode = config.get('mode', 'static')  # 新增：仿真模式
         self.client: Optional[Any] = None
         self.model: Optional[Any] = None
 
-        logger.info(f"COMSOL驱动器初始化: mode={self.mode}")
+        logger.info("COMSOL驱动器初始化: dynamic-only")
 
     def connect(self) -> bool:
         """
@@ -66,13 +56,8 @@ class ComsolDriver(SimulationDriver):
             self.client = mph.start()
             logger.info("✓ COMSOL客户端启动成功")
 
-            # 加载模型
-            if not os.path.exists(self.model_file):
-                raise ComsolConnectionError(f"COMSOL模型文件不存在: {self.model_file}")
-
-            logger.info(f"正在加载模型: {self.model_file}")
-            self.model = self.client.load(self.model_file)
-            logger.info("✓ COMSOL模型加载成功")
+            # dynamic-only：模型在每次仿真时通过 _create_dynamic_model 运行时创建
+            self.model = None
 
             self.connected = True
             return True
@@ -103,9 +88,7 @@ class ComsolDriver(SimulationDriver):
         """
         运行COMSOL仿真
 
-        根据配置的 mode 选择不同的仿真策略：
-        - static: 使用静态模型 + 参数更新
-        - dynamic: 使用动态 STEP 导入 + Box Selection
+        dynamic-only：使用动态 STEP 导入 + Box Selection
 
         Args:
             request: 仿真请求
@@ -124,180 +107,7 @@ class ComsolDriver(SimulationDriver):
                 error_message="设计状态无效"
             )
 
-        # 根据模式选择仿真策略
-        if self.mode == "dynamic":
-            return self._run_dynamic_simulation(request)
-        else:
-            return self._run_static_simulation(request)
-
-    def _run_static_simulation(self, request: SimulationRequest) -> SimulationResult:
-        """
-        静态模式仿真（传统方式）
-
-        使用预先存在的 .mph 模型，通过参数更新来调整几何
-
-        Args:
-            request: 仿真请求
-
-        Returns:
-            仿真结果
-        """
-        try:
-            # 检查是否需要重新生成模型
-            if self.auto_generate:
-                self._regenerate_model_if_needed(request.design_state)
-
-            logger.info("运行COMSOL仿真（静态模式）...")
-
-            # 1. 更新几何参数
-            self._update_geometry(request.design_state)
-
-            # 2. 重建几何和网格
-            logger.info("  重建几何...")
-            self.model.build()
-
-            logger.info("  生成网格...")
-            self.model.mesh()
-
-            # 3. 求解
-            logger.info("  求解物理场...")
-            self.model.solve()
-
-            # 4. 提取结果
-            metrics = self._extract_results()
-            logger.info(f"  仿真完成: {metrics}")
-
-            # 5. 检查约束
-            violations = self.check_constraints(metrics)
-
-            return SimulationResult(
-                success=True,
-                metrics=metrics,
-                violations=[ViolationItem(**v) for v in violations]
-            )
-
-        except Exception as e:
-            logger.error(f"COMSOL仿真失败: {e}")
-            return SimulationResult(
-                success=False,
-                metrics={},
-                violations=[],
-                error_message=str(e)
-            )
-
-    def _update_geometry(self, design_state):
-        """
-        更新COMSOL模型的几何参数
-
-        Args:
-            design_state: 设计状态
-        """
-        logger.info("  更新几何参数...")
-
-        for comp in design_state.components:
-            # 更新位置参数
-            param_prefix = comp.id
-
-            # 位置参数
-            if f'{param_prefix}_x' in self.parameters:
-                self.model.parameter(f'{param_prefix}_x', f'{comp.position.x}[mm]')
-            if f'{param_prefix}_y' in self.parameters:
-                self.model.parameter(f'{param_prefix}_y', f'{comp.position.y}[mm]')
-            if f'{param_prefix}_z' in self.parameters:
-                self.model.parameter(f'{param_prefix}_z', f'{comp.position.z}[mm]')
-
-            # 尺寸参数
-            if f'{param_prefix}_dx' in self.parameters:
-                self.model.parameter(f'{param_prefix}_dx', f'{comp.dimensions.x}[mm]')
-            if f'{param_prefix}_dy' in self.parameters:
-                self.model.parameter(f'{param_prefix}_dy', f'{comp.dimensions.y}[mm]')
-            if f'{param_prefix}_dz' in self.parameters:
-                self.model.parameter(f'{param_prefix}_dz', f'{comp.dimensions.z}[mm]')
-
-            # 功率参数（用于热源）
-            if f'{param_prefix}_power' in self.parameters:
-                self.model.parameter(f'{param_prefix}_power', f'{comp.power}[W]')
-
-        logger.info(f"  已更新 {len(design_state.components)} 个组件的参数")
-
-    def _regenerate_model_if_needed(self, design_state):
-        """
-        根据需要重新生成COMSOL模型
-
-        Args:
-            design_state: 设计状态
-        """
-        # 检查是否需要重新生成
-        # 条件：组件数量变化、首次运行、或模型文件不存在
-        need_regenerate = False
-
-        if not os.path.exists(self.model_file):
-            logger.info("模型文件不存在，需要生成新模型")
-            need_regenerate = True
-        elif hasattr(self, '_last_component_count'):
-            if len(design_state.components) != self._last_component_count:
-                logger.info(f"组件数量变化 ({self._last_component_count} -> {len(design_state.components)})，需要重新生成模型")
-                need_regenerate = True
-
-        if need_regenerate:
-            logger.info("开始动态生成COMSOL模型...")
-            from simulation.comsol_model_generator import COMSOLModelGenerator
-
-            generator = COMSOLModelGenerator()
-            success = generator.generate_model(
-                design_state,
-                self.model_file,
-                environment=self.environment
-            )
-
-            if not success:
-                raise SimulationError("COMSOL模型生成失败")
-
-            # 重新加载模型
-            if self.connected:
-                self.disconnect()
-            self.connect()
-
-            logger.info("✓ 动态模型生成并加载成功")
-
-        self._last_component_count = len(design_state.components)
-
-    def _extract_results(self) -> Dict[str, float]:
-        """
-        从COMSOL模型中提取仿真结果
-
-        Returns:
-            指标字典
-        """
-        metrics = {}
-
-        try:
-            # 提取最大温度（使用算子）
-            max_temp = float(self.model.evaluate('maxop1(T)', unit='degC'))
-            metrics['max_temp'] = max_temp
-
-            # 提取平均温度（使用算子）
-            avg_temp = float(self.model.evaluate('aveop1(T)', unit='degC'))
-            metrics['avg_temp'] = avg_temp
-
-            # 提取最大应力（如果有结构分析）
-            try:
-                max_stress = float(self.model.evaluate('maxop1(solid.mises)', unit='MPa'))
-                metrics['max_stress'] = max_stress
-            except:
-                pass
-
-            # 提取总热流（如果有热分析）
-            try:
-                total_heat_flux = float(self.model.evaluate('intop1(ht.tfluxMag)', unit='W'))
-                metrics['total_heat_flux'] = total_heat_flux
-            except:
-                pass
-
-        except Exception as e:
-            logger.warning(f"提取结果时出错: {e}")
-
-        return metrics
+        return self._run_dynamic_simulation(request)
 
     def _save_mph_model(self, request: SimulationRequest):
         """
@@ -307,66 +117,78 @@ class ComsolDriver(SimulationDriver):
             request: 仿真请求（包含迭代信息和实验目录）
         """
         try:
-            import os
-
             # 检查模型是否存在
             if not self.model:
                 logger.warning("  ⚠ COMSOL 模型对象不存在，跳过保存")
                 return
 
-            # 从 request.parameters 中获取实验目录
-            experiment_dir = request.parameters.get("experiment_dir", None)
-            iteration = request.design_state.iteration
-
+            # 选择保存目录
+            experiment_dir = request.parameters.get("experiment_dir")
             if experiment_dir:
-                # 创建 mph_models 子目录
-                mph_dir = os.path.join(experiment_dir, "mph_models")
-                os.makedirs(mph_dir, exist_ok=True)
-
-                # 生成文件路径
-                mph_filename = f"model_iter_{iteration:03d}.mph"
-                mph_save_path = os.path.join(mph_dir, mph_filename)
-
-                # 处理 Windows 路径斜杠
-                mph_save_path_safe = mph_save_path.replace('\\', '/')
-
-                # 保存模型
-                logger.info(f"  保存 COMSOL .mph 模型...")
-                try:
-                    self.model.save(mph_save_path_safe)
-                    logger.info(f"  ✓ COMSOL .mph 模型已保存: {mph_save_path_safe}")
-                except Exception as save_error:
-                    logger.warning(f"  ⚠ MPh save() 调用失败: {save_error}")
-                    logger.warning(f"  尝试使用 Java API 保存...")
-                    # 尝试使用 Java API
-                    self.model.java.save(mph_save_path_safe)
-                    logger.info(f"  ✓ COMSOL .mph 模型已保存（Java API）: {mph_save_path_safe}")
-
+                save_dir = Path(experiment_dir) / "mph_models"
             else:
-                # 如果没有提供实验目录，保存到默认位置
-                workspace = Path("workspace/comsol_models")
-                workspace.mkdir(parents=True, exist_ok=True)
+                save_dir = Path("workspace/comsol_models")
+            save_dir.mkdir(parents=True, exist_ok=True)
 
-                mph_filename = f"model_iter_{iteration:03d}.mph"
-                mph_save_path = workspace / mph_filename
-                mph_save_path_safe = str(mph_save_path).replace('\\', '/')
+            # 使用 state_id 作为主文件名，避免因 design_state.iteration 重复导致锁冲突
+            state_id = (request.design_state.state_id or "").strip()
+            if state_id:
+                base_name = f"model_{state_id}"
+            else:
+                base_name = f"model_iter_{request.design_state.iteration:03d}"
 
-                logger.info(f"  保存 COMSOL .mph 模型（默认位置）...")
-                try:
-                    self.model.save(mph_save_path_safe)
-                    logger.info(f"  ✓ COMSOL .mph 模型已保存: {mph_save_path_safe}")
-                except Exception as save_error:
-                    logger.warning(f"  ⚠ MPh save() 调用失败: {save_error}")
-                    logger.warning(f"  尝试使用 Java API 保存...")
-                    # 尝试使用 Java API
-                    self.model.java.save(mph_save_path_safe)
-                    logger.info(f"  ✓ COMSOL .mph 模型已保存（Java API）: {mph_save_path_safe}")
+            # 文件名安全化（避免空格/特殊字符导致路径和锁问题）
+            safe_base_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", base_name).strip("_")
+            if not safe_base_name:
+                safe_base_name = f"model_iter_{request.design_state.iteration:03d}"
+
+            primary_path = save_dir / f"{safe_base_name}.mph"
+            retry_path = save_dir / (
+                f"{safe_base_name}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.mph"
+            )
+
+            logger.info("  保存 COMSOL .mph 模型...")
+            if self._try_save_mph_path(primary_path):
+                return
+
+            logger.warning("  主文件名保存失败，尝试唯一后缀文件名避开锁冲突...")
+            if not self._try_save_mph_path(retry_path):
+                logger.warning("  ⚠ 保存 .mph 模型失败: 两次路径尝试均失败")
 
         except Exception as e:
             # 保存失败不应中断仿真流程
             logger.warning(f"  ⚠ 保存 .mph 模型失败: {e}")
             logger.warning(f"  异常类型: {type(e).__name__}")
-            logger.warning(f"  仿真结果仍然有效，继续执行...")
+            logger.warning("  仿真结果仍然有效，继续执行...")
+
+    def _try_save_mph_path(self, save_path: Path) -> bool:
+        """
+        尝试保存 .mph 到指定路径：
+        1) MPh save()
+        2) Java API save() 回退
+
+        Args:
+            save_path: 目标文件路径
+
+        Returns:
+            是否保存成功
+        """
+        save_path_safe = str(save_path).replace("\\", "/")
+
+        try:
+            self.model.save(save_path_safe)
+            logger.info(f"  ✓ COMSOL .mph 模型已保存: {save_path_safe}")
+            return True
+        except Exception as save_error:
+            logger.warning(f"  ⚠ MPh save() 调用失败: {save_error}")
+            logger.warning("  尝试使用 Java API 保存...")
+            try:
+                self.model.java.save(save_path_safe)
+                logger.info(f"  ✓ COMSOL .mph 模型已保存（Java API）: {save_path_safe}")
+                return True
+            except Exception as java_error:
+                logger.warning(f"  ⚠ Java API 保存失败: {java_error}")
+                return False
 
     def evaluate_expression(self, expression: str, unit: str = None) -> float:
         """
@@ -759,6 +581,7 @@ class ComsolDriver(SimulationDriver):
             geom: 几何对象
         """
         total_heat_sources_assigned = 0
+        ambiguous_heat_sources = []
 
         for i, comp in enumerate(design_state.components):
             if comp.power <= 0:
@@ -771,8 +594,8 @@ class ComsolDriver(SimulationDriver):
             dim = comp.dimensions
 
             # Box Selection 的边界（组件中心 ± 半尺寸）
-            # 添加容差（tolerance）以确保网格偏差不会导致选择失败
-            tolerance = 5.0  # mm，容差值
+            # 复杂拥挤场景中必须使用极小容差，避免误选相邻域
+            tolerance = 1e-3  # mm，极严容差，避免紧凑场景串选
 
             x_min = pos.x - dim.x / 2 - tolerance
             x_max = pos.x + dim.x / 2 + tolerance
@@ -792,8 +615,8 @@ class ComsolDriver(SimulationDriver):
             box_sel.set("ymax", f"{y_max}[mm]")
             box_sel.set("zmin", f"{z_min}[mm]")
             box_sel.set("zmax", f"{z_max}[mm]")
-            # 使用 "intersects" 而非 "inside"，更宽松的选择条件
-            box_sel.set("condition", "intersects")
+            # 优先使用 inside，最大限度避免误选相邻域
+            box_sel.set("condition", "inside")
 
             # 强制校验：检查选中的域数量
             try:
@@ -803,20 +626,34 @@ class ComsolDriver(SimulationDriver):
                 logger.info(f"      Box Selection 选中 {num_selected} 个域")
 
                 if num_selected == 0:
+                    logger.warning(f"      ⚠️ inside 条件选中 0 个域，回退到 intersects: {comp.id}")
+                    box_sel.set("condition", "intersects")
+                    selected_entities = box_sel.entities()
+                    num_selected = len(selected_entities) if selected_entities else 0
+                    logger.info(f"      intersects 回退后选中 {num_selected} 个域")
+
+                if num_selected > 1:
+                    logger.warning(f"      ⚠️ 选中 {num_selected} 个域，尝试 allvertices 收紧: {comp.id}")
+                    box_sel.set("condition", "allvertices")
+                    selected_entities = box_sel.entities()
+                    num_selected = len(selected_entities) if selected_entities else 0
+                    logger.info(f"      allvertices 收紧后选中 {num_selected} 个域")
+
+                # 强约束：仍为多域时禁止绑定热源，防止热功率串入错误组件
+                if num_selected > 1:
+                    logger.error(
+                        f"      ✗ 热源绑定拒绝: 组件 {comp.id} 仍歧义命中 {num_selected} 个域，跳过该热源"
+                    )
+                    ambiguous_heat_sources.append(comp.id)
+                    continue
+
+                if num_selected == 0:
                     logger.warning(f"      ⚠️ 严重警告: 热源 Box Selection 失败！组件 {comp.id} 未选中任何域！")
                     logger.warning(f"      Box 范围: X[{x_min:.1f}, {x_max:.1f}], Y[{y_min:.1f}, {y_max:.1f}], Z[{z_min:.1f}, {z_max:.1f}] mm")
                     logger.warning(f"      组件位置: [{pos.x:.1f}, {pos.y:.1f}, {pos.z:.1f}] mm")
                     logger.warning(f"      组件尺寸: [{dim.x:.1f}, {dim.y:.1f}, {dim.z:.1f}] mm")
-                    # 尝试使用 "allvertices" 条件（最宽松）
-                    logger.info(f"      尝试使用更宽松的选择条件 'allvertices'...")
-                    box_sel.set("condition", "allvertices")
-                    selected_entities = box_sel.entities()
-                    num_selected = len(selected_entities) if selected_entities else 0
-                    logger.info(f"      重试后选中 {num_selected} 个域")
-
-                    if num_selected == 0:
-                        logger.error(f"      ✗ 热源绑定彻底失败！{comp.power}W 热源未施加到组件 {comp.id}！")
-                        continue
+                    logger.error(f"      ✗ 热源绑定彻底失败！{comp.power}W 热源未施加到组件 {comp.id}！")
+                    continue
             except Exception as sel_check_error:
                 logger.warning(f"      无法检查选中域数量: {sel_check_error}")
 
@@ -842,6 +679,11 @@ class ComsolDriver(SimulationDriver):
         else:
             total_power = sum(c.power for c in design_state.components if c.power > 0)
             logger.info(f"  ✓ 热源绑定完成: {total_heat_sources_assigned} 个热源, 总功率 {total_power}W")
+        if ambiguous_heat_sources:
+            logger.warning(
+                "  ⚠ 以下组件因 Box Selection 多域歧义被跳过热源绑定: "
+                + ", ".join(ambiguous_heat_sources)
+            )
 
     def _assign_radiation_boundaries_dynamic(
         self,
@@ -861,17 +703,22 @@ class ComsolDriver(SimulationDriver):
         """
         logger.info("    - 创建外部辐射边界...")
 
-        # 使用 envelope 尺寸创建外边界 Box Selection
-        env = design_state.envelope.outer_size
-
-        # 稍微扩大包围盒以确保选中所有外表面
-        margin = 10.0  # mm
-        x_min = -margin
-        x_max = env.x + margin
-        y_min = -margin
-        y_max = env.y + margin
-        z_min = -margin
-        z_max = env.z + margin
+        # 依据“当前组件真实空间范围”构建外边界选择框，而不是依赖初始 envelope。
+        # 原因：优化过程会持续 MOVE，组件可能超出初始包络；若边界锚点漏选将导致
+        # 某些独立域无 Dirichlet/弱锚约束，稳态求解容易在低功率步就发散。
+        margin = 20.0  # mm
+        if design_state.components:
+            x_min = min(c.position.x - c.dimensions.x / 2 for c in design_state.components) - margin
+            x_max = max(c.position.x + c.dimensions.x / 2 for c in design_state.components) + margin
+            y_min = min(c.position.y - c.dimensions.y / 2 for c in design_state.components) - margin
+            y_max = max(c.position.y + c.dimensions.y / 2 for c in design_state.components) + margin
+            z_min = min(c.position.z - c.dimensions.z / 2 for c in design_state.components) - margin
+            z_max = max(c.position.z + c.dimensions.z / 2 for c in design_state.components) + margin
+        else:
+            env = design_state.envelope.outer_size
+            x_min, x_max = -env.x / 2 - margin, env.x / 2 + margin
+            y_min, y_max = -env.y / 2 - margin, env.y / 2 + margin
+            z_min, z_max = -env.z / 2 - margin, env.z / 2 + margin
 
         # 创建 Box Selection（选择 Boundary）
         sel_name = "boxsel_outer_boundary"
@@ -883,12 +730,33 @@ class ComsolDriver(SimulationDriver):
         box_sel.set("ymax", f"{y_max}[mm]")
         box_sel.set("zmin", f"{z_min}[mm]")
         box_sel.set("zmax", f"{z_max}[mm]")
+        box_sel.set("condition", "intersects")
+        logger.info(
+            f"      外边界选择框: X[{x_min:.1f},{x_max:.1f}] "
+            f"Y[{y_min:.1f},{y_max:.1f}] Z[{z_min:.1f},{z_max:.1f}] mm"
+        )
+
+        selected_entities = []
+        missing_anchor_components = []
+        try:
+            selected_entities = list(box_sel.entities())
+            selected_set = set(selected_entities)
+
+            # 校验每个组件至少有一个边界被外边界锚点覆盖
+            for i, comp in enumerate(design_state.components):
+                check_sel = f"boxsel_outer_check_{i}"
+                self._create_component_box_selection(comp, check_sel, entity_dim=2, condition="intersects")
+                comp_entities = list(self.model.java.selection(check_sel).entities())
+                if comp_entities and selected_set.isdisjoint(comp_entities):
+                    missing_anchor_components.append(comp.id)
+        except Exception as e:
+            logger.warning(f"      外边界选择校验失败，将回退到全边界锚点: {e}")
+            missing_anchor_components = [c.id for c in design_state.components]
 
         # 创建辐射边界条件
         # 简化方案：使用温度边界条件（更稳定）
         # 假设外表面温度为典型卫星外壳温度
         temp_bc = ht.feature().create("temp1", "TemperatureBoundary")
-        temp_bc.selection().named(sel_name)
 
         # 设置外表面温度（典型值：-50°C 到 +50°C，取中间值 0°C = 273.15K）
         T_surface = 273.15  # K (0°C)
@@ -900,13 +768,25 @@ class ComsolDriver(SimulationDriver):
         logger.info("    - 添加数值稳定锚（微弱对流边界）...")
         # 修复：使用 HeatFluxBoundary 而不是 ConvectiveHeatFlux
         conv_bc = ht.feature().create("conv_stabilizer", "HeatFluxBoundary")
-        conv_bc.selection().named(sel_name)
 
         # 设置极其微弱的换热系数（对物理影响极小，但对数值稳定性有奇效）
         h_stabilizer = 0.1  # W/(m^2*K)，极其微弱
         T_ambient = 293.15  # K (20°C)，环境温度
         # 使用对流热流公式: q = h * (T_ambient - T)
         conv_bc.set("q0", f"{h_stabilizer}[W/(m^2*K)]*({T_ambient}[K]-T)")
+
+        # 优先使用外边界 Box Selection；若存在漏锚组件则回退到全边界，保障每个域可解。
+        if selected_entities and not missing_anchor_components:
+            temp_bc.selection().named(sel_name)
+            conv_bc.selection().named(sel_name)
+            logger.info(f"      ✓ 外边界锚点已绑定: {len(selected_entities)} 个边界实体")
+        else:
+            temp_bc.selection().all()
+            conv_bc.selection().all()
+            logger.warning(
+                "      ⚠ 外边界锚点存在漏选，回退到全边界锚点。"
+                f" 漏锚组件: {missing_anchor_components if missing_anchor_components else '未知'}"
+            )
 
         logger.info(f"      ✓ 数值稳定锚已设置: h={h_stabilizer} W/(m^2*K), T_ambient={T_ambient}K")
 
@@ -1077,6 +957,82 @@ class ComsolDriver(SimulationDriver):
 
     # ============ DV2.0: 热学属性算子实现 ============
 
+    def _set_thermal_contact_conductance(
+        self,
+        thermal_contact: Any,
+        conductance: float
+    ) -> tuple[bool, str, list[str]]:
+        """
+        兼容不同 COMSOL 版本/物理接口的接触热导参数写法。
+
+        优先级：
+        1) 直接参数: h_tc / h_joint / h
+        2) TotalConductance: htot
+        3) ConstrictionConductance: hconstr + hgap
+        4) TotalResistance: Rtot
+        """
+        conductance_with_unit = f"{conductance}[W/(m^2*K)]"
+        conductance_plain = f"{conductance}"
+        resistance_with_unit = (
+            f"{1.0 / conductance}[(m^2*K)/W]"
+            if conductance > 0
+            else "1e9[(m^2*K)/W]"
+        )
+
+        attempt_errors: list[str] = []
+
+        def _try_set(param: str, values: list[str]) -> Optional[str]:
+            for expr in values:
+                try:
+                    thermal_contact.set(param, expr)
+                    return expr
+                except Exception as e:
+                    attempt_errors.append(f"{param}={expr} 失败: {e}")
+            return None
+
+        # 方案A：直接键名（覆盖常见 API 差异）
+        for param_name in ("h_tc", "h_joint", "h"):
+            used_value = _try_set(param_name, [conductance_with_unit, conductance_plain])
+            if used_value is not None:
+                return True, f"{param_name}={used_value}", attempt_errors
+
+        # 方案B：等效薄层 + 总热导
+        try:
+            thermal_contact.set("ContactModel", "EquThinLayer")
+            thermal_contact.set("Specify", "TotalConductance")
+            used_value = _try_set("htot", [conductance_with_unit, conductance_plain])
+            if used_value is not None:
+                return True, f"EquThinLayer/htot={used_value}", attempt_errors
+        except Exception as e:
+            attempt_errors.append(f"EquThinLayer 配置失败: {e}")
+
+        # 方案C：收缩导热模型 + 用户定义导热
+        try:
+            thermal_contact.set("ContactModel", "ConstrictionConductance")
+            thermal_contact.set("hcType", "UserDef")
+            hconstr_value = _try_set("hconstr", [conductance_with_unit, conductance_plain])
+            thermal_contact.set("hgType", "UserDef")
+            hgap_value = _try_set("hgap", [conductance_with_unit, conductance_plain])
+            if hconstr_value is not None and hgap_value is not None:
+                return (
+                    True,
+                    f"ConstrictionConductance/hconstr={hconstr_value},hgap={hgap_value}",
+                    attempt_errors,
+                )
+        except Exception as e:
+            attempt_errors.append(f"ConstrictionConductance 配置失败: {e}")
+
+        # 方案D：总热阻
+        try:
+            thermal_contact.set("Specify", "TotalResistance")
+            used_value = _try_set("Rtot", [resistance_with_unit])
+            if used_value is not None:
+                return True, f"Rtot={used_value}", attempt_errors
+        except Exception as e:
+            attempt_errors.append(f"TotalResistance 配置失败: {e}")
+
+        return False, "", attempt_errors
+
     def _apply_thermal_properties_dynamic(
         self,
         design_state: DesignState,
@@ -1163,8 +1119,16 @@ class ComsolDriver(SimulationDriver):
                         tc_name = f"tc_{i}_{contact_idx}"
                         thermal_contact = ht.feature().create(tc_name, "ThermalContact")
 
-                        # 设置接触热导
-                        thermal_contact.set("h", f"{conductance}[W/(m^2*K)]")
+                        conductance_value = float(conductance)
+                        set_ok, set_desc, attempt_errors = self._set_thermal_contact_conductance(
+                            thermal_contact, conductance_value
+                        )
+                        if not set_ok:
+                            raise ValueError(
+                                "无法设置接触热导参数 (尝试 h_tc/h_joint/h + htot/hconstr/hgap/Rtot 均失败): "
+                                + " | ".join(attempt_errors)
+                            )
+                        logger.info(f"      ✓ 接触热导参数已设置: {set_desc}")
 
                         # 创建两个组件的边界选择
                         # 注意：Thermal Contact 需要选择两个组件的接触面
@@ -1172,12 +1136,28 @@ class ComsolDriver(SimulationDriver):
                         sel_a_name = f"boxsel_tc_a_{i}_{contact_idx}"
                         sel_b_name = f"boxsel_tc_b_{i}_{contact_idx}"
 
-                        self._create_component_box_selection(comp, sel_a_name, entity_dim=2)
-                        self._create_component_box_selection(contact_comp, sel_b_name, entity_dim=2)
+                        self._create_component_box_selection(
+                            comp, sel_a_name, entity_dim=2, condition="intersects"
+                        )
+                        self._create_component_box_selection(
+                            contact_comp, sel_b_name, entity_dim=2, condition="intersects"
+                        )
 
-                        # COMSOL Thermal Contact 需要 source 和 destination 选择
-                        thermal_contact.selection("source").named(sel_a_name)
-                        thermal_contact.selection("destination").named(sel_b_name)
+                        # 当前 COMSOL API 的 ThermalContact 不支持 source/destination 命名选择
+                        # 改为将两侧边界实体合并后直接绑定到该特征的 selection()。
+                        try:
+                            sel_a_entities = list(self.model.java.selection(sel_a_name).entities())
+                            sel_b_entities = list(self.model.java.selection(sel_b_name).entities())
+                            merged_entities = sorted(set(sel_a_entities + sel_b_entities))
+
+                            if not merged_entities:
+                                raise ValueError("接触边界选择为空")
+
+                            thermal_contact.selection().set(merged_entities)
+                            logger.info(f"      ✓ 接触边界已绑定: {len(merged_entities)} 个边界实体")
+                        except Exception as selection_error:
+                            logger.warning(f"      ⚠ 接触边界实体合并失败，回退到单侧选择: {selection_error}")
+                            thermal_contact.selection().named(sel_a_name)
 
                         logger.info(f"      ✓ 接触热阻已设置")
                         contact_count += 1
@@ -1191,7 +1171,8 @@ class ComsolDriver(SimulationDriver):
         self,
         comp,
         sel_name: str,
-        entity_dim: int = 3
+        entity_dim: int = 3,
+        condition: str = "inside",
     ):
         """
         为组件创建 Box Selection
@@ -1200,10 +1181,12 @@ class ComsolDriver(SimulationDriver):
             comp: 组件对象
             sel_name: 选择名称
             entity_dim: 实体维度 (3=域, 2=边界, 1=边, 0=点)
+            condition: Box Selection 条件（inside/intersects/allvertices）
         """
         pos = comp.position
         dim = comp.dimensions
-        tolerance = 5.0  # mm
+        # 严格容差：避免在紧凑布局中将相邻组件误选入同一 Box Selection
+        tolerance = 1e-3  # mm
 
         x_min = pos.x - dim.x / 2 - tolerance
         x_max = pos.x + dim.x / 2 + tolerance
@@ -1220,4 +1203,4 @@ class ComsolDriver(SimulationDriver):
         box_sel.set("ymax", f"{y_max}[mm]")
         box_sel.set("zmin", f"{z_min}[mm]")
         box_sel.set("zmax", f"{z_max}[mm]")
-        box_sel.set("condition", "intersects")
+        box_sel.set("condition", condition)

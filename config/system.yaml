@@ -1,8 +1,8 @@
 # 项目信息
 project:
-  name: "satellite_design_optimizer"
-  version: "1.0.0"
-  description: "Unified satellite design optimization system"
+  name: "msgalaxy"
+  version: "2.0.3"
+  description: "LLM-driven satellite design optimization system with dynamic COMSOL integration"
 
 # 几何配置
 geometry:
@@ -13,92 +13,63 @@ geometry:
     shell_thickness_mm: 5.0
     origin: "center"
 
-  components:
-    - id: "battery_01"
-      dims_mm: [200, 150, 100]
-      mass_kg: 5.0
-      power_w: 50.0
-      category: "power"
-
-    - id: "payload_01"
-      dims_mm: [180, 180, 120]
-      mass_kg: 3.5
-      power_w: 30.0
-      category: "payload"
-
-  keepouts:
-    - min_mm: [500, 200, 200]
-      max_mm: [600, 300, 300]
-      tag: "sensor_fov"
-
-  clearance_mm: 20
+  clearance_mm: 5.0  # 最小组件间隙
 
 # 仿真配置
 simulation:
-  backend: "comsol"  # matlab | comsol | simplified (Phase 4+: 强制使用真实 COMSOL，严禁捷径！)
-  type: "COMSOL"  # 保留兼容性
-  mode: "dynamic"  # static | dynamic (静态参数更新 vs 动态STEP导入)
-
-  # MATLAB配置（当type=MATLAB时使用）
-  matlab_workspace: "E:/Simulations/Matlab"
-  matlab_function: "run_thermal_analysis"
-
-  # COMSOL配置（当type=COMSOL时使用）
-  comsol_model: "e:/Code/msgalaxy/models/satellite_thermal_heatflux.mph"
-  comsol_parameters:
-    - "battery_x"
-    - "battery_y"
-    - "battery_z"
-    - "battery_dx"
-    - "battery_dy"
-    - "battery_dz"
-    - "battery_power"
-    - "payload_x"
-    - "payload_y"
-    - "payload_z"
-    - "payload_dx"
-    - "payload_dy"
-    - "payload_dz"
-    - "payload_power"
+  backend: "comsol"  # 仅支持 comsol (v2.0+ 动态架构)
 
   # 约束条件
   constraints:
     max_temp_c: 50.0
-    min_clearance_mm: 3.0
+    min_clearance_mm: 5.0
     max_mass_kg: 150.0
     max_power_w: 500.0
+    max_cg_offset_mm: 20.0  # 质心偏移阈值
 
 # 优化配置
 optimization:
   max_iterations: 20
   convergence_threshold: 0.01
 
+  # DV2.0 十类算子
   allowed_operators:
+    # 几何算子 (8类)
     - "MOVE"
+    - "SWAP"
     - "ROTATE"
-    - "DEFORM"  # Phase 3: FFD 变形算子
+    - "DEFORM"
+    - "ALIGN"
+    - "CHANGE_ENVELOPE"
+    - "ADD_BRACKET"
+    - "REPACK"
+    # 热学算子 (5类)
+    - "MODIFY_COATING"
+    - "ADD_HEATSINK"
+    - "SET_THERMAL_CONTACT"
+    - "ADJUST_LAYOUT"
+    - "CHANGE_ORIENTATION"
 
-  solver_method: "bounded"
-  solver_tolerance: 0.000001
-
-# LLM配置（支持OpenAI和Qwen）
+# LLM配置（Qwen通义千问）
 openai:
   # API配置
-  api_key: "${OPENAI_API_KEY}"  # 从环境变量读取，或直接填写
+  api_key: "${OPENAI_API_KEY}"  # 从环境变量读取
 
-  # 模型选择
-  # OpenAI: gpt-4-turbo, gpt-4, gpt-3.5-turbo
-  # Qwen: qwen3-max, qwen3.5-plus, qwen-plus, qwen-turbo
+  # 模型选择 (推荐: qwen3-max)
   model: "qwen3-max"
 
-  # API Base URL
-  # OpenAI: https://api.openai.com/v1 (默认，可不填)
-  # Qwen: https://dashscope.aliyuncs.com/compatible-mode/v1
+  # API Base URL (Qwen兼容模式)
   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
   # 生成参数
-  temperature: 0.7  # 0.0-1.0，越高越随机
-  max_tokens: 2000  # 最大生成token数
+  temperature: 0.7
+  max_tokens: 2000
+
+# 知识检索配置
+knowledge:
+  base_path: "data/knowledge_base"
+  enable_semantic: true
+  embedding_model: "text-embedding-v4"
 
 # 日志配置
 logging:

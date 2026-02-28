@@ -1,17 +1,15 @@
 """
 Simulation module for satellite design optimization.
 
-Provides interfaces to MATLAB, COMSOL, and simplified physics engines.
+Provides COMSOL dynamic import interface and structural physics.
 """
 
 from .base import SimulationDriver
-from .matlab_driver import MatlabDriver
 from .comsol_driver import ComsolDriver
-from .physics_engine import SimplifiedPhysicsEngine
+from . import structural_physics
 
 __all__ = [
     "SimulationDriver",
-    "MatlabDriver",
     "ComsolDriver",
-    "SimplifiedPhysicsEngine",
+    "structural_physics",
 ]

@@ -18,6 +18,7 @@ from http import HTTPStatus
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import json
+import math
 import yaml
 from pathlib import Path
 
@@ -349,8 +350,23 @@ class MetaReasoner:
             if 'iteration' not in response_json:
                 response_json['iteration'] = context.iteration
 
+            # 清洗模型输出（兼容 null/字符串/非法字段），避免单字段异常导致整轮中断
+            response_json = self._sanitize_plan_payload(response_json, context)
+
             # 验证并构建StrategicPlan
-            plan = StrategicPlan(**response_json)
+            try:
+                plan = StrategicPlan(**response_json)
+            except Exception as validation_error:
+                if self.logger:
+                    self.logger.logger.warning(
+                        f"Meta-Reasoner 输出校验失败，回退到启发式计划: {validation_error}"
+                    )
+                fallback_json = self._build_fallback_plan_payload(
+                    context=context,
+                    reason=f"validation_error: {validation_error}",
+                    raw_response=response_json
+                )
+                plan = StrategicPlan(**fallback_json)
 
             # 自动生成plan_id（如果LLM没有提供）
             if not plan.plan_id or plan.plan_id.startswith("PLAN_YYYYMMDD"):
@@ -359,9 +375,215 @@ class MetaReasoner:
             return plan
 
         except json.JSONDecodeError as e:
-            raise LLMError(f"Failed to parse LLM response as JSON: {e}")
+            if self.logger:
+                self.logger.logger.warning(f"Meta-Reasoner JSON 解析失败，启用回退计划: {e}")
+            fallback_json = self._build_fallback_plan_payload(
+                context=context,
+                reason=f"json_decode_error: {e}",
+                raw_response=None
+            )
+            return StrategicPlan(**fallback_json)
         except Exception as e:
-            raise LLMError(f"Meta-Reasoner failed: {e}")
+            if self.logger:
+                self.logger.logger.warning(f"Meta-Reasoner 调用异常，启用回退计划: {e}")
+            fallback_json = self._build_fallback_plan_payload(
+                context=context,
+                reason=f"meta_reasoner_error: {e}",
+                raw_response=None
+            )
+            return StrategicPlan(**fallback_json)
+
+    def _to_finite_float(self, value: Any) -> Optional[float]:
+        """将任意输入安全转换为有限浮点数，失败返回 None。"""
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(numeric):
+            return None
+        return numeric
+
+    def _sanitize_plan_payload(
+        self,
+        payload: Any,
+        context: GlobalContextPack
+    ) -> Dict[str, Any]:
+        """
+        对 LLM 返回的 StrategicPlan JSON 做鲁棒清洗。
+
+        重点修复：
+        - expected_improvements 中出现 null / 非数字，导致 pydantic float 校验失败
+        - tasks/risks/context 字段类型异常
+        """
+        clean: Dict[str, Any] = {}
+        raw = payload if isinstance(payload, dict) else {}
+
+        clean["plan_id"] = str(raw.get("plan_id") or "")
+        clean["iteration"] = context.iteration
+        clean["timestamp"] = str(raw.get("timestamp") or datetime.now().isoformat())
+        clean["reasoning"] = str(raw.get("reasoning") or "基于当前违反项执行稳健修复。")
+
+        strategy = raw.get("strategy_type")
+        if strategy not in {"local_search", "global_reconfig", "hybrid"}:
+            strategy = "local_search"
+        clean["strategy_type"] = strategy
+        clean["strategy_description"] = str(
+            raw.get("strategy_description") or "围绕当前主要违规执行局部修复。"
+        )
+
+        # 清洗 tasks
+        clean_tasks: List[Dict[str, Any]] = []
+        raw_tasks = raw.get("tasks", [])
+        if isinstance(raw_tasks, list):
+            for idx, task in enumerate(raw_tasks, start=1):
+                if not isinstance(task, dict):
+                    continue
+                agent_type = task.get("agent_type")
+                if agent_type not in {"geometry", "thermal", "structural", "power"}:
+                    continue
+
+                priority_val = self._to_finite_float(task.get("priority"))
+                priority = int(priority_val) if priority_val is not None else 3
+                priority = min(5, max(1, priority))
+
+                constraints = task.get("constraints")
+                if not isinstance(constraints, list):
+                    constraints = []
+                constraints = [str(item) for item in constraints if str(item).strip()]
+
+                context_obj = task.get("context")
+                if not isinstance(context_obj, dict):
+                    context_obj = {}
+
+                clean_tasks.append({
+                    "task_id": str(task.get("task_id") or f"TASK_{context.iteration:03d}_{idx:03d}"),
+                    "agent_type": agent_type,
+                    "objective": str(task.get("objective") or "执行约束修复任务"),
+                    "constraints": constraints,
+                    "priority": priority,
+                    "context": context_obj
+                })
+        clean["tasks"] = clean_tasks
+
+        # 清洗 expected_improvements
+        clean_improvements: Dict[str, float] = {}
+        raw_improvements = raw.get("expected_improvements", {})
+        if isinstance(raw_improvements, dict):
+            for key, value in raw_improvements.items():
+                numeric = self._to_finite_float(value)
+                if numeric is None:
+                    if self.logger:
+                        self.logger.logger.warning(
+                            f"Meta-Reasoner expected_improvements.{key} 非法值已忽略: {value}"
+                        )
+                    continue
+                clean_improvements[str(key)] = numeric
+        clean["expected_improvements"] = clean_improvements
+
+        raw_risks = raw.get("risks", [])
+        if isinstance(raw_risks, list):
+            clean["risks"] = [str(item) for item in raw_risks if str(item).strip()]
+        else:
+            clean["risks"] = []
+
+        return clean
+
+    def _build_fallback_plan_payload(
+        self,
+        context: GlobalContextPack,
+        reason: str,
+        raw_response: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        当 LLM 输出不可用或校验失败时，生成可执行的兜底 StrategicPlan。
+        目标是“不中断优化流程”，而非替代 LLM 长期决策能力。
+        """
+        primary_violation = context.violations[0] if context.violations else None
+        task_agent = "geometry"
+        task_objective = "执行局部几何修复并复核约束。"
+        expected_improvements: Dict[str, float] = {}
+        task_constraints: List[str] = [
+            "不得引入新碰撞",
+            "优先降低总惩罚分"
+        ]
+        task_context: Dict[str, Any] = {
+            "fallback_reason": reason
+        }
+
+        if primary_violation is not None:
+            task_constraints.insert(0, primary_violation.to_natural_language())
+            task_context["primary_violation"] = primary_violation.description
+            task_context["violation_metric"] = primary_violation.metric_value
+            task_context["violation_threshold"] = primary_violation.threshold
+
+            if primary_violation.violation_type == "thermal":
+                task_agent = "thermal"
+                task_objective = "优先降低峰值温度并保持几何可行。"
+                expected_improvements["max_temp"] = -max(
+                    1.0,
+                    float(primary_violation.metric_value - primary_violation.threshold)
+                )
+            elif primary_violation.violation_type == "geometry":
+                desc = primary_violation.description
+                if "间隙" in desc or "重叠" in desc:
+                    task_agent = "geometry"
+                    task_objective = "优先提升最小间隙并消除潜在重叠风险。"
+                    expected_improvements["min_clearance"] = max(
+                        1.0,
+                        float(primary_violation.threshold - primary_violation.metric_value) + 0.5
+                    )
+                elif "质心" in desc:
+                    task_agent = "geometry"
+                    task_objective = "优先降低质心偏移并保持布局可制造性。"
+                    expected_improvements["cg_offset_magnitude"] = -max(
+                        1.0,
+                        float(primary_violation.metric_value - primary_violation.threshold)
+                    )
+            elif primary_violation.violation_type == "structural":
+                task_agent = "structural"
+                task_objective = "优先提升结构安全系数。"
+                expected_improvements["safety_factor"] = max(
+                    0.1,
+                    float(primary_violation.threshold - primary_violation.metric_value)
+                )
+            elif primary_violation.violation_type == "power":
+                task_agent = "power"
+                task_objective = "优先降低功率约束违反风险。"
+
+        if not expected_improvements:
+            expected_improvements["penalty_score"] = -10.0
+
+        return {
+            "plan_id": f"PLAN_FALLBACK_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            "iteration": context.iteration,
+            "timestamp": datetime.now().isoformat(),
+            "reasoning": (
+                "Meta-Reasoner 输出不可用，启用鲁棒兜底策略。"
+                f" 触发原因: {reason}。优先修复当前主要违反项并保持总惩罚分下降。"
+            ),
+            "strategy_type": "local_search",
+            "strategy_description": "回退到可执行的局部修复策略，保障优化流程连续性",
+            "tasks": [
+                {
+                    "task_id": f"TASK_FALLBACK_{context.iteration:03d}_001",
+                    "agent_type": task_agent,
+                    "objective": task_objective,
+                    "constraints": task_constraints,
+                    "priority": 1,
+                    "context": {
+                        **task_context,
+                        "raw_response": raw_response if isinstance(raw_response, dict) else {}
+                    }
+                }
+            ],
+            "expected_improvements": expected_improvements,
+            "risks": [
+                "兜底计划保守，可能降低单轮探索幅度",
+                "建议后续继续监控 LLM 输出稳定性"
+            ]
+        }
 
     def evaluate_plan_quality(self, plan: StrategicPlan) -> Dict[str, Any]:
         """
