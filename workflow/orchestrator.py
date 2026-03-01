@@ -12,7 +12,7 @@ import os
 import re
 import json
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pathlib import Path
 import yaml
 import numpy as np
@@ -295,6 +295,8 @@ class WorkflowOrchestrator:
         self.state_history = {}  # {state_id: (DesignState, EvaluationResult)}
         self.recent_failures = []  # 最近失败的操作描述
         self.rollback_count = 0  # 回退次数统计
+        self._snapshot_history: List[Dict[str, float]] = []  # 用于平台期检测
+        self._cg_rescue_last_iter: int = -999  # 防止每轮都触发救援
 
         self.logger.logger.info("All modules initialized successfully")
 
@@ -318,6 +320,8 @@ class WorkflowOrchestrator:
         self.logger.logger.info(f"Starting optimization (max_iter={max_iterations})")
         self.runtime_constraints = dict(self.default_constraints)
         self._last_trace_metrics = None  # 用于计算迭代增量
+        self._snapshot_history = []
+        self._cg_rescue_last_iter = -999
         self.logger.logger.info(
             "Runtime constraints initialized: "
             f"T<= {self.runtime_constraints['max_temp_c']:.2f}°C, "
@@ -386,6 +390,10 @@ class WorkflowOrchestrator:
                     "min_clearance": curr_min_clearance,
                     "num_violations": len(violations),
                 }
+                self._snapshot_history.append({"iteration": float(iteration), **current_snapshot})
+                if len(self._snapshot_history) > 40:
+                    self._snapshot_history = self._snapshot_history[-40:]
+                cg_plateau = self._is_cg_plateau(iteration, current_snapshot, violations)
                 effectiveness_score = self._compute_effectiveness_score(prev_metrics, current_snapshot)
 
                 # 记录迭代数据
@@ -452,6 +460,44 @@ class WorkflowOrchestrator:
                         if len(self.recent_failures) > 3:
                             self.recent_failures = self.recent_failures[-3:]  # 只保留最近3次失败
                         continue  # 跳过本次迭代，从回退状态重新开始
+
+                # 单违规平台期救援：仅当持续卡在 CG 约束附近时启用确定性搜索
+                if cg_plateau and (iteration - self._cg_rescue_last_iter) >= 2:
+                    rescue_result = self._run_cg_plateau_rescue(
+                        current_state=current_state,
+                        current_metrics=current_metrics,
+                        violations=violations,
+                        iteration=iteration
+                    )
+                    if rescue_result is not None:
+                        rescue_state, rescue_metrics, rescue_violations, rescue_meta = rescue_result
+                        current_state = rescue_state
+                        self._cg_rescue_last_iter = iteration
+
+                        rescue_state_id = f"state_iter_{iteration:02d}_r"
+                        rescue_state.state_id = rescue_state_id
+                        rescue_eval = EvaluationResult(
+                            state_id=rescue_state_id,
+                            iteration=iteration,
+                            success=len(rescue_violations) == 0,
+                            metrics={
+                                'max_temp': rescue_metrics['thermal'].max_temp,
+                                'min_clearance': rescue_metrics['geometry'].min_clearance,
+                                'cg_offset': rescue_metrics['geometry'].cg_offset_magnitude,
+                                'total_power': rescue_metrics['power'].total_power
+                            },
+                            violations=[v.dict() if hasattr(v, 'dict') else v for v in rescue_violations],
+                            penalty_score=self._calculate_penalty_score(rescue_metrics, rescue_violations),
+                            timestamp=__import__('datetime').datetime.now().isoformat()
+                        )
+                        self.state_history[rescue_state_id] = (rescue_state.copy(deep=True), rescue_eval)
+                        self.logger.logger.info(
+                            "✓ CG 平台期救援成功: "
+                            f"{rescue_meta['component']} {rescue_meta['axis']} {rescue_meta['delta']:.2f}mm, "
+                            f"cg {rescue_meta['cg_before']:.2f} -> {rescue_meta['cg_after']:.2f}"
+                        )
+                        # 救援已替代本轮 LLM 计划，直接进入下一轮
+                        continue
 
                 # 2.3 构建全局上下文
                 context = self._build_global_context(
@@ -534,7 +580,20 @@ class WorkflowOrchestrator:
                 new_metrics, new_violations = self._evaluate_design(new_state, iteration)
 
                 # 2.8 判断是否接受新状态
-                if self._should_accept(current_metrics, new_metrics, violations, new_violations):
+                allow_penalty_regression = 0.0
+                require_cg_improve_on_regression = False
+                if cg_plateau:
+                    allow_penalty_regression = 2.0
+                    require_cg_improve_on_regression = True
+
+                if self._should_accept(
+                    current_metrics,
+                    new_metrics,
+                    violations,
+                    new_violations,
+                    allow_penalty_regression=allow_penalty_regression,
+                    require_cg_improve_on_regression=require_cg_improve_on_regression
+                ):
                     current_state = new_state
                     self.logger.logger.info("✓ New state accepted")
 
@@ -929,6 +988,185 @@ class WorkflowOrchestrator:
                 )
             )
         return tuple(sorted(comp_fp, key=lambda x: x[0]))
+
+    def _is_cg_violation(self, violation: Any) -> bool:
+        """判断违规项是否属于质心偏移违规。"""
+        violation_id = str(getattr(violation, "violation_id", ""))
+        description = str(getattr(violation, "description", ""))
+        return (
+            violation_id.startswith("V_CG") or
+            ("质心" in description) or
+            ("cg" in description.lower())
+        )
+
+    def _is_cg_only_violation(self, violations: list[ViolationItem]) -> bool:
+        """是否仅剩质心违规（可触发平台期定向策略）。"""
+        return bool(violations) and all(self._is_cg_violation(v) for v in violations)
+
+    def _is_cg_plateau(
+        self,
+        iteration: int,
+        current_snapshot: Dict[str, float],
+        violations: list[ViolationItem],
+        window: int = 4
+    ) -> bool:
+        """
+        检测是否进入“单违规 + 小改进平台期”。
+
+        判据：
+        - 仅剩 CG 违规
+        - 最近 `window` 轮违规数量不变
+        - 惩罚分单步改变量整体很小
+        - CG 总改善有限（说明陷入局部平台）
+        """
+        if iteration < window:
+            return False
+        if not self._is_cg_only_violation(violations):
+            return False
+        if len(self._snapshot_history) < window:
+            return False
+
+        recent = self._snapshot_history[-window:]
+        if any(int(r.get("num_violations", -1)) != int(current_snapshot.get("num_violations", -2)) for r in recent):
+            return False
+
+        penalty_deltas = []
+        for i in range(1, len(recent)):
+            penalty_deltas.append(abs(float(recent[i]["penalty_score"]) - float(recent[i - 1]["penalty_score"])))
+        if not penalty_deltas:
+            return False
+
+        total_cg_gain = float(recent[0]["cg_offset"]) - float(recent[-1]["cg_offset"])
+        return (max(penalty_deltas) <= 1.5) and (total_cg_gain <= 2.0)
+
+    def _run_cg_plateau_rescue(
+        self,
+        current_state: DesignState,
+        current_metrics: Dict[str, Any],
+        violations: list[ViolationItem],
+        iteration: int
+    ) -> Optional[tuple[DesignState, Dict[str, Any], list[ViolationItem], Dict[str, float]]]:
+        """
+        CG 平台期的确定性局部搜索。
+
+        思路：
+        - 在 CG 主导方向上对重型组件做小步坐标搜索（带几何可行性预检）
+        - 先用几何评估挑选最优候选，再做一次真实仿真验证
+        """
+        if not self._is_cg_only_violation(violations):
+            return None
+
+        geom = current_metrics.get("geometry")
+        if geom is None:
+            return None
+
+        current_cg = float(getattr(geom, "cg_offset_magnitude", 0.0))
+        com_offset = [float(x) for x in getattr(geom, "com_offset", [0.0, 0.0, 0.0])]
+        axes = [("X", com_offset[0]), ("Y", com_offset[1]), ("Z", com_offset[2])]
+        axes.sort(key=lambda x: abs(x[1]), reverse=True)
+
+        if not axes or abs(axes[0][1]) < 1e-6:
+            return None
+
+        step_mm = [5.0, 10.0, 15.0, 20.0, 30.0, 40.0]
+        heavy_components = sorted(
+            current_state.components,
+            key=lambda c: float(getattr(c, "mass", 0.0)),
+            reverse=True
+        )[:6]
+
+        best: Optional[Dict[str, Any]] = None
+        min_cg_improvement = 0.2
+
+        self.logger.logger.info(
+            f"⚙ 触发 CG 平台期救援: cg={current_cg:.2f}mm, COM=({com_offset[0]:.2f},{com_offset[1]:.2f},{com_offset[2]:.2f})"
+        )
+
+        for axis, axis_value in axes:
+            if abs(axis_value) < 1e-6:
+                continue
+            # 当 COM 在 +axis 方向时，沿 -axis 方向移动组件可降低该分量，反之亦然。
+            direction = -1.0 if axis_value > 0 else 1.0
+
+            for comp in heavy_components:
+                for step in step_mm:
+                    delta = direction * step
+                    candidate_state = current_state.copy(deep=True)
+                    changed = self._execute_single_action(
+                        candidate_state,
+                        "MOVE",
+                        comp.id,
+                        {"axis": axis, "range": [delta, delta]}
+                    )
+                    if not changed:
+                        continue
+
+                    feasible, min_clearance, num_collisions = self._is_geometry_feasible(candidate_state)
+                    if not feasible:
+                        continue
+
+                    candidate_geom = self._evaluate_geometry(candidate_state)
+                    candidate_cg = float(candidate_geom.cg_offset_magnitude)
+                    cg_improvement = current_cg - candidate_cg
+                    if cg_improvement < min_cg_improvement:
+                        continue
+
+                    score = (
+                        cg_improvement * 10.0 +
+                        min(float(getattr(comp, "mass", 0.0)), 20.0) * 0.05 +
+                        min(float(min_clearance), 20.0) * 0.01
+                    )
+                    if best is None or score > float(best["score"]):
+                        best = {
+                            "state": candidate_state,
+                            "component": comp.id,
+                            "axis": axis,
+                            "delta": delta,
+                            "cg_before": current_cg,
+                            "cg_after": candidate_cg,
+                            "clearance": float(min_clearance),
+                            "collisions": int(num_collisions),
+                            "score": float(score),
+                        }
+
+        if best is None:
+            self.logger.logger.info("⚠ CG 平台期救援未找到可行候选，回退到常规策略")
+            return None
+
+        self.logger.logger.info(
+            "  CG 救援候选: "
+            f"{best['component']} {best['axis']} {best['delta']:.2f}mm, "
+            f"cg {best['cg_before']:.2f} -> {best['cg_after']:.2f}"
+        )
+
+        new_state = best["state"]
+        new_metrics, new_violations = self._evaluate_design(new_state, iteration)
+        old_penalty = self._calculate_penalty_score(current_metrics, violations)
+        new_penalty = self._calculate_penalty_score(new_metrics, new_violations)
+
+        accepted = False
+        if len(new_violations) < len(violations):
+            accepted = True
+        elif len(new_violations) == len(violations):
+            if new_penalty <= old_penalty + 1e-6:
+                accepted = True
+            elif (
+                self._is_cg_only_violation(new_violations) and
+                new_penalty <= old_penalty + 2.0 and
+                float(new_metrics["geometry"].cg_offset_magnitude) < current_cg - 0.5
+            ):
+                accepted = True
+
+        if not accepted:
+            self.logger.logger.warning(
+                "⚠ CG 平台期救援候选被拒绝: "
+                f"penalty {old_penalty:.2f} -> {new_penalty:.2f}, "
+                f"viol {len(violations)} -> {len(new_violations)}"
+            )
+            return None
+
+        best["cg_after"] = float(new_metrics["geometry"].cg_offset_magnitude)
+        return new_state, new_metrics, new_violations, best
 
     def _check_violations(
         self,
@@ -1690,9 +1928,18 @@ class WorkflowOrchestrator:
         old_metrics: Dict[str, Any],
         new_metrics: Dict[str, Any],
         old_violations: list,
-        new_violations: list
+        new_violations: list,
+        allow_penalty_regression: float = 0.0,
+        require_cg_improve_on_regression: bool = False
     ) -> bool:
-        """判断是否接受新状态（违规数量 + 惩罚分双判据）"""
+        """
+        判断是否接受新状态（违规数量 + 惩罚分双判据）。
+
+        allow_penalty_regression:
+            允许在平台期接受“小幅惩罚上升”的候选，用于穿越局部最优。
+        require_cg_improve_on_regression:
+            当发生惩罚上升时，要求 CG 必须实质改善，避免无效放宽。
+        """
         old_count = len(old_violations)
         new_count = len(new_violations)
 
@@ -1705,12 +1952,34 @@ class WorkflowOrchestrator:
         # 二级判据：违规数量相同时，惩罚分不能恶化
         old_penalty = self._calculate_penalty_score(old_metrics, old_violations)
         new_penalty = self._calculate_penalty_score(new_metrics, new_violations)
-        if new_penalty <= old_penalty + 1e-6:
+        tolerance = max(float(allow_penalty_regression), 0.0)
+        if new_penalty <= old_penalty + max(1e-6, tolerance):
+            # 平台期放宽仅在“确实换来 CG 改善”时才生效
+            if (
+                tolerance > 1e-9 and
+                new_penalty > old_penalty + 1e-6 and
+                require_cg_improve_on_regression
+            ):
+                old_cg = float(old_metrics["geometry"].cg_offset_magnitude)
+                new_cg = float(new_metrics["geometry"].cg_offset_magnitude)
+                if new_cg >= old_cg - 0.5:
+                    self.logger.logger.info(
+                        "  拒绝新状态: 虽在放宽窗口内，但 CG 改善不足 "
+                        f"({old_cg:.2f} -> {new_cg:.2f})"
+                    )
+                    return False
+
+                self.logger.logger.info(
+                    "  平台期受控接受: 允许小幅惩罚上升以换取 CG 改善 "
+                    f"(penalty {old_penalty:.2f} -> {new_penalty:.2f}, "
+                    f"cg {old_cg:.2f} -> {new_cg:.2f})"
+                )
             return True
 
         self.logger.logger.info(
             "  拒绝新状态: 违规数未减少且惩罚分恶化 "
-            f"({old_penalty:.2f} -> {new_penalty:.2f})"
+            f"({old_penalty:.2f} -> {new_penalty:.2f}, "
+            f"tolerance={tolerance:.2f})"
         )
         return False
 

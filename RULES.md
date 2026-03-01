@@ -63,4 +63,4 @@
      - Test output files in `workspace/` or similar temporary directories
      - Obsolete test data files that are no longer referenced
    - **Archive Old Files**: If a file is deprecated but has historical value, move it to `docs/archive/` rather than deleting it outright.
-   - **Keep Repository Clean**: Regularly review and clean up unused files, outdated test artifacts, and redundant code to maintain a professional, publication-ready codebase. This includes removing unnecessary files, cleaning up old test scripts, and removing obsolete code.
+   - **Keep Repository Clean**: Regularly review and clean up unused files, outdated test artifacts, and redundant code to maintain a professional, publication-ready codebase. This includes removing unnecessary files, cleaning up old test scripts, and removing obsolete code. This is especially important for large projects with many contributors. 

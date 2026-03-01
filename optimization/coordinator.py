@@ -381,13 +381,22 @@ class AgentCoordinator:
         current_state: DesignState
     ) -> OptimizationPlan:
         """生成执行计划"""
-        # 收集所有选中的提案
-        selected_proposal_ids = []
-        all_actions = []
+        # 同学科提案合并：避免仅执行第一个提案导致动作丢失
+        geometry_proposal = self._merge_agent_proposals(proposals.get("geometry", []), "geometry")
+        thermal_proposal = self._merge_agent_proposals(proposals.get("thermal", []), "thermal")
+        structural_proposal = self._merge_agent_proposals(proposals.get("structural", []), "structural")
+        power_proposal = self._merge_agent_proposals(proposals.get("power", []), "power")
 
-        for agent_type, proposal_list in proposals.items():
+        # 收集所有选中的提案ID（用于追溯）
+        selected_proposal_ids = []
+        for _, proposal_list in proposals.items():
             for proposal in proposal_list:
                 selected_proposal_ids.append(proposal.proposal_id)
+
+        # 执行动作来自“合并后的提案”，确保全部有效动作都能进入执行层
+        all_actions = []
+        for proposal in [geometry_proposal, thermal_proposal, structural_proposal, power_proposal]:
+            if proposal and getattr(proposal, "actions", None):
                 all_actions.extend(proposal.actions)
 
         # 确定执行顺序（考虑依赖关系）
@@ -395,12 +404,6 @@ class AgentCoordinator:
 
         # 聚合预期指标
         expected_metrics = self._aggregate_expected_metrics(proposals)
-
-        # 提取各学科的第一个提案（用于执行层）
-        geometry_proposal = proposals["geometry"][0] if proposals["geometry"] else None
-        thermal_proposal = proposals["thermal"][0] if proposals["thermal"] else None
-        structural_proposal = proposals["structural"][0] if proposals["structural"] else None
-        power_proposal = proposals["power"][0] if proposals["power"] else None
 
         plan = OptimizationPlan(
             plan_id=f"EXEC_{datetime.now().strftime('%Y%m%d%H%M%S')}",
@@ -418,6 +421,66 @@ class AgentCoordinator:
         )
 
         return plan
+
+    def _action_signature(self, action: Any) -> str:
+        """为动作生成稳定签名，用于去重。"""
+        component_id = getattr(action, "component_id", None)
+        target_components = getattr(action, "target_components", None)
+        parameters = getattr(action, "parameters", {}) or {}
+        return json.dumps(
+            {
+                "op_type": getattr(action, "op_type", ""),
+                "component_id": component_id,
+                "target_components": list(target_components) if isinstance(target_components, list) else target_components,
+                "parameters": parameters,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    def _merge_agent_proposals(self, proposal_list: List[Any], agent_type: str) -> Optional[Any]:
+        """
+        合并同学科多提案，避免执行层仅消费第一个提案造成信息丢失。
+        """
+        if not proposal_list:
+            return None
+        if len(proposal_list) == 1:
+            return proposal_list[0]
+
+        merged = proposal_list[0].model_copy(deep=True)
+        merged_actions = list(getattr(merged, "actions", []) or [])
+        seen_signatures = {self._action_signature(a) for a in merged_actions}
+        reasonings = [str(getattr(merged, "reasoning", "") or "").strip()]
+        side_effects = list(getattr(merged, "side_effects", []) or [])
+        confidences = [float(getattr(merged, "confidence", 0.0) or 0.0)]
+
+        for proposal in proposal_list[1:]:
+            for action in getattr(proposal, "actions", []) or []:
+                sig = self._action_signature(action)
+                if sig in seen_signatures:
+                    continue
+                merged_actions.append(action.model_copy(deep=True))
+                seen_signatures.add(sig)
+
+            proposal_reasoning = str(getattr(proposal, "reasoning", "") or "").strip()
+            if proposal_reasoning:
+                reasonings.append(proposal_reasoning)
+            side_effects.extend(getattr(proposal, "side_effects", []) or [])
+            confidences.append(float(getattr(proposal, "confidence", 0.0) or 0.0))
+
+        merged.actions = merged_actions
+        merged.reasoning = "\n\n---\n\n".join([r for r in reasonings if r])
+        merged.side_effects = list(dict.fromkeys(side_effects))
+        merged.confidence = sum(confidences) / max(len(confidences), 1)
+        merged.proposal_id = f"{agent_type.upper()}_MERGED_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+        if self.logger:
+            self.logger.logger.info(
+                f"{agent_type} proposals merged: {len(proposal_list)} -> 1, "
+                f"actions={len(merged.actions)}"
+            )
+
+        return merged
 
     def _determine_execution_order(self, actions: List[Any]) -> List[Dict[str, Any]]:
         """确定执行顺序"""

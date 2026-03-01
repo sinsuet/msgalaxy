@@ -55,6 +55,7 @@ class RAGSystem:
         self.base_url = base_url
         self.enable_semantic = bool(enable_semantic)
         self.embedding_model = embedding_model or self._default_embedding_model(base_url)
+        self.embedding_batch_size = 10  # DashScope OpenAI兼容接口: 单次输入上限10
 
         client_kwargs: Dict[str, Any] = {"api_key": api_key}
         if base_url:
@@ -167,15 +168,26 @@ class RAGSystem:
             return
 
         texts = [f"{item.title}\n{item.content}" for item in self.knowledge_items]
+        previous_embeddings = self.embeddings
 
         try:
-            response = self.client.embeddings.create(
-                model=self.embedding_model,
-                input=texts,
-                timeout=60.0  # 增加超时时间到 60 秒
-            )
+            embeddings: List[List[float]] = []
+            batch_size = max(int(self.embedding_batch_size), 1)
+            for start_idx in range(0, len(texts), batch_size):
+                chunk = texts[start_idx:start_idx + batch_size]
+                response = self.client.embeddings.create(
+                    model=self.embedding_model,
+                    input=chunk,
+                    timeout=60.0  # 增加超时时间到 60 秒
+                )
+                chunk_embeddings = [data.embedding for data in response.data]
+                if len(chunk_embeddings) != len(chunk):
+                    raise ValueError(
+                        "embedding 返回数量与输入数量不一致: "
+                        f"{len(chunk_embeddings)} != {len(chunk)}"
+                    )
+                embeddings.extend(chunk_embeddings)
 
-            embeddings = [data.embedding for data in response.data]
             self.embeddings = np.array(embeddings)
 
             # 保存embeddings
@@ -193,9 +205,12 @@ class RAGSystem:
                     )
                 else:
                     self.logger.logger.warning(f"Failed to compute embeddings: {e}")
-                self.logger.logger.warning("RAG 语义检索将被禁用，仅使用关键词检索")
-            # 设置空 embeddings，后续检索时会跳过语义检索
-            self.embeddings = None
+                if previous_embeddings is not None:
+                    self.logger.logger.warning("保留历史 embeddings，继续启用语义检索缓存")
+                else:
+                    self.logger.logger.warning("RAG 语义检索将被禁用，仅使用关键词检索")
+            # 若已有历史向量，则保留缓存；否则禁用语义检索
+            self.embeddings = previous_embeddings if previous_embeddings is not None else None
 
     def _save_knowledge_base(self):
         """保存知识库"""

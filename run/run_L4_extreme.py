@@ -3,7 +3,7 @@
 """
 L4 极限级测试 - 开箱即用
 10组件，双高热源，空间装填极限（>85%）
-预期：20-30轮收敛（可能需要多次回退）
+预期：15-30轮收敛（可能需要多次回退）
 """
 
 import os
@@ -109,7 +109,7 @@ def main():
     print("📦 组件数量: 10个")
     print("🎯 测试目标: 双高热源+装填极限，测试系统极限鲁棒性")
     print("⏱️  预期时间: 60-90分钟")
-    print("🔄 最大迭代: 30次")
+    print("🔄 最大迭代: 15次")
     print("⚠️  警告: 此测试难度极高，可能触发多次智能回退")
     print("=" * 80)
     print()
@@ -145,11 +145,11 @@ def main():
 
     try:
         # L4配置：强制覆盖
-        orchestrator.config['optimization']['max_iterations'] = 30
+        orchestrator.config['optimization']['max_iterations'] = 15
 
         final_state = orchestrator.run_optimization(
             bom_file=str(project_root / "config" / "bom_L4_extreme.json"),
-            max_iterations=30
+            max_iterations=15
         )
 
         print()
