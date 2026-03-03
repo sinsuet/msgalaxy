@@ -56,3 +56,4 @@ logs/
 # Local-only runtime/developer assets (not distributed by default)
 scripts/
 tests/
+ylq.md
