@@ -25,6 +25,7 @@ __pycache__/
 
 # Experiments and logs
 experiments/
+benchmarks/
 *.log
 
 # Temporary files
