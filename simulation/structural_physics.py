@@ -76,9 +76,9 @@ def calculate_cg_offset(design_state: DesignState) -> float:
     com_array = np.array([com.x, com.y, com.z])
     offset = np.linalg.norm(com_array - geometric_center)
 
-    logger.info(f"质心: ({com.x:.2f}, {com.y:.2f}, {com.z:.2f}) mm")
-    logger.info(f"几何中心: ({geometric_center[0]:.2f}, {geometric_center[1]:.2f}, {geometric_center[2]:.2f}) mm")
-    logger.info(f"质心偏移量: {offset:.2f} mm")
+    logger.debug(f"质心: ({com.x:.2f}, {com.y:.2f}, {com.z:.2f}) mm")
+    logger.debug(f"几何中心: ({geometric_center[0]:.2f}, {geometric_center[1]:.2f}, {geometric_center[2]:.2f}) mm")
+    logger.debug(f"质心偏移量: {offset:.2f} mm")
 
     return float(offset)
 
@@ -120,7 +120,7 @@ def calculate_moment_of_inertia(design_state: DesignState) -> Tuple[float, float
         Iyy += Iyy_local + mass * (r[0]**2 + r[2]**2)
         Izz += Izz_local + mass * (r[0]**2 + r[1]**2)
 
-    logger.info(f"转动惯量: Ixx={Ixx:.4f}, Iyy={Iyy:.4f}, Izz={Izz:.4f} kg·m²")
+    logger.debug(f"转动惯量: Ixx={Ixx:.4f}, Iyy={Iyy:.4f}, Izz={Izz:.4f} kg·m²")
 
     return (float(Ixx), float(Iyy), float(Izz))
 

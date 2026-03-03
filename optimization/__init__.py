@@ -21,6 +21,10 @@ from .protocol import (
     GlobalContextPack,
     AgentTask,
     StrategicPlan,
+    ModelingVariable,
+    ModelingObjective,
+    ModelingConstraint,
+    ModelingIntent,
     # 战术层协议
     GeometryAction,
     GeometryProposal,
@@ -40,6 +44,15 @@ from .protocol import (
     ToolCall,
     ToolResult,
 )
+from .modeling_validator import validate_modeling_intent
+from .maas_compiler import compile_intent_to_problem_spec, formulate_modeling_intent
+from .maas_reflection import diagnose_solver_outcome, suggest_constraint_relaxation
+from .maas_audit import select_top_pareto_indices
+from .maas_mcts import MaaSMCTSPlanner, MCTSSearchResult, MCTSNode, MCTSVariant, MCTSEvaluation
+from .trace_features import extract_maas_trace_features
+from .meta_policy import propose_meta_policy_actions
+from .operator_program import OperatorAction, OperatorProgram, validate_operator_program
+from .operator_actions import apply_operator_program_to_intent, build_operator_program_from_context
 
 __all__ = [
     # 基础
@@ -55,6 +68,10 @@ __all__ = [
     "GlobalContextPack",
     "AgentTask",
     "StrategicPlan",
+    "ModelingVariable",
+    "ModelingObjective",
+    "ModelingConstraint",
+    "ModelingIntent",
     # 战术层
     "GeometryAction",
     "GeometryProposal",
@@ -73,4 +90,22 @@ __all__ = [
     "ExecutionResult",
     "ToolCall",
     "ToolResult",
+    "validate_modeling_intent",
+    "compile_intent_to_problem_spec",
+    "formulate_modeling_intent",
+    "diagnose_solver_outcome",
+    "suggest_constraint_relaxation",
+    "select_top_pareto_indices",
+    "MaaSMCTSPlanner",
+    "MCTSSearchResult",
+    "MCTSNode",
+    "MCTSVariant",
+    "MCTSEvaluation",
+    "extract_maas_trace_features",
+    "propose_meta_policy_actions",
+    "OperatorAction",
+    "OperatorProgram",
+    "validate_operator_program",
+    "apply_operator_program_to_intent",
+    "build_operator_program_from_context",
 ]

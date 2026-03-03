@@ -99,6 +99,10 @@ msgalaxy/
 │   ├── bom_L2_intermediate.json  # L2进阶级BOM (3组件) ⭐
 │   ├── bom_L3_complex.json       # L3复杂级BOM (7组件) ⭐
 │   ├── bom_L4_extreme.json       # L4极限级BOM (10组件) ⭐
+│   ├── bom_L5_stress.json        # L5压力级BOM (16组件)
+│   ├── bom_L6_heavy.json         # L6重载级BOM (24组件)
+│   ├── bom_L7_dense.json         # L7高密级BOM (32组件)
+│   ├── bom_L8_40components.json  # L8瓶颈级BOM (40组件)
 │   └── ...                       # 未来可扩展BOM（按需新增）
 │
 ├── run/                           # 开箱即用运行脚本 ⭐⭐⭐

@@ -283,12 +283,38 @@ class SimulationConfig(BaseModel):
     comsol_model: Optional[str] = None
     comsol_parameters: List[str] = Field(default_factory=list)
     constraints: Dict[str, float] = Field(default_factory=dict)
+    save_mph_each_eval: bool = False
+    save_mph_on_failure: bool = True
 
 
 class OptimizationConfig(BaseModel):
     """优化配置"""
+    mode: str = "agent_loop"  # agent_loop | pymoo_maas
     max_iterations: int = 20
     convergence_threshold: float = 0.01
+    pymoo_pop_size: int = 96
+    pymoo_n_gen: int = 80
+    pymoo_seed: int = 42
+    pymoo_verbose: bool = False
+    pymoo_return_least_infeasible: bool = True
+    pymoo_maas_max_attempts: int = 3
+    pymoo_maas_relax_ratio: float = 0.08
+    pymoo_maas_auto_relax: bool = True
+    pymoo_maas_retry_on_stall: bool = True
+    pymoo_maas_thermal_evaluator_mode: str = "proxy"  # proxy | online_comsol
+    pymoo_maas_online_comsol_eval_budget: int = 24
+    pymoo_maas_enable_physics_audit: bool = True
+    pymoo_maas_audit_top_k: int = 3
+    pymoo_maas_enforce_audit_feasible: bool = True
+    pymoo_maas_audit_allow_infeasible_fallback: bool = False
+    pymoo_maas_enable_mcts: bool = True
+    pymoo_maas_mcts_budget: int = 4
+    pymoo_maas_mcts_max_depth: int = 2
+    pymoo_maas_mcts_c_uct: float = 1.2
+    pymoo_maas_mcts_stagnation_rounds: int = 2
+    pymoo_maas_mcts_min_score_improvement: float = 1.0
+    pymoo_maas_mcts_min_cv_improvement: float = 0.1
+    pymoo_maas_mcts_prune_margin: float = 100.0
     allowed_operators: List[str] = Field(default_factory=lambda: ["MOVE"])
     solver_method: str = "bounded"
     solver_tolerance: float = 1e-6
@@ -297,7 +323,7 @@ class OptimizationConfig(BaseModel):
 class OpenAIConfig(BaseModel):
     """OpenAI配置"""
     api_key: str
-    model: str = "gpt-4"
+    model: str = "qwen3-max"
     temperature: float = 0.5
     max_tokens: int = 2000
 

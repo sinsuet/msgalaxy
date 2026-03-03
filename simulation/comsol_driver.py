@@ -10,9 +10,10 @@ import re
 from typing import Dict, Any, Optional
 from pathlib import Path
 from datetime import datetime
+import math
 
 from simulation.base import SimulationDriver
-from core.protocol import SimulationRequest, SimulationResult, ViolationItem, DesignState
+from core.protocol import SimulationRequest, SimulationResult, SimulationType, ViolationItem, DesignState
 from core.exceptions import ComsolConnectionError, SimulationError
 from core.logger import get_logger
 
@@ -34,6 +35,17 @@ class ComsolDriver(SimulationDriver):
         self.environment = config.get('environment', 'orbit')
         self.client: Optional[Any] = None
         self.model: Optional[Any] = None
+        self.save_mph_each_eval = bool(config.get("save_mph_each_eval", False))
+        self.save_mph_on_failure = bool(config.get("save_mph_on_failure", True))
+        self._last_heat_binding_report: Dict[str, Any] = {
+            "active_components": 0,
+            "assigned_count": 0,
+            "ambiguous_components": [],
+            "disambiguated_components": [],
+            "failed_components": [],
+        }
+        self.last_saved_mph_path: str = ""
+        self.saved_mph_records: list[Dict[str, Any]] = []
 
         logger.info("COMSOL驱动器初始化: dynamic-only")
 
@@ -109,7 +121,7 @@ class ComsolDriver(SimulationDriver):
 
         return self._run_dynamic_simulation(request)
 
-    def _save_mph_model(self, request: SimulationRequest):
+    def _save_mph_model(self, request: SimulationRequest, reason: str = "regular") -> str:
         """
         保存 COMSOL .mph 模型文件（用于可复现性和可视化排错）
 
@@ -120,7 +132,7 @@ class ComsolDriver(SimulationDriver):
             # 检查模型是否存在
             if not self.model:
                 logger.warning("  ⚠ COMSOL 模型对象不存在，跳过保存")
-                return
+                return ""
 
             # 选择保存目录
             experiment_dir = request.parameters.get("experiment_dir")
@@ -130,7 +142,7 @@ class ComsolDriver(SimulationDriver):
                 save_dir = Path("workspace/comsol_models")
             save_dir.mkdir(parents=True, exist_ok=True)
 
-            # 使用 state_id 作为主文件名，避免因 design_state.iteration 重复导致锁冲突
+            # 使用 state_id 作为基础文件名，统一附加唯一后缀，避免锁冲突
             state_id = (request.design_state.state_id or "").strip()
             if state_id:
                 base_name = f"model_{state_id}"
@@ -142,24 +154,63 @@ class ComsolDriver(SimulationDriver):
             if not safe_base_name:
                 safe_base_name = f"model_iter_{request.design_state.iteration:03d}"
 
-            primary_path = save_dir / f"{safe_base_name}.mph"
-            retry_path = save_dir / (
-                f"{safe_base_name}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.mph"
-            )
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            unique_path = save_dir / f"{safe_base_name}_{timestamp}.mph"
+            retry_path = save_dir / f"{safe_base_name}_{timestamp}_retry.mph"
 
-            logger.info("  保存 COMSOL .mph 模型...")
-            if self._try_save_mph_path(primary_path):
-                return
+            logger.info(f"  保存 COMSOL .mph 模型 (reason={reason})...")
+            if self._try_save_mph_path(unique_path):
+                saved_path = str(unique_path)
+                self.last_saved_mph_path = saved_path
+                self.saved_mph_records.append(
+                    {
+                        "path": saved_path,
+                        "reason": str(reason),
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                )
+                self.saved_mph_records = self.saved_mph_records[-20:]
+                return saved_path
 
-            logger.warning("  主文件名保存失败，尝试唯一后缀文件名避开锁冲突...")
-            if not self._try_save_mph_path(retry_path):
-                logger.warning("  ⚠ 保存 .mph 模型失败: 两次路径尝试均失败")
+            logger.warning("  唯一路径保存失败，进行一次回退重试...")
+            if self._try_save_mph_path(retry_path):
+                saved_path = str(retry_path)
+                self.last_saved_mph_path = saved_path
+                self.saved_mph_records.append(
+                    {
+                        "path": saved_path,
+                        "reason": str(reason),
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                )
+                self.saved_mph_records = self.saved_mph_records[-20:]
+                return saved_path
+            else:
+                logger.warning("  ⚠ 保存 .mph 模型失败: 唯一路径与回退路径均失败")
+            return ""
 
         except Exception as e:
             # 保存失败不应中断仿真流程
             logger.warning(f"  ⚠ 保存 .mph 模型失败: {e}")
             logger.warning(f"  异常类型: {type(e).__name__}")
             logger.warning("  仿真结果仍然有效，继续执行...")
+            return ""
+
+    def force_save_current_model(
+        self,
+        design_state: DesignState,
+        experiment_dir: str,
+        reason: str = "final_selected",
+    ) -> str:
+        """
+        无条件保存当前 COMSOL 模型，用于保留最终 .mph 产物。
+        """
+        request = SimulationRequest(
+            sim_type=SimulationType.COMSOL,
+            design_state=design_state,
+            parameters={"experiment_dir": str(experiment_dir)},
+        )
+        return self._save_mph_model(request, reason=reason)
 
     def _try_save_mph_path(self, save_path: Path) -> bool:
         """
@@ -254,7 +305,46 @@ class ComsolDriver(SimulationDriver):
 
             # 2. 创建动态模型
             logger.info("  创建动态模型...")
-            self._create_dynamic_model(step_file, request.design_state)
+            model_build_result = self._create_dynamic_model(step_file, request.design_state)
+            if isinstance(model_build_result, SimulationResult):
+                saved_path = ""
+                if self.save_mph_on_failure:
+                    saved_path = self._save_mph_model(request, reason="model_build_failed")
+                raw_data = dict(model_build_result.raw_data or {})
+                if saved_path:
+                    raw_data["mph_model_path"] = str(saved_path)
+                if self.saved_mph_records:
+                    raw_data["mph_save_records"] = list(self.saved_mph_records[-5:])
+                model_build_result.raw_data = raw_data
+                return model_build_result
+            heat_binding_report = dict(self._last_heat_binding_report or {})
+            active_heat_components = int(heat_binding_report.get("active_components", 0))
+            assigned_heat_sources = int(heat_binding_report.get("assigned_count", 0))
+
+            # P0: 无热源绑定的温度场结果无物理意义，直接作为失败样本返回惩罚
+            if active_heat_components > 0 and assigned_heat_sources <= 0:
+                logger.error(
+                    "  ✗ 严重错误: 存在发热组件但 0 个热源绑定成功，终止该次 COMSOL 求解并返回惩罚。"
+                )
+                saved_path = ""
+                if self.save_mph_on_failure:
+                    saved_path = self._save_mph_model(request, reason="heat_binding_failed")
+                raw_data = {"heat_binding_report": heat_binding_report}
+                if saved_path:
+                    raw_data["mph_model_path"] = str(saved_path)
+                if self.saved_mph_records:
+                    raw_data["mph_save_records"] = list(self.saved_mph_records[-5:])
+                return SimulationResult(
+                    success=False,
+                    metrics={
+                        "max_temp": 999.0,
+                        "avg_temp": 999.0,
+                        "min_temp": 999.0,
+                    },
+                    violations=[],
+                    raw_data=raw_data,
+                    error_message="NO_HEAT_SOURCE_BOUND",
+                )
 
             # 3. 求解（使用功率斜坡加载策略，解决非线性发散）
             logger.info("  求解物理场（T⁴ 辐射边界 + 功率斜坡加载）...")
@@ -277,8 +367,12 @@ class ComsolDriver(SimulationDriver):
                 logger.warning(f"  Java 异常详情: {str(solve_error)}")
                 logger.warning("  返回惩罚分，不中断优化循环")
 
-            # 4. 无论求解成功与否，都保存 .mph 模型文件（用于调试）
-            self._save_mph_model(request)
+            # 4. 条件保存 .mph 模型文件（降低在线循环磁盘锁冲突与I/O开销）
+            saved_path = ""
+            if solve_success and self.save_mph_each_eval:
+                saved_path = self._save_mph_model(request, reason="solve_success")
+            if (not solve_success) and self.save_mph_on_failure:
+                saved_path = self._save_mph_model(request, reason="solve_failure")
 
             if not solve_success:
                 # 返回惩罚分
@@ -290,6 +384,11 @@ class ComsolDriver(SimulationDriver):
                         "min_temp": 999.0
                     },
                     violations=[],
+                    raw_data={
+                        "heat_binding_report": heat_binding_report,
+                        "mph_model_path": str(saved_path or self.last_saved_mph_path or ""),
+                        "mph_save_records": list(self.saved_mph_records[-5:]),
+                    },
                     error_message=f"COMSOL求解发散"
                 )
 
@@ -303,7 +402,12 @@ class ComsolDriver(SimulationDriver):
             return SimulationResult(
                 success=True,
                 metrics=metrics,
-                violations=[ViolationItem(**v) for v in violations]
+                violations=[ViolationItem(**v) for v in violations],
+                raw_data={
+                    "heat_binding_report": heat_binding_report,
+                    "mph_model_path": str(saved_path or self.last_saved_mph_path or ""),
+                    "mph_save_records": list(self.saved_mph_records[-5:]),
+                },
             )
 
         except Exception as e:
@@ -318,6 +422,10 @@ class ComsolDriver(SimulationDriver):
                     "min_temp": 9999.0
                 },
                 violations=[],
+                raw_data={
+                    "mph_model_path": str(self.last_saved_mph_path or ""),
+                    "mph_save_records": list(self.saved_mph_records[-5:]),
+                },
                 error_message=str(e)
             )
 
@@ -516,7 +624,7 @@ class ComsolDriver(SimulationDriver):
 
             # 4. 使用 Box Selection 识别组件并赋予热源
             logger.info("  [4/6] 创建 Box Selection 并赋予热源...")
-            self._assign_heat_sources_dynamic(design_state, ht, geom)
+            self._last_heat_binding_report = self._assign_heat_sources_dynamic(design_state, ht, geom)
 
             # 4.5 DV2.0: 应用组件级热学属性（涂层、接触热阻）
             logger.info("  [4.5/7] 应用组件级热学属性...")
@@ -571,32 +679,30 @@ class ComsolDriver(SimulationDriver):
         design_state: DesignState,
         ht: Any,
         geom: Any
-    ):
+    ) -> Dict[str, Any]:
         """
-        使用 Box Selection 识别组件并赋予热源
+        使用 Box Selection 识别组件并赋予热源。
 
-        Args:
-            design_state: 设计状态
-            ht: 热传导物理场对象
-            geom: 几何对象
+        Returns:
+            绑定统计信息，供上游流程做有效性判定。
         """
         total_heat_sources_assigned = 0
         ambiguous_heat_sources = []
+        disambiguated_heat_sources = []
+        failed_heat_sources = []
+        active_heat_components = 0
 
         for i, comp in enumerate(design_state.components):
             if comp.power <= 0:
                 continue
+            active_heat_components += 1
 
             logger.info(f"    - 为组件 {comp.id} 创建热源 ({comp.power}W)")
 
-            # 计算组件的包围盒
             pos = comp.position
             dim = comp.dimensions
 
-            # Box Selection 的边界（组件中心 ± 半尺寸）
-            # 复杂拥挤场景中必须使用极小容差，避免误选相邻域
             tolerance = 1e-3  # mm，极严容差，避免紧凑场景串选
-
             x_min = pos.x - dim.x / 2 - tolerance
             x_max = pos.x + dim.x / 2 + tolerance
             y_min = pos.y - dim.y / 2 - tolerance
@@ -604,48 +710,71 @@ class ComsolDriver(SimulationDriver):
             z_min = pos.z - dim.z / 2 - tolerance
             z_max = pos.z + dim.z / 2 + tolerance
 
-            # 创建 Box Selection（选择 Domain）
-            # 注意：Box Selection 应该在 model 上创建，而不是 geom 上
             sel_name = f"boxsel_comp_{i}"
             box_sel = self.model.java.selection().create(sel_name, "Box")
-            box_sel.set("entitydim", "3")  # 使用字符串避免 Java 重载歧义
+            box_sel.set("entitydim", "3")
             box_sel.set("xmin", f"{x_min}[mm]")
             box_sel.set("xmax", f"{x_max}[mm]")
             box_sel.set("ymin", f"{y_min}[mm]")
             box_sel.set("ymax", f"{y_max}[mm]")
             box_sel.set("zmin", f"{z_min}[mm]")
             box_sel.set("zmax", f"{z_max}[mm]")
-            # 优先使用 inside，最大限度避免误选相邻域
             box_sel.set("condition", "inside")
 
-            # 强制校验：检查选中的域数量
+            selection_name = sel_name
             try:
-                # 获取选中的实体数量
-                selected_entities = box_sel.entities()
-                num_selected = len(selected_entities) if selected_entities else 0
+                selected_entities = self._normalize_entity_ids(box_sel.entities())
+                num_selected = len(selected_entities)
                 logger.info(f"      Box Selection 选中 {num_selected} 个域")
 
                 if num_selected == 0:
                     logger.warning(f"      ⚠️ inside 条件选中 0 个域，回退到 intersects: {comp.id}")
                     box_sel.set("condition", "intersects")
-                    selected_entities = box_sel.entities()
-                    num_selected = len(selected_entities) if selected_entities else 0
+                    selected_entities = self._normalize_entity_ids(box_sel.entities())
+                    num_selected = len(selected_entities)
                     logger.info(f"      intersects 回退后选中 {num_selected} 个域")
 
                 if num_selected > 1:
                     logger.warning(f"      ⚠️ 选中 {num_selected} 个域，尝试 allvertices 收紧: {comp.id}")
                     box_sel.set("condition", "allvertices")
-                    selected_entities = box_sel.entities()
-                    num_selected = len(selected_entities) if selected_entities else 0
+                    selected_entities = self._normalize_entity_ids(box_sel.entities())
+                    num_selected = len(selected_entities)
                     logger.info(f"      allvertices 收紧后选中 {num_selected} 个域")
 
-                # 强约束：仍为多域时禁止绑定热源，防止热功率串入错误组件
                 if num_selected > 1:
-                    logger.error(
-                        f"      ✗ 热源绑定拒绝: 组件 {comp.id} 仍歧义命中 {num_selected} 个域，跳过该热源"
+                    resolved_domain, resolve_meta = self._resolve_ambiguous_heat_domain(
+                        comp=comp,
+                        comp_index=i,
+                        domain_ids=selected_entities,
                     )
-                    ambiguous_heat_sources.append(comp.id)
-                    continue
+                    if resolved_domain is None:
+                        logger.error(
+                            f"      ✗ 热源绑定拒绝: 组件 {comp.id} 仍歧义命中 {num_selected} 个域，跳过该热源"
+                        )
+                        ambiguous_heat_sources.append(comp.id)
+                        failed_heat_sources.append(comp.id)
+                        continue
+
+                    resolved_sel_name = f"{sel_name}_resolved"
+                    try:
+                        resolved_sel = self.model.java.selection().create(resolved_sel_name, "Explicit")
+                        resolved_sel.geom("geom1", 3)
+                        resolved_sel.set([int(resolved_domain)])
+                        selection_name = resolved_sel_name
+                        disambiguated_heat_sources.append(comp.id)
+                        logger.warning(
+                            "      ⚠️ 多域歧义已自动收敛: "
+                            f"{comp.id} -> domain {resolved_domain} "
+                            f"(method={resolve_meta.get('method')}, "
+                            f"distance_mm={resolve_meta.get('distance_mm')})"
+                        )
+                    except Exception as resolve_bind_error:
+                        logger.error(
+                            f"      ✗ 歧义域收敛后绑定失败: {comp.id}, error={resolve_bind_error}"
+                        )
+                        ambiguous_heat_sources.append(comp.id)
+                        failed_heat_sources.append(comp.id)
+                        continue
 
                 if num_selected == 0:
                     logger.warning(f"      ⚠️ 严重警告: 热源 Box Selection 失败！组件 {comp.id} 未选中任何域！")
@@ -653,27 +782,24 @@ class ComsolDriver(SimulationDriver):
                     logger.warning(f"      组件位置: [{pos.x:.1f}, {pos.y:.1f}, {pos.z:.1f}] mm")
                     logger.warning(f"      组件尺寸: [{dim.x:.1f}, {dim.y:.1f}, {dim.z:.1f}] mm")
                     logger.error(f"      ✗ 热源绑定彻底失败！{comp.power}W 热源未施加到组件 {comp.id}！")
+                    failed_heat_sources.append(comp.id)
                     continue
             except Exception as sel_check_error:
                 logger.warning(f"      无法检查选中域数量: {sel_check_error}")
+                failed_heat_sources.append(comp.id)
+                continue
 
-            # 创建热源节点
             hs_name = f"hs_{i}"
             heat_source = ht.feature().create(hs_name, "HeatSource")
-            heat_source.selection().named(sel_name)
+            heat_source.selection().named(selection_name)
 
-            # 设置发热功率（使用参数化功率，支持功率斜坡加载）
-            # 功率密度 = 总功率 * P_scale / 体积
             volume = (dim.x * dim.y * dim.z) / 1e9  # mm³ -> m³
             power_density = comp.power / volume if volume > 0 else 0
-
-            # 使用参数化表达式，绑定到全局 P_scale 参数
             heat_source.set("Q0", f"{power_density} * P_scale [W/m^3]")
 
             logger.info(f"      ✓ 热源已设置: {comp.power}W * P_scale, 功率密度: {power_density:.2e} W/m³")
             total_heat_sources_assigned += 1
 
-        # 最终校验
         if total_heat_sources_assigned == 0:
             logger.error("  ✗ 严重错误: 没有任何热源被成功绑定！仿真结果将无效！")
         else:
@@ -684,6 +810,138 @@ class ComsolDriver(SimulationDriver):
                 "  ⚠ 以下组件因 Box Selection 多域歧义被跳过热源绑定: "
                 + ", ".join(ambiguous_heat_sources)
             )
+        if disambiguated_heat_sources:
+            logger.info(
+                "  ✓ 以下组件通过自动歧义收敛完成热源绑定: "
+                + ", ".join(disambiguated_heat_sources)
+            )
+        if failed_heat_sources:
+            logger.warning(
+                "  ⚠ 以下组件热源绑定失败: " + ", ".join(failed_heat_sources)
+            )
+
+        return {
+            "active_components": int(active_heat_components),
+            "assigned_count": int(total_heat_sources_assigned),
+            "ambiguous_components": list(ambiguous_heat_sources),
+            "disambiguated_components": list(disambiguated_heat_sources),
+            "failed_components": list(failed_heat_sources),
+        }
+
+    def _normalize_entity_ids(self, entities: Any) -> list[int]:
+        """将 COMSOL 选择结果归一化为 int 列表。"""
+        if entities is None:
+            return []
+        try:
+            values = list(entities)
+        except Exception:
+            values = [entities]
+
+        normalized: list[int] = []
+        for value in values:
+            try:
+                normalized.append(int(value))
+            except Exception:
+                continue
+
+        deduped: list[int] = []
+        seen = set()
+        for value in normalized:
+            if value in seen:
+                continue
+            seen.add(value)
+            deduped.append(value)
+        return deduped
+
+    def _resolve_ambiguous_heat_domain(
+        self,
+        comp: Any,
+        comp_index: int,
+        domain_ids: list[int],
+    ) -> tuple[Optional[int], Dict[str, Any]]:
+        """
+        多域歧义时选择一个稳定域:
+        1) 优先几何中心最近。
+        2) 失败则回退到域号与组件序号最近。
+        """
+        if not domain_ids:
+            return None, {"method": "none", "distance_mm": None}
+
+        comp_center = (
+            float(comp.position.x),
+            float(comp.position.y),
+            float(comp.position.z),
+        )
+        scored = []
+        for domain_id in domain_ids:
+            center = self._estimate_domain_center_mm(domain_id)
+            if center is None:
+                continue
+            dx = center[0] - comp_center[0]
+            dy = center[1] - comp_center[1]
+            dz = center[2] - comp_center[2]
+            distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+            scored.append((float(distance), int(domain_id)))
+
+        if scored:
+            scored.sort(key=lambda item: (item[0], item[1]))
+            best_distance, best_domain = scored[0]
+            return int(best_domain), {
+                "method": "bbox_centroid_distance",
+                "distance_mm": float(best_distance),
+            }
+
+        expected_domain = int(comp_index + 1)
+        fallback_domain = min(
+            domain_ids,
+            key=lambda domain_id: (abs(int(domain_id) - expected_domain), int(domain_id)),
+        )
+        return int(fallback_domain), {
+            "method": "domain_index_fallback",
+            "distance_mm": float(abs(int(fallback_domain) - expected_domain)),
+        }
+
+    def _estimate_domain_center_mm(self, domain_id: int) -> Optional[tuple[float, float, float]]:
+        """尽力读取域包围盒中心（mm），失败返回 None。"""
+        if self.model is None:
+            return None
+
+        try:
+            geom = self.model.java.geom("geom1")
+            measure = geom.measure()
+            try:
+                measure.selection().init(3)
+            except Exception:
+                pass
+            measure.selection().set([int(domain_id)])
+            bbox = None
+            for method_name in ("getBoundingBox", "boundingBox", "bbox"):
+                if hasattr(measure, method_name):
+                    method = getattr(measure, method_name)
+                    try:
+                        bbox = method()
+                        break
+                    except Exception:
+                        continue
+            if bbox is None:
+                return None
+
+            values = []
+            for value in list(bbox):
+                try:
+                    values.append(float(value))
+                except Exception:
+                    return None
+            if len(values) < 6:
+                return None
+
+            return (
+                float((values[0] + values[1]) / 2.0),
+                float((values[2] + values[3]) / 2.0),
+                float((values[4] + values[5]) / 2.0),
+            )
+        except Exception:
+            return None
 
     def _assign_radiation_boundaries_dynamic(
         self,

@@ -9,6 +9,7 @@ RAG Knowledge Retrieval System
 
 import openai
 import numpy as np
+import re
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 import json
@@ -39,6 +40,9 @@ class RAGSystem:
         embedding_model: Optional[str] = None,
         base_url: Optional[str] = None,
         enable_semantic: bool = True,
+        filter_anomalous_cases: bool = True,
+        anomaly_temp_tokens: Optional[List[str]] = None,
+        anomaly_max_temp_delta_abs: float = 200.0,
         logger: Optional[ExperimentLogger] = None,
     ):
         """
@@ -50,10 +54,20 @@ class RAGSystem:
             embedding_model: Embedding模型
             base_url: OpenAI兼容接口地址（如DashScope）
             enable_semantic: 是否启用语义检索
+            filter_anomalous_cases: 是否过滤异常历史案例（如 999/9999°C 失效样本）
+            anomaly_temp_tokens: 异常温度关键词
+            anomaly_max_temp_delta_abs: max_temp 改变量异常阈值（绝对值）
             logger: 日志记录器
         """
         self.base_url = base_url
         self.enable_semantic = bool(enable_semantic)
+        self.filter_anomalous_cases = bool(filter_anomalous_cases)
+        self.anomaly_temp_tokens = [
+            str(token).strip()
+            for token in list(anomaly_temp_tokens or ["999.0", "9999.0", "999°C", "9999°C"])
+            if str(token).strip()
+        ]
+        self.anomaly_max_temp_delta_abs = float(max(anomaly_max_temp_delta_abs, 0.0))
         self.embedding_model = embedding_model or self._default_embedding_model(base_url)
         self.embedding_batch_size = 10  # DashScope OpenAI兼容接口: 单次输入上限10
 
@@ -256,7 +270,67 @@ class RAGSystem:
         # 3. 去重并重排序
         unique_results = self._deduplicate_and_rerank(results, context)
 
-        return unique_results[:top_k]
+        filtered_results = self._filter_anomalous_cases(unique_results)
+        return filtered_results[:top_k]
+
+    def _is_anomalous_case_item(self, item: KnowledgeItem) -> bool:
+        """识别历史中已知异常样本，避免污染 RAG 检索。"""
+        if str(item.category).strip().lower() != "case":
+            return False
+
+        text = f"{item.title}\n{item.content}".lower()
+        has_anomaly_token = any(token.lower() in text for token in self.anomaly_temp_tokens)
+        has_failure_phrase = (
+            "仿真失效" in text or
+            "非真实高温" in text or
+            "未收敛" in text or
+            "惩罚温度" in text
+        )
+        if has_anomaly_token and has_failure_phrase:
+            return True
+
+        # 兜底：捕捉 "999/9999 + 温度单位" 模式。
+        if re.search(r"(?:^|[^0-9])999(?:9)?(?:\.0+)?\s*(?:°\s*)?(?:c|℃)", text):
+            return True
+
+        # 兜底：指标改变量异常（典型是 -998.x / +999.x）。
+        metrics_improvement = dict(item.metadata.get("metrics_improvement", {}) or {})
+        max_temp_delta = metrics_improvement.get("max_temp", None)
+        try:
+            parsed_delta = float(max_temp_delta)
+        except (TypeError, ValueError):
+            parsed_delta = None
+        if parsed_delta is not None and abs(parsed_delta) >= self.anomaly_max_temp_delta_abs:
+            return True
+
+        return False
+
+    def _filter_anomalous_cases(self, results: List[KnowledgeItem]) -> List[KnowledgeItem]:
+        """过滤检索结果中的异常案例，避免把历史错误经验注入新一轮推理。"""
+        if not self.filter_anomalous_cases:
+            return list(results or [])
+
+        filtered: List[KnowledgeItem] = []
+        dropped: List[str] = []
+        for item in list(results or []):
+            if self._is_anomalous_case_item(item):
+                dropped.append(str(item.item_id))
+                continue
+            filtered.append(item)
+
+        # 若全部被过滤，至少保留非 case 条目。
+        if not filtered:
+            filtered = [
+                item for item in list(results or [])
+                if str(item.category).strip().lower() != "case"
+            ]
+
+        if dropped and self.logger:
+            self.logger.logger.info(
+                "RAG anomaly filter dropped knowledge items: %s",
+                ",".join(dropped),
+            )
+        return filtered
 
     def _semantic_search(
         self,

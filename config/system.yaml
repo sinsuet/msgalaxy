@@ -18,6 +18,8 @@ geometry:
 # 仿真配置
 simulation:
   backend: "comsol"  # 仅支持 comsol (v2.0+ 动态架构)
+  save_mph_each_eval: false
+  save_mph_on_failure: true
 
   # 约束条件
   constraints:
@@ -29,8 +31,67 @@ simulation:
 
 # 优化配置
 optimization:
+  mode: "agent_loop"  # agent_loop | pymoo_maas
   max_iterations: 20
   convergence_threshold: 0.01
+  pymoo_pop_size: 96
+  pymoo_n_gen: 80
+  pymoo_seed: 42
+  pymoo_verbose: false
+  pymoo_return_least_infeasible: true
+  pymoo_algorithm: "nsga2"  # nsga2 | nsga3 | moead
+  pymoo_nsga3_ref_dirs_partitions: 0  # <=0: auto derive from n_obj/pop_size
+  pymoo_moead_n_neighbors: 20
+  pymoo_moead_prob_neighbor_mating: 0.9
+  pymoo_moead_constraint_penalty: 1000.0
+  pymoo_maas_max_attempts: 3
+  pymoo_maas_relax_ratio: 0.08
+  pymoo_maas_auto_relax: true
+  pymoo_maas_retry_on_stall: true
+  pymoo_maas_thermal_evaluator_mode: "proxy"   # proxy | online_comsol
+  pymoo_maas_enable_semantic_zones: true       # true: 允许 assumptions/启发式语义分区收缩搜索域
+  pymoo_maas_online_comsol_eval_budget: 24     # <=0 means unlimited
+  pymoo_maas_online_comsol_geometry_gate: true # true: 几何不可行候选直接回退 proxy，不消耗 online COMSOL 预算
+  pymoo_maas_online_comsol_cache_quantize_mm: 0.0  # >0: 位置坐标按步长量化后参与缓存键
+  pymoo_maas_online_comsol_schedule_mode: "budget_only"  # budget_only | ucb_topk
+  pymoo_maas_online_comsol_schedule_top_fraction: 0.20  # ucb_topk: 仅对 top fraction 候选触发 COMSOL
+  pymoo_maas_online_comsol_schedule_min_observations: 8  # ucb_topk: 至少观察 N 个候选后启用 rank 选择
+  pymoo_maas_online_comsol_schedule_warmup_calls: 2  # ucb_topk: 前 N 次直接调用 COMSOL 做校准
+  pymoo_maas_online_comsol_schedule_explore_prob: 0.05  # ucb_topk: 非 top 候选的探索概率
+  pymoo_maas_online_comsol_schedule_uncertainty_weight: 0.35  # ucb_topk: UCB 中不确定性权重
+  pymoo_maas_online_comsol_schedule_uncertainty_scale_mm: 25.0  # ucb_topk: 位置新颖性距离归一化尺度
+  pymoo_maas_online_comsol_stats_log_interval: 5000  # >0: 每N次评估输出一次运行时统计汇总；0关闭
+  pymoo_maas_trace_feature_window: 5           # 计算 trace 特征时使用最近多少次 attempt
+  pymoo_maas_enable_meta_policy: true          # true: 启用 trace 特征驱动的规则型元策略
+  pymoo_maas_meta_policy_apply_runtime: true   # true: 在非 MCTS retry 回路中当轮应用调参
+  pymoo_maas_meta_policy_min_attempts: 2       # 至少累计 N 次 attempt 后才触发 runtime 调参
+  pymoo_maas_enable_physics_audit: true
+  pymoo_maas_audit_top_k: 3
+  pymoo_maas_enforce_audit_feasible: true      # true: 审计无可行解时不接受 infeasible 候选
+  pymoo_maas_audit_allow_infeasible_fallback: false  # true: 无可行解时可回退到 best_any_penalty
+  pymoo_maas_enable_mcts: true
+  pymoo_maas_mcts_budget: 4
+  pymoo_maas_mcts_max_depth: 2
+  pymoo_maas_mcts_c_uct: 1.2
+  pymoo_maas_mcts_stagnation_rounds: 2
+  pymoo_maas_mcts_min_score_improvement: 1.0
+  pymoo_maas_mcts_min_cv_improvement: 0.1
+  pymoo_maas_mcts_prune_margin: 100.0
+  pymoo_maas_mcts_action_prior_weight: 0.02
+  pymoo_maas_mcts_cv_penalty_weight: 0.2
+  pymoo_maas_search_space: "coordinate"  # coordinate | operator_program | hybrid
+  pymoo_maas_enable_operator_program: true
+  pymoo_maas_enable_operator_credit_bias: true
+  pymoo_maas_operator_program_max_components: 6
+  pymoo_maas_operator_program_action_slots: 3
+  pymoo_maas_operator_program_max_group_delta_mm: 10.0
+  pymoo_maas_operator_program_max_hot_distance_mm: 12.0
+  pymoo_maas_operator_program_action_safety_tolerance: 0.5
+  pymoo_maas_enable_seed_population: true
+  pymoo_maas_enable_operator_seed_population: true
+  pymoo_maas_seed_population_max: 8
+  pymoo_maas_cg_seed_component_threshold: 12
+  pymoo_maas_repair_cg_nudge_ratio: 0.90
 
   # DV2.0 十类算子
   allowed_operators:
@@ -70,6 +131,9 @@ knowledge:
   base_path: "data/knowledge_base"
   enable_semantic: true
   embedding_model: "text-embedding-v4"
+  filter_anomalous_cases: true
+  anomaly_temp_tokens: ["999.0", "9999.0", "999°C", "9999°C"]
+  anomaly_max_temp_delta_abs: 200.0
 
 # 日志配置
 logging:

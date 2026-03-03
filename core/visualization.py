@@ -8,6 +8,7 @@
 
 import sys
 import os
+import json
 
 # 设置UTF-8编码
 if sys.platform == 'win32':
@@ -19,13 +20,15 @@ if sys.platform == 'win32':
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import numpy as np
 import pandas as pd
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 from core.exceptions import VisualizationError
 from core.logger import get_logger
@@ -68,6 +71,61 @@ def _to_float_series(df: pd.DataFrame, column: str) -> Optional[np.ndarray]:
     if column not in df.columns:
         return None
     return pd.to_numeric(df[column], errors="coerce").to_numpy(dtype=float)
+
+
+def _read_csv_safely(path: str) -> pd.DataFrame:
+    """安全读取 CSV，失败时返回空表。"""
+    if not path or not os.path.exists(path):
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _parse_bool_series(df: pd.DataFrame, column: str) -> np.ndarray:
+    """将表中布尔列解析为 bool 数组。"""
+    if column not in df.columns or len(df) == 0:
+        return np.array([], dtype=bool)
+    return (
+        df[column]
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .isin({"1", "true", "yes", "y"})
+        .to_numpy(dtype=bool)
+    )
+
+
+def _detect_optimization_mode(experiment_dir: str) -> str:
+    """
+    检测本次实验的优化模式：
+    - 优先读取 summary.json 的 optimization_mode
+    - 其次看 pymoo_maas_trace.csv 是否有有效记录
+    - 默认 agent_loop
+    """
+    summary_path = os.path.join(experiment_dir, "summary.json")
+    try:
+        if os.path.exists(summary_path):
+            import json
+
+            with open(summary_path, "r", encoding="utf-8") as f:
+                summary = json.load(f) or {}
+            mode = str(summary.get("optimization_mode", "")).strip().lower()
+            if mode in {"agent_loop", "pymoo_maas"}:
+                return mode
+    except Exception:
+        pass
+
+    maas_trace_path = os.path.join(experiment_dir, "pymoo_maas_trace.csv")
+    try:
+        if os.path.exists(maas_trace_path):
+            df = pd.read_csv(maas_trace_path)
+            if len(df) > 0:
+                return "pymoo_maas"
+    except Exception:
+        pass
+    return "agent_loop"
 
 
 def build_power_density_proxy(design_state, csv_path: str = "") -> Dict[str, float]:
@@ -238,6 +296,1085 @@ def _build_visualization_summary(
         lines.append("- No available data for summary.")
 
     return "\n".join(lines)
+
+
+def _build_pymoo_maas_visualization_summary(maas_csv_path: str) -> str:
+    """构建 pymoo_maas 运行摘要。"""
+    lines: List[str] = []
+    lines.append("=== Pymoo MaaS Visualization Summary ===")
+
+    if not maas_csv_path or not os.path.exists(maas_csv_path):
+        lines.append("- No pymoo_maas_trace.csv found.")
+        return "\n".join(lines)
+
+    try:
+        df = pd.read_csv(maas_csv_path)
+    except Exception:
+        lines.append("- Failed to read pymoo_maas_trace.csv.")
+        return "\n".join(lines)
+
+    if len(df) == 0:
+        lines.append("- No attempt records available.")
+        return "\n".join(lines)
+
+    lines.append(f"- Attempts logged: {len(df)}")
+    if "diagnosis_status" in df.columns:
+        counts = df["diagnosis_status"].fillna("unknown").value_counts()
+        status_desc = ", ".join([f"{idx}:{int(val)}" for idx, val in counts.items()])
+        lines.append(f"- Diagnosis distribution: {status_desc}")
+
+    if "is_best_attempt" in df.columns:
+        best_mask = (
+            df["is_best_attempt"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .isin({"1", "true", "yes"})
+        )
+        best_rows = df[best_mask]
+    else:
+        best_rows = df.iloc[0:0]
+    if len(best_rows) == 0:
+        best_rows = df.tail(1)
+
+    if len(best_rows) > 0:
+        best = best_rows.iloc[-1]
+        lines.append(
+            "- Best attempt: "
+            f"attempt={int(best.get('attempt', 0))}, "
+            f"status={best.get('diagnosis_status', '')}, "
+            f"best_cv={best.get('best_cv', '')}, "
+            f"aocc_cv={best.get('aocc_cv', '')}"
+        )
+        selected_reason = str(best.get("physics_audit_selected_reason", "")).strip()
+        if selected_reason:
+            lines.append(f"- Physics audit selection: {selected_reason}")
+
+    if "solver_cost" in df.columns:
+        solver_cost = pd.to_numeric(df["solver_cost"], errors="coerce").fillna(0.0)
+        if len(solver_cost) > 0:
+            lines.append(
+                f"- Solver cost: total={float(np.sum(solver_cost)):.2f}s, "
+                f"mean={float(np.mean(solver_cost)):.2f}s"
+            )
+
+    return "\n".join(lines)
+
+
+def _build_pymoo_maas_tables_summary(tables_dir: str) -> str:
+    """基于 tables/*.csv 构建补充摘要。"""
+    lines: List[str] = []
+    lines.append("=== Pymoo MaaS Tables Summary ===")
+
+    attempts = _read_csv_safely(os.path.join(tables_dir, "attempts.csv"))
+    generations = _read_csv_safely(os.path.join(tables_dir, "generations.csv"))
+    policies = _read_csv_safely(os.path.join(tables_dir, "policy_tuning.csv"))
+    physics = _read_csv_safely(os.path.join(tables_dir, "physics_budget.csv"))
+    phases = _read_csv_safely(os.path.join(tables_dir, "phases.csv"))
+    candidates = _read_csv_safely(os.path.join(tables_dir, "candidates.csv"))
+    layouts = _read_csv_safely(os.path.join(tables_dir, "layout_timeline.csv"))
+    layout_deltas = _read_csv_safely(os.path.join(tables_dir, "layout_deltas.csv"))
+
+    counts = {
+        "attempts": int(len(attempts)),
+        "generations": int(len(generations)),
+        "policies": int(len(policies)),
+        "physics": int(len(physics)),
+        "phases": int(len(phases)),
+        "candidates": int(len(candidates)),
+        "layouts": int(len(layouts)),
+        "layout_deltas": int(len(layout_deltas)),
+    }
+    lines.append(
+        "- Table rows: "
+        + ", ".join(f"{key}={value}" for key, value in counts.items())
+    )
+
+    if len(attempts) > 0 and "diagnosis_status" in attempts.columns:
+        status_counts = attempts["diagnosis_status"].fillna("unknown").value_counts()
+        status_desc = ", ".join(f"{idx}:{int(val)}" for idx, val in status_counts.items())
+        lines.append(f"- Attempt diagnosis: {status_desc}")
+
+    if len(generations) > 0:
+        best_cv = _to_float_series(generations, "best_cv")
+        if best_cv is not None and len(best_cv) > 0:
+            finite = best_cv[np.isfinite(best_cv)]
+            if finite.size > 0:
+                lines.append(f"- Generation best_cv_min: {float(np.min(finite)):.6f}")
+
+        feasible_count = _to_float_series(generations, "feasible_count")
+        if feasible_count is not None and len(feasible_count) > 0:
+            first_feasible_idx = np.where(np.nan_to_num(feasible_count, nan=0.0) > 0.0)[0]
+            if first_feasible_idx.size > 0 and "generation" in generations.columns:
+                gen_values = pd.to_numeric(generations["generation"], errors="coerce").fillna(0.0).to_numpy()
+                lines.append(
+                    f"- First feasible generation: {int(gen_values[int(first_feasible_idx[0])] if len(gen_values) > int(first_feasible_idx[0]) else 0)}"
+                )
+
+    if len(lines) == 1:
+        lines.append("- No materialized table data available.")
+    return "\n".join(lines)
+
+
+def _read_jsonl_safely(path: str) -> List[Dict[str, Any]]:
+    """安全读取 JSONL 文件。"""
+    if not path or not os.path.exists(path):
+        return []
+    rows: List[Dict[str, Any]] = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                raw = line.strip()
+                if not raw:
+                    continue
+                try:
+                    payload = json.loads(raw)
+                except Exception:
+                    continue
+                if isinstance(payload, dict):
+                    rows.append(payload)
+    except Exception:
+        return []
+    return rows
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """安全解析浮点值。"""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if not np.isfinite(parsed):
+        return float(default)
+    return float(parsed)
+
+
+def _resolve_layout_snapshot_path(experiment_dir: str, raw_snapshot_path: str) -> Optional[Path]:
+    """解析 layout_event 中的 snapshot 路径。"""
+    raw = str(raw_snapshot_path or "").strip()
+    if not raw:
+        return None
+    snapshot_path = Path(raw)
+    if snapshot_path.exists():
+        return snapshot_path
+    if not snapshot_path.is_absolute():
+        candidate = Path(experiment_dir) / raw
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _load_layout_snapshot_records(experiment_dir: str) -> List[Dict[str, Any]]:
+    """加载并排序 layout 事件及其对应快照。"""
+    events_path = os.path.join(experiment_dir, "events", "layout_events.jsonl")
+    events = _read_jsonl_safely(events_path)
+    if not events:
+        return []
+
+    events = sorted(
+        events,
+        key=lambda item: (
+            int(item.get("sequence", 0) or 0),
+            int(item.get("iteration", 0) or 0),
+            int(item.get("attempt", 0) or 0),
+        ),
+    )
+
+    records: List[Dict[str, Any]] = []
+    for event in events:
+        snapshot_path = _resolve_layout_snapshot_path(
+            experiment_dir=experiment_dir,
+            raw_snapshot_path=str(event.get("snapshot_path", "") or ""),
+        )
+        if snapshot_path is None:
+            continue
+        try:
+            snapshot_payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(snapshot_payload, dict):
+            continue
+        records.append(
+            {
+                "event": dict(event or {}),
+                "snapshot": snapshot_payload,
+                "snapshot_path": str(snapshot_path),
+            }
+        )
+    return records
+
+
+def _component_centers_from_state_dict(state_dict: Dict[str, Any]) -> Dict[str, np.ndarray]:
+    """从状态字典中提取组件中心点。"""
+    centers: Dict[str, np.ndarray] = {}
+    for comp in list((state_dict or {}).get("components", []) or []):
+        if not isinstance(comp, dict):
+            continue
+        comp_id = str(comp.get("id", "") or "").strip()
+        if not comp_id:
+            continue
+        pos = dict(comp.get("position", {}) or {})
+        centers[comp_id] = np.asarray(
+            [
+                _safe_float(pos.get("x", 0.0)),
+                _safe_float(pos.get("y", 0.0)),
+                _safe_float(pos.get("z", 0.0)),
+            ],
+            dtype=float,
+        )
+    return centers
+
+
+def _compute_component_displacements(
+    reference_state: Dict[str, Any],
+    target_state: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """计算 target 相对 reference 的组件位移。"""
+    ref_map = _component_centers_from_state_dict(reference_state)
+    tgt_map = _component_centers_from_state_dict(target_state)
+    common_ids = sorted(set(ref_map.keys()) & set(tgt_map.keys()))
+
+    rows: List[Dict[str, Any]] = []
+    for comp_id in common_ids:
+        ref_pos = ref_map[comp_id]
+        tgt_pos = tgt_map[comp_id]
+        delta = tgt_pos - ref_pos
+        dist = float(np.linalg.norm(delta))
+        rows.append(
+            {
+                "component_id": comp_id,
+                "dx": float(delta[0]),
+                "dy": float(delta[1]),
+                "dz": float(delta[2]),
+                "dist": dist,
+            }
+        )
+    return rows
+
+
+def _select_best_candidate_record(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """选取最佳 attempt_candidate 记录（best_cv 最小，序列最早优先）。"""
+    candidate_records: List[Tuple[float, int, Dict[str, Any]]] = []
+    for record in records:
+        event = dict(record.get("event", {}) or {})
+        if str(event.get("stage", "") or "") != "attempt_candidate":
+            continue
+        snapshot = dict(record.get("snapshot", {}) or {})
+        metrics = dict(snapshot.get("metrics", {}) or {})
+        best_cv = _safe_float(metrics.get("best_cv"), default=np.inf)
+        sequence = int(event.get("sequence", 0) or 0)
+        candidate_records.append((best_cv, sequence, record))
+    if candidate_records:
+        candidate_records.sort(key=lambda item: (item[0], item[1]))
+        return candidate_records[0][2]
+    return records[-1]
+
+
+def _build_frame_transition_stats(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """计算相邻快照的位移统计。"""
+    stats: List[Dict[str, Any]] = []
+    for idx in range(1, len(records)):
+        prev_record = records[idx - 1]
+        curr_record = records[idx]
+        prev_snapshot = dict(prev_record.get("snapshot", {}) or {})
+        curr_snapshot = dict(curr_record.get("snapshot", {}) or {})
+        disps = _compute_component_displacements(
+            dict(prev_snapshot.get("design_state", {}) or {}),
+            dict(curr_snapshot.get("design_state", {}) or {}),
+        )
+        if disps:
+            values = np.asarray([float(item.get("dist", 0.0)) for item in disps], dtype=float)
+            max_dist = float(np.max(values))
+            mean_dist = float(np.mean(values))
+            moved_count = int(np.sum(values > 1e-6))
+        else:
+            max_dist = 0.0
+            mean_dist = 0.0
+            moved_count = 0
+        curr_event = dict(curr_record.get("event", {}) or {})
+        prev_event = dict(prev_record.get("event", {}) or {})
+        stats.append(
+            {
+                "from_sequence": int(prev_event.get("sequence", 0) or 0),
+                "to_sequence": int(curr_event.get("sequence", 0) or 0),
+                "max_dist": float(max_dist),
+                "mean_dist": float(mean_dist),
+                "moved_count": int(moved_count),
+            }
+        )
+    return stats
+
+
+def _infer_zero_movement_reason(
+    records: List[Dict[str, Any]],
+    initial_to_best: List[Dict[str, Any]],
+    frame_stats: List[Dict[str, Any]],
+) -> str:
+    """推断位移全零时的原因码。"""
+    if not records:
+        return "no_layout_records"
+    if len(records) <= 1:
+        return "single_snapshot_state"
+
+    max_dist = 0.0
+    if initial_to_best:
+        max_dist = float(np.max(np.asarray([item["dist"] for item in initial_to_best], dtype=float)))
+    if max_dist > 1e-6:
+        return ""
+
+    hashes = set()
+    for record in records:
+        snapshot = dict(record.get("snapshot", {}) or {})
+        metadata = dict(snapshot.get("metadata", {}) or {})
+        state_hash = str(metadata.get("layout_state_hash", "") or "").strip()
+        if state_hash:
+            hashes.add(state_hash)
+    if hashes and len(hashes) == 1:
+        return "identical_snapshot_hash"
+
+    if frame_stats and all(float(item.get("max_dist", 0.0)) <= 1e-6 for item in frame_stats):
+        branch_actions = [
+            str(dict(record.get("event", {}) or {}).get("branch_action", "") or "").strip().lower()
+            for record in records
+        ]
+        if branch_actions and all((not action) or action.startswith("identity") for action in branch_actions):
+            return "identity_branch_stable"
+        return "frame_to_frame_zero"
+
+    return "unknown"
+
+
+def _component_map_from_dict(state_dict: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """把 design_state 字典转换为组件映射。"""
+    out: Dict[str, Dict[str, Any]] = {}
+    for comp in list((state_dict or {}).get("components", []) or []):
+        if not isinstance(comp, dict):
+            continue
+        comp_id = str(comp.get("id", "")).strip()
+        if comp_id:
+            out[comp_id] = comp
+    return out
+
+
+def _component_min_corner_from_dict(comp: Dict[str, Any]) -> List[float]:
+    """把组件中心坐标转换为包围盒最小角（dict 版本）。"""
+    pos = dict(comp.get("position", {}) or {})
+    dims = dict(comp.get("dimensions", {}) or {})
+    cx = float(pos.get("x", 0.0) or 0.0)
+    cy = float(pos.get("y", 0.0) or 0.0)
+    cz = float(pos.get("z", 0.0) or 0.0)
+    dx = float(dims.get("x", 0.0) or 0.0)
+    dy = float(dims.get("y", 0.0) or 0.0)
+    dz = float(dims.get("z", 0.0) or 0.0)
+    return [cx - dx / 2.0, cy - dy / 2.0, cz - dz / 2.0]
+
+
+def _envelope_bounds_from_state_dict(state_dict: Dict[str, Any]) -> List[float]:
+    """返回包络在 XY 平面的边界 [x_min, x_max, y_min, y_max]。"""
+    envelope = dict((state_dict or {}).get("envelope", {}) or {})
+    outer_size = dict(envelope.get("outer_size", {}) or {})
+    sx = float(outer_size.get("x", 0.0) or 0.0)
+    sy = float(outer_size.get("y", 0.0) or 0.0)
+    origin = str(envelope.get("origin", "center") or "center").strip().lower()
+    if sx > 0.0 and sy > 0.0:
+        if origin == "center":
+            return [-sx / 2.0, sx / 2.0, -sy / 2.0, sy / 2.0]
+        return [0.0, sx, 0.0, sy]
+
+    # 兜底：从组件范围估计边界
+    min_corner = np.array([np.inf, np.inf], dtype=float)
+    max_corner = np.array([-np.inf, -np.inf], dtype=float)
+    for comp in list((state_dict or {}).get("components", []) or []):
+        if not isinstance(comp, dict):
+            continue
+        comp_min = np.asarray(_component_min_corner_from_dict(comp)[:2], dtype=float)
+        dims = dict(comp.get("dimensions", {}) or {})
+        comp_max = comp_min + np.asarray(
+            [float(dims.get("x", 0.0) or 0.0), float(dims.get("y", 0.0) or 0.0)],
+            dtype=float,
+        )
+        min_corner = np.minimum(min_corner, comp_min)
+        max_corner = np.maximum(max_corner, comp_max)
+
+    if not np.isfinite(min_corner).all():
+        return [-100.0, 100.0, -100.0, 100.0]
+    margin = max(float(np.max(max_corner - min_corner)) * 0.08, 5.0)
+    return [
+        float(min_corner[0] - margin),
+        float(max_corner[0] + margin),
+        float(min_corner[1] - margin),
+        float(max_corner[1] + margin),
+    ]
+
+
+def _build_component_thermal_proxy_from_state(
+    state_dict: Dict[str, Any],
+    metrics: Optional[Dict[str, Any]] = None,
+) -> Dict[str, float]:
+    """基于组件功率密度生成逐组件热代理（dict 版本）。"""
+    comp_map = _component_map_from_dict(state_dict)
+    if not comp_map:
+        return {}
+
+    density: Dict[str, float] = {}
+    for comp_id, comp in comp_map.items():
+        dims = dict(comp.get("dimensions", {}) or {})
+        volume = (
+            float(dims.get("x", 0.0) or 0.0)
+            * float(dims.get("y", 0.0) or 0.0)
+            * float(dims.get("z", 0.0) or 0.0)
+        )
+        volume = max(volume, 1e-6)
+        density[comp_id] = float(comp.get("power", 0.0) or 0.0) / volume
+
+    values = np.asarray(list(density.values()), dtype=float)
+    v_min = float(np.min(values))
+    v_max = float(np.max(values))
+    if abs(v_max - v_min) <= 1e-12:
+        normalized = {k: 0.5 for k in density.keys()}
+    else:
+        normalized = {k: float((v - v_min) / (v_max - v_min)) for k, v in density.items()}
+
+    max_temp = 60.0
+    if metrics:
+        try:
+            max_temp = float(metrics.get("max_temp", max_temp) or max_temp)
+        except Exception:
+            max_temp = 60.0
+    max_temp = float(np.clip(max_temp, 30.0, 140.0))
+    t_base = max(18.0, max_temp - 35.0)
+    t_span = max(12.0, max_temp - t_base)
+    return {k: float(t_base + t_span * v) for k, v in normalized.items()}
+
+
+def _plot_layout_timeline_frame(
+    *,
+    event: Dict[str, Any],
+    snapshot: Dict[str, Any],
+    prev_snapshot: Optional[Dict[str, Any]],
+    output_path: str,
+) -> None:
+    """绘制单帧布局+热力图。"""
+    state = dict(snapshot.get("design_state", {}) or {})
+    prev_state = dict((prev_snapshot or {}).get("design_state", {}) or {})
+    components = _component_map_from_dict(state)
+    prev_components = _component_map_from_dict(prev_state)
+    metrics = dict(snapshot.get("metrics", {}) or {})
+    delta = dict(snapshot.get("delta", {}) or {})
+
+    moved_ids = set(str(item) for item in list(event.get("moved_components", delta.get("moved_components", [])) or []))
+    heatsink_ids = set(str(item) for item in list(event.get("added_heatsinks", delta.get("added_heatsinks", [])) or []))
+    bracket_ids = set(str(item) for item in list(event.get("added_brackets", delta.get("added_brackets", [])) or []))
+    contact_ids = set(str(item) for item in list(event.get("changed_contacts", delta.get("changed_contacts", [])) or []))
+    coating_ids = set(str(item) for item in list(event.get("changed_coatings", delta.get("changed_coatings", [])) or []))
+
+    x_min, x_max, y_min, y_max = _envelope_bounds_from_state_dict(state)
+    thermal_proxy = _build_component_thermal_proxy_from_state(state, metrics=metrics)
+    all_temps = np.asarray(list(thermal_proxy.values()) or [30.0], dtype=float)
+    t_min = float(np.min(all_temps))
+    t_max = float(np.max(all_temps))
+    t_span = max(t_max - t_min, 1e-9)
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+    ax_layout = axes[0]
+    ax_heat = axes[1]
+
+    # Left: layout evolution annotations.
+    env_rect = patches.Rectangle(
+        (x_min, y_min),
+        max(x_max - x_min, 1.0),
+        max(y_max - y_min, 1.0),
+        linewidth=1.5,
+        edgecolor="#7f8c8d",
+        facecolor="#ecf0f1",
+        alpha=0.25,
+    )
+    ax_layout.add_patch(env_rect)
+
+    for comp_id, comp in components.items():
+        comp_min = _component_min_corner_from_dict(comp)
+        dims = dict(comp.get("dimensions", {}) or {})
+        dx = float(dims.get("x", 0.0) or 0.0)
+        dy = float(dims.get("y", 0.0) or 0.0)
+        category = str(comp.get("category", "unknown") or "unknown").strip().lower()
+        color_map = {
+            "payload": "#fb8072",
+            "power": "#80b1d3",
+            "avionics": "#8dd3c7",
+            "adcs": "#bebada",
+            "thermal": "#fdb462",
+            "structure": "#b3de69",
+            "propulsion": "#fccde5",
+            "comms": "#d9d9d9",
+        }
+        fill_color = color_map.get(category, "#cbd5e1")
+        edge_color = "#2f3640"
+        linewidth = 0.9
+        if comp_id in moved_ids:
+            edge_color = "#c0392b"
+            linewidth = 2.2
+
+        rect = patches.Rectangle(
+            (comp_min[0], comp_min[1]),
+            dx,
+            dy,
+            linewidth=linewidth,
+            edgecolor=edge_color,
+            facecolor=fill_color,
+            alpha=0.85,
+            hatch="//" if comp_id in heatsink_ids else ("\\\\" if comp_id in bracket_ids else None),
+        )
+        ax_layout.add_patch(rect)
+
+        cx = float(comp.get("position", {}).get("x", comp_min[0] + dx / 2.0) or (comp_min[0] + dx / 2.0))
+        cy = float(comp.get("position", {}).get("y", comp_min[1] + dy / 2.0) or (comp_min[1] + dy / 2.0))
+        ax_layout.text(cx, cy, comp_id, ha="center", va="center", fontsize=6, color="#1f2937")
+
+        if comp_id in contact_ids:
+            ax_layout.plot([comp_min[0] + dx * 0.08], [comp_min[1] + dy * 0.88], marker="o", color="#2980b9", markersize=5)
+        if comp_id in coating_ids:
+            ax_layout.plot([comp_min[0] + dx * 0.92], [comp_min[1] + dy * 0.88], marker="*", color="#f39c12", markersize=7)
+
+        prev_comp = prev_components.get(comp_id)
+        if prev_comp is not None and comp_id in moved_ids:
+            prev_pos = dict(prev_comp.get("position", {}) or {})
+            x0 = float(prev_pos.get("x", cx) or cx)
+            y0 = float(prev_pos.get("y", cy) or cy)
+            ax_layout.arrow(
+                x0,
+                y0,
+                cx - x0,
+                cy - y0,
+                width=0.25,
+                head_width=3.5,
+                head_length=4.0,
+                length_includes_head=True,
+                color="#e74c3c",
+                alpha=0.8,
+            )
+
+    ax_layout.set_xlim(x_min, x_max)
+    ax_layout.set_ylim(y_min, y_max)
+    ax_layout.set_aspect("equal")
+    ax_layout.set_xlabel("X (mm)")
+    ax_layout.set_ylabel("Y (mm)")
+    ax_layout.grid(True, alpha=0.18)
+    ax_layout.set_title("Layout Evolution (Top View)")
+
+    # Right: thermal proxy heatmap + component boxes.
+    grid_size = 140
+    x_grid = np.linspace(x_min, x_max, grid_size)
+    y_grid = np.linspace(y_min, y_max, grid_size)
+    X, Y = np.meshgrid(x_grid, y_grid)
+    weighted_temp = np.zeros_like(X, dtype=float)
+    weights = np.zeros_like(X, dtype=float)
+    for comp_id, comp in components.items():
+        pos = dict(comp.get("position", {}) or {})
+        dims = dict(comp.get("dimensions", {}) or {})
+        cx = float(pos.get("x", 0.0) or 0.0)
+        cy = float(pos.get("y", 0.0) or 0.0)
+        temp = float(thermal_proxy.get(comp_id, t_min))
+        sigma = max(float(max(float(dims.get("x", 1.0) or 1.0), float(dims.get("y", 1.0) or 1.0))) * 0.55, 5.0)
+        influence = np.exp(-(((X - cx) ** 2 + (Y - cy) ** 2) / (2.0 * sigma ** 2)))
+        weighted_temp += influence * temp
+        weights += influence
+    Z = np.where(weights > 1e-9, weighted_temp / weights, t_min)
+    im = ax_heat.contourf(X, Y, Z, levels=24, cmap="inferno")
+    cbar = plt.colorbar(im, ax=ax_heat)
+    cbar.set_label("Proxy Temp (degC)")
+
+    for comp_id, comp in components.items():
+        comp_min = _component_min_corner_from_dict(comp)
+        dims = dict(comp.get("dimensions", {}) or {})
+        dx = float(dims.get("x", 0.0) or 0.0)
+        dy = float(dims.get("y", 0.0) or 0.0)
+        edge_color = "#c0392b" if comp_id in moved_ids else "#3c6382"
+        rect = patches.Rectangle(
+            (comp_min[0], comp_min[1]),
+            dx,
+            dy,
+            linewidth=1.2 if comp_id in moved_ids else 0.8,
+            edgecolor=edge_color,
+            facecolor="none",
+        )
+        ax_heat.add_patch(rect)
+
+    ax_heat.set_xlim(x_min, x_max)
+    ax_heat.set_ylim(y_min, y_max)
+    ax_heat.set_aspect("equal")
+    ax_heat.set_xlabel("X (mm)")
+    ax_heat.set_ylabel("Y (mm)")
+    ax_heat.grid(True, alpha=0.12)
+    thermal_source = str(event.get("thermal_source", "") or "")
+    ax_heat.set_title(f"Thermal Proxy Heatmap ({thermal_source or 'proxy'})")
+
+    best_cv = metrics.get("best_cv")
+    max_temp = metrics.get("max_temp")
+    min_clearance = metrics.get("min_clearance")
+    summary_title = (
+        f"Seq={int(event.get('sequence', 0) or 0):04d} | "
+        f"Stage={str(event.get('stage', ''))} | "
+        f"Attempt={int(event.get('attempt', 0) or 0)} | "
+        f"Status={str(event.get('diagnosis_status', ''))}"
+    )
+    fig.suptitle(summary_title, fontsize=11)
+    fig.text(
+        0.01,
+        0.02,
+        (
+            f"Moved={len(moved_ids)} | Heatsink+={len(heatsink_ids)} | Bracket+={len(bracket_ids)} | "
+            f"Contacts*={len(contact_ids)} | Coatings*={len(coating_ids)} | "
+            f"best_cv={best_cv if best_cv is not None else 'NA'} | "
+            f"max_temp={max_temp if max_temp is not None else 'NA'} | "
+            f"min_clearance={min_clearance if min_clearance is not None else 'NA'}"
+        ),
+        fontsize=9,
+    )
+
+    plt.tight_layout(rect=[0.0, 0.05, 1.0, 0.95])
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _build_layout_timeline_gif(frame_paths: List[str], output_path: str, duration_ms: int = 650) -> bool:
+    """将逐帧 PNG 合成为 GIF（若 Pillow 可用）。"""
+    if not frame_paths:
+        return False
+    try:
+        from PIL import Image
+    except Exception:
+        return False
+
+    images: List[Any] = []
+    try:
+        for path in frame_paths:
+            images.append(Image.open(path))
+        images[0].save(
+            output_path,
+            save_all=True,
+            append_images=images[1:],
+            duration=int(duration_ms),
+            loop=0,
+        )
+        return True
+    except Exception:
+        return False
+    finally:
+        for image in images:
+            try:
+                image.close()
+            except Exception:
+                pass
+
+
+def plot_layout_timeline(experiment_dir: str, viz_dir: str) -> Dict[str, Any]:
+    """
+    基于 layout_events + snapshots 生成逐迭代布局帧与 GIF。
+
+    Returns:
+        产物摘要（frame_count / frames_dir / gif_path / summary_path）
+    """
+    events_path = os.path.join(experiment_dir, "events", "layout_events.jsonl")
+    events = _read_jsonl_safely(events_path)
+    records = _load_layout_snapshot_records(experiment_dir)
+    if not records:
+        return {"frame_count": 0, "frames_dir": "", "gif_path": "", "summary_path": ""}
+
+    frames_dir = os.path.join(viz_dir, "timeline_frames")
+    os.makedirs(frames_dir, exist_ok=True)
+
+    frame_paths: List[str] = []
+    previous_snapshot: Optional[Dict[str, Any]] = None
+
+    for record in records:
+        event = dict(record.get("event", {}) or {})
+        snapshot_payload = dict(record.get("snapshot", {}) or {})
+        seq = int(event.get("sequence", 0) or 0)
+        frame_path = os.path.join(frames_dir, f"frame_{seq:04d}.png")
+        _plot_layout_timeline_frame(
+            event=event,
+            snapshot=snapshot_payload,
+            prev_snapshot=previous_snapshot,
+            output_path=frame_path,
+        )
+        frame_paths.append(frame_path)
+        previous_snapshot = snapshot_payload
+
+    gif_path = os.path.join(viz_dir, "layout_timeline.gif")
+    gif_ok = _build_layout_timeline_gif(frame_paths, gif_path) if frame_paths else False
+    if not gif_ok:
+        gif_path = ""
+
+    summary_path = os.path.join(viz_dir, "layout_timeline_summary.txt")
+    with open(summary_path, "w", encoding="utf-8") as f:
+        f.write("=== Layout Timeline Summary ===\n")
+        f.write(f"- Events loaded: {len(events)}\n")
+        f.write(f"- Records with valid snapshots: {len(records)}\n")
+        f.write(f"- Frames rendered: {len(frame_paths)}\n")
+        f.write(f"- Frames dir: {frames_dir if frame_paths else ''}\n")
+        f.write(f"- GIF: {gif_path}\n")
+
+    return {
+        "frame_count": int(len(frame_paths)),
+        "frames_dir": str(frames_dir if frame_paths else ""),
+        "gif_path": str(gif_path),
+        "summary_path": str(summary_path),
+    }
+
+
+def plot_layout_evolution_from_snapshots(experiment_dir: str, output_path: str) -> Dict[str, Any]:
+    """
+    基于 events/snapshots 绘制布局位移图（truth-source）。
+
+    Returns:
+        布局位移摘要，用于写入 visualization summary。
+    """
+    records = _load_layout_snapshot_records(experiment_dir)
+    if not records:
+        return {
+            "record_count": 0,
+            "zero_reason": "no_layout_records",
+            "moved_count_initial_to_best": 0,
+            "max_displacement_initial_to_best": 0.0,
+            "mean_displacement_initial_to_best": 0.0,
+            "max_component_initial_to_best": "",
+            "moved_count_best_to_final": 0,
+            "max_displacement_best_to_final": 0.0,
+            "frame_transition_count": 0,
+            "frame_transition_max": 0.0,
+        }
+
+    initial_record = records[0]
+    best_record = _select_best_candidate_record(records)
+    final_selected_records = [
+        item for item in records
+        if str(dict(item.get("event", {}) or {}).get("stage", "") or "") == "final_selected"
+    ]
+    final_record = final_selected_records[-1] if final_selected_records else records[-1]
+
+    initial_state = dict(dict(initial_record.get("snapshot", {}) or {}).get("design_state", {}) or {})
+    best_state = dict(dict(best_record.get("snapshot", {}) or {}).get("design_state", {}) or {})
+    final_state = dict(dict(final_record.get("snapshot", {}) or {}).get("design_state", {}) or {})
+
+    initial_to_best = _compute_component_displacements(initial_state, best_state)
+    best_to_final = _compute_component_displacements(best_state, final_state)
+    frame_stats = _build_frame_transition_stats(records)
+
+    initial_dist = np.asarray([float(item.get("dist", 0.0)) for item in initial_to_best], dtype=float)
+    best_final_dist = np.asarray([float(item.get("dist", 0.0)) for item in best_to_final], dtype=float)
+    frame_max = np.asarray([float(item.get("max_dist", 0.0)) for item in frame_stats], dtype=float)
+
+    moved_initial_to_best = int(np.sum(initial_dist > 1e-6)) if initial_dist.size > 0 else 0
+    moved_best_to_final = int(np.sum(best_final_dist > 1e-6)) if best_final_dist.size > 0 else 0
+    max_disp_initial_to_best = float(np.max(initial_dist)) if initial_dist.size > 0 else 0.0
+    mean_disp_initial_to_best = float(np.mean(initial_dist)) if initial_dist.size > 0 else 0.0
+    max_disp_best_to_final = float(np.max(best_final_dist)) if best_final_dist.size > 0 else 0.0
+    frame_transition_max = float(np.max(frame_max)) if frame_max.size > 0 else 0.0
+
+    max_component = ""
+    if initial_to_best:
+        max_row = max(initial_to_best, key=lambda item: float(item.get("dist", 0.0)))
+        max_component = str(max_row.get("component_id", "") or "")
+
+    zero_reason = _infer_zero_movement_reason(records, initial_to_best, frame_stats)
+
+    sorted_initial = sorted(initial_to_best, key=lambda item: float(item.get("dist", 0.0)), reverse=True)
+    top_dist_rows = sorted_initial[: min(len(sorted_initial), 20)]
+    top_axis_rows = sorted_initial[: min(len(sorted_initial), 12)]
+
+    fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+
+    ax0 = axes[0]
+    if top_dist_rows:
+        labels = [str(item.get("component_id", "")) for item in top_dist_rows]
+        values = np.asarray([float(item.get("dist", 0.0)) for item in top_dist_rows], dtype=float)
+        colors = ["#d35400" if value > 1e-6 else "#95a5a6" for value in values]
+        bars = ax0.bar(labels, values, color=colors, alpha=0.85)
+        for bar, value in zip(bars, values):
+            ax0.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                float(value),
+                f"{float(value):.1f}",
+                ha="center",
+                va="bottom",
+                fontsize=7,
+            )
+        ax0.tick_params(axis="x", rotation=45)
+    else:
+        ax0.text(0.5, 0.5, "No common components", transform=ax0.transAxes, ha="center", va="center")
+    ax0.set_ylabel("Displacement (mm)")
+    ax0.set_title("Initial -> Best Candidate |d|")
+    ax0.grid(True, axis="y", alpha=0.25)
+
+    ax1 = axes[1]
+    if top_axis_rows:
+        labels = [str(item.get("component_id", "")) for item in top_axis_rows]
+        x = np.arange(len(labels), dtype=float)
+        width = 0.24
+        dx = np.asarray([float(item.get("dx", 0.0)) for item in top_axis_rows], dtype=float)
+        dy = np.asarray([float(item.get("dy", 0.0)) for item in top_axis_rows], dtype=float)
+        dz = np.asarray([float(item.get("dz", 0.0)) for item in top_axis_rows], dtype=float)
+        ax1.bar(x - width, dx, width=width, label="dx", color="#1f77b4", alpha=0.85)
+        ax1.bar(x, dy, width=width, label="dy", color="#2ca02c", alpha=0.85)
+        ax1.bar(x + width, dz, width=width, label="dz", color="#d62728", alpha=0.85)
+        ax1.axhline(0.0, color="#7f8c8d", linewidth=1.0)
+        ax1.set_xticks(x)
+        ax1.set_xticklabels(labels, rotation=45, ha="right")
+        ax1.legend(loc="best", fontsize=8)
+    else:
+        ax1.text(0.5, 0.5, "No axis displacement data", transform=ax1.transAxes, ha="center", va="center")
+    ax1.set_ylabel("Axis Displacement (mm)")
+    ax1.set_title("Axis Shift (dx/dy/dz)")
+    ax1.grid(True, axis="y", alpha=0.25)
+
+    ax2 = axes[2]
+    if frame_stats:
+        x = np.arange(1, len(frame_stats) + 1, dtype=float)
+        y = np.asarray([float(item.get("max_dist", 0.0)) for item in frame_stats], dtype=float)
+        moved = np.asarray([int(item.get("moved_count", 0)) for item in frame_stats], dtype=float)
+        ax2.plot(x, y, marker="o", linewidth=1.8, color="#8e44ad", label="max |d|")
+        ax2.set_xlabel("Transition Index")
+        ax2.set_ylabel("Max Displacement (mm)", color="#8e44ad")
+        ax2.tick_params(axis="y", labelcolor="#8e44ad")
+        ax2.grid(True, alpha=0.25)
+        ax2b = ax2.twinx()
+        ax2b.plot(x, moved, marker="s", linewidth=1.5, color="#16a085", label="moved count")
+        ax2b.set_ylabel("Moved Components", color="#16a085")
+        ax2b.tick_params(axis="y", labelcolor="#16a085")
+        handles_a, labels_a = ax2.get_legend_handles_labels()
+        handles_b, labels_b = ax2b.get_legend_handles_labels()
+        ax2.legend(handles_a + handles_b, labels_a + labels_b, loc="best", fontsize=8)
+    else:
+        ax2.text(0.5, 0.5, "No frame transitions", transform=ax2.transAxes, ha="center", va="center")
+    ax2.set_title("Frame-to-Frame Motion")
+
+    initial_event = dict(initial_record.get("event", {}) or {})
+    best_event = dict(best_record.get("event", {}) or {})
+    final_event = dict(final_record.get("event", {}) or {})
+    fig.suptitle(
+        "Layout Evolution (events/snapshots truth-source)\n"
+        f"initial_seq={int(initial_event.get('sequence', 0) or 0)}, "
+        f"best_seq={int(best_event.get('sequence', 0) or 0)}, "
+        f"final_seq={int(final_event.get('sequence', 0) or 0)}",
+        fontsize=12,
+    )
+    summary_line = (
+        f"Initial->Best moved={moved_initial_to_best}/{len(initial_to_best)} | "
+        f"mean={mean_disp_initial_to_best:.3f} mm | "
+        f"max={max_disp_initial_to_best:.3f} mm ({max_component or 'NA'}) | "
+        f"Best->Final moved={moved_best_to_final}/{len(best_to_final)} "
+        f"(max={max_disp_best_to_final:.3f} mm) | "
+        f"FrameMax={frame_transition_max:.3f} mm"
+    )
+    if zero_reason:
+        summary_line = summary_line + f" | zero_reason={zero_reason}"
+    fig.text(0.01, 0.01, summary_line, fontsize=9)
+
+    plt.tight_layout(rect=[0.0, 0.05, 1.0, 0.92])
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    return {
+        "record_count": int(len(records)),
+        "reference_stage": str(initial_event.get("stage", "") or ""),
+        "best_stage": str(best_event.get("stage", "") or ""),
+        "final_stage": str(final_event.get("stage", "") or ""),
+        "moved_count_initial_to_best": int(moved_initial_to_best),
+        "max_displacement_initial_to_best": float(max_disp_initial_to_best),
+        "mean_displacement_initial_to_best": float(mean_disp_initial_to_best),
+        "max_component_initial_to_best": str(max_component),
+        "moved_count_best_to_final": int(moved_best_to_final),
+        "max_displacement_best_to_final": float(max_disp_best_to_final),
+        "frame_transition_count": int(len(frame_stats)),
+        "frame_transition_max": float(frame_transition_max),
+        "zero_reason": str(zero_reason),
+    }
+
+
+def plot_pymoo_maas_storyboard(tables_dir: str, output_path: str) -> None:
+    """
+    绘制 pymoo_maas 单次运行的四宫格故事板（基于 tables/*.csv）。
+    """
+    try:
+        logger.info(f"生成 pymoo_maas 故事板: {output_path}")
+
+        attempts = _read_csv_safely(os.path.join(tables_dir, "attempts.csv"))
+        generations = _read_csv_safely(os.path.join(tables_dir, "generations.csv"))
+        policies = _read_csv_safely(os.path.join(tables_dir, "policy_tuning.csv"))
+        physics = _read_csv_safely(os.path.join(tables_dir, "physics_budget.csv"))
+        phases = _read_csv_safely(os.path.join(tables_dir, "phases.csv"))
+        candidates = _read_csv_safely(os.path.join(tables_dir, "candidates.csv"))
+        layouts = _read_csv_safely(os.path.join(tables_dir, "layout_timeline.csv"))
+        layout_deltas = _read_csv_safely(os.path.join(tables_dir, "layout_deltas.csv"))
+
+        if (
+            len(attempts) == 0 and len(generations) == 0 and len(policies) == 0
+            and len(physics) == 0 and len(phases) == 0 and len(candidates) == 0
+            and len(layouts) == 0 and len(layout_deltas) == 0
+        ):
+            logger.warning("pymoo_maas 故事板跳过：tables 为空")
+            return
+
+        fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+
+        # 1) 代际收敛：best_cv + feasible_ratio
+        ax = axes[0, 0]
+        if len(generations) > 0 and "generation" in generations.columns:
+            gen = pd.to_numeric(generations["generation"], errors="coerce").fillna(0.0)
+            panel = pd.DataFrame({"generation": gen})
+            panel["best_cv"] = (
+                pd.to_numeric(generations.get("best_cv"), errors="coerce")
+                if "best_cv" in generations.columns
+                else np.nan
+            )
+            panel["feasible_ratio"] = (
+                pd.to_numeric(generations.get("feasible_ratio"), errors="coerce")
+                if "feasible_ratio" in generations.columns
+                else np.nan
+            )
+            panel = panel.sort_values("generation")
+            grouped = panel.groupby("generation", as_index=False).agg(
+                best_cv=("best_cv", "min"),
+                feasible_ratio=("feasible_ratio", "max"),
+            )
+            x = grouped["generation"].to_numpy(dtype=float)
+            ax.plot(x, grouped["best_cv"].to_numpy(dtype=float), "r-o", linewidth=1.8, label="best_cv(min)")
+            ax.set_xlabel("Generation")
+            ax.set_ylabel("Best CV", color="r")
+            ax.tick_params(axis="y", labelcolor="r")
+            ax.grid(True, alpha=0.25)
+            ax2 = ax.twinx()
+            ax2.plot(
+                x,
+                grouped["feasible_ratio"].fillna(0.0).to_numpy(dtype=float),
+                "b-s",
+                linewidth=1.6,
+                label="feasible_ratio(max)",
+            )
+            ax2.set_ylabel("Feasible Ratio", color="b")
+            ax2.set_ylim(-0.05, 1.05)
+            ax2.tick_params(axis="y", labelcolor="b")
+            h1, l1 = ax.get_legend_handles_labels()
+            h2, l2 = ax2.get_legend_handles_labels()
+            ax.legend(h1 + h2, l1 + l2, loc="best", fontsize=8)
+            ax.set_title("Generation Convergence")
+        else:
+            ax.text(0.5, 0.5, "No generation table data", transform=ax.transAxes,
+                    ha="center", va="center", fontsize=10, color="gray")
+            ax.set_title("Generation Convergence")
+
+        # 2) attempt 级求解趋势
+        ax = axes[0, 1]
+        if len(attempts) > 0 and "attempt" in attempts.columns:
+            x = pd.to_numeric(attempts["attempt"], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+            best_cv = _to_float_series(attempts, "best_cv")
+            aocc_cv = _to_float_series(attempts, "aocc_cv")
+            if best_cv is not None:
+                ax.plot(x, np.nan_to_num(best_cv, nan=np.nan), "r-o", linewidth=1.8, label="best_cv")
+            if aocc_cv is not None:
+                ax.plot(x, np.nan_to_num(aocc_cv, nan=np.nan), "k--^", linewidth=1.6, label="aocc_cv")
+
+            best_mask = _parse_bool_series(attempts, "is_best_attempt")
+            if best_mask.size == len(x):
+                ax.scatter(
+                    x[best_mask],
+                    np.nan_to_num(best_cv[best_mask], nan=0.0) if best_cv is not None else np.zeros(np.sum(best_mask)),
+                    color="#d62728",
+                    s=80,
+                    marker="*",
+                    label="best_attempt",
+                    zorder=4,
+                )
+
+            ax.set_xlabel("Attempt")
+            ax.set_ylabel("CV")
+            ax.set_title("Attempt Diagnostics")
+            ax.grid(True, alpha=0.25)
+            ax.legend(loc="best", fontsize=8)
+        else:
+            ax.text(0.5, 0.5, "No attempt table data", transform=ax.transAxes,
+                    ha="center", va="center", fontsize=10, color="gray")
+            ax.set_title("Attempt Diagnostics")
+
+        # 3) 策略/物理调度事件
+        ax = axes[1, 0]
+        policy_attempt = (
+            pd.to_numeric(policies["attempt"], errors="coerce").fillna(0).astype(int)
+            if len(policies) > 0 and "attempt" in policies.columns
+            else pd.Series([], dtype=int)
+        )
+        physics_attempt = (
+            pd.to_numeric(physics["attempt"], errors="coerce").fillna(0).astype(int)
+            if len(physics) > 0 and "attempt" in physics.columns
+            else pd.Series([], dtype=int)
+        )
+        attempt_ids = sorted(set(policy_attempt.tolist()) | set(physics_attempt.tolist()))
+        if attempt_ids:
+            x = np.asarray(attempt_ids, dtype=float)
+            policy_counts = np.asarray([int((policy_attempt == item).sum()) for item in attempt_ids], dtype=float)
+            applied = _parse_bool_series(policies, "applied")
+            if len(policies) > 0 and applied.size == len(policies):
+                policy_applied = np.asarray([
+                    int(np.sum(applied[policy_attempt.to_numpy(dtype=int) == item])) for item in attempt_ids
+                ], dtype=float)
+            else:
+                policy_applied = np.zeros_like(policy_counts)
+            physics_counts = np.asarray([int((physics_attempt == item).sum()) for item in attempt_ids], dtype=float)
+
+            ax.bar(x - 0.25, policy_counts, width=0.22, color="#4c72b0", alpha=0.75, label="policy_events")
+            ax.bar(x, policy_applied, width=0.22, color="#55a868", alpha=0.85, label="policy_applied")
+            ax.bar(x + 0.25, physics_counts, width=0.22, color="#dd8452", alpha=0.75, label="physics_events")
+            ax.set_xlabel("Attempt")
+            ax.set_ylabel("Event Count")
+            ax.set_title("Runtime Policy & Physics Events")
+            ax.grid(True, axis="y", alpha=0.25)
+            ax.legend(loc="best", fontsize=8)
+        else:
+            ax.text(0.5, 0.5, "No policy/physics events", transform=ax.transAxes,
+                    ha="center", va="center", fontsize=10, color="gray")
+            ax.set_title("Runtime Policy & Physics Events")
+
+        # 4) 事件漏斗总览
+        ax = axes[1, 1]
+        labels = ["phase", "attempt", "generation", "policy", "physics", "candidate", "layout", "layout_delta"]
+        values = [
+            int(len(phases)),
+            int(len(attempts)),
+            int(len(generations)),
+            int(len(policies)),
+            int(len(physics)),
+            int(len(candidates)),
+            int(len(layouts)),
+            int(len(layout_deltas)),
+        ]
+        bars = ax.bar(
+            labels,
+            values,
+            color=["#8172b2", "#4c72b0", "#c44e52", "#55a868", "#dd8452", "#937860", "#64b5cd", "#2a9d8f"],
+        )
+        ax.set_title("Observability Event Funnel")
+        ax.set_ylabel("Rows")
+        ax.grid(True, axis="y", alpha=0.25)
+        ax.tick_params(axis="x", rotation=15)
+        for bar, value in zip(bars, values):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                float(value) + 0.05,
+                str(int(value)),
+                ha="center",
+                va="bottom",
+                fontsize=8,
+            )
+
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        logger.info("pymoo_maas 故事板生成成功")
+
+    except Exception as e:
+        error_msg = f"生成 pymoo_maas 故事板失败: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        raise VisualizationError(error_msg) from e
 
 
 def plot_layout_evolution(initial_state, final_state, output_path: str):
@@ -797,6 +1934,132 @@ def plot_evolution_trace(csv_path: str, output_path: str):
         raise VisualizationError(error_msg) from e
 
 
+def plot_pymoo_maas_trace(csv_path: str, output_path: str):
+    """
+    绘制 pymoo_maas 尝试级轨迹图。
+    """
+    try:
+        logger.info(f"生成 pymoo_maas 轨迹图: {output_path}")
+        df = pd.read_csv(csv_path)
+        if len(df) == 0:
+            logger.warning("pymoo_maas 轨迹图跳过：没有数据可绘制")
+            return
+
+        if "attempt" not in df.columns:
+            df["attempt"] = np.arange(1, len(df) + 1, dtype=float)
+        attempts = _to_float_series(df, "attempt")
+        if attempts is None:
+            attempts = np.arange(1, len(df) + 1, dtype=float)
+        x_ticks = np.asarray(attempts, dtype=float)
+
+        best_cv = _to_float_series(df, "best_cv")
+        aocc_cv = _to_float_series(df, "aocc_cv")
+        aocc_obj = _to_float_series(df, "aocc_objective")
+        score = _to_float_series(df, "score")
+        solver_cost = _to_float_series(df, "solver_cost")
+
+        fig, axes = plt.subplots(2, 2, figsize=(16, 11))
+
+        # 1) 可行性收敛指标
+        ax = axes[0, 0]
+        plotted = False
+        if best_cv is not None:
+            ax.plot(x_ticks, np.nan_to_num(best_cv, nan=np.nan), "r-o", linewidth=2.0, label="best_cv")
+            plotted = True
+        if aocc_cv is not None:
+            ax.plot(x_ticks, np.nan_to_num(aocc_cv, nan=np.nan), "b-s", linewidth=1.8, label="aocc_cv")
+            plotted = True
+        if aocc_obj is not None:
+            ax.plot(x_ticks, np.nan_to_num(aocc_obj, nan=np.nan), "k-^", linewidth=1.6, label="aocc_objective")
+            plotted = True
+        ax.set_title("Constraint/Objective Convergence")
+        ax.set_xlabel("Attempt")
+        ax.set_ylabel("Value")
+        ax.grid(True, alpha=0.25)
+        if plotted:
+            ax.legend(loc="best", fontsize=8)
+
+        # 2) score 与 solver cost
+        ax = axes[0, 1]
+        has_score = False
+        has_cost = False
+        if score is not None:
+            score = np.nan_to_num(score, nan=0.0)
+            ax.bar(x_ticks, score, color="#4c72b0", alpha=0.75, label="score")
+            has_score = True
+        ax.set_title("Attempt Score and Solver Cost")
+        ax.set_xlabel("Attempt")
+        ax.set_ylabel("Score")
+        ax.grid(True, alpha=0.25)
+        ax2 = ax.twinx()
+        if solver_cost is not None:
+            solver_cost = np.nan_to_num(solver_cost, nan=0.0)
+            ax2.plot(x_ticks, solver_cost, color="#dd8452", marker="o", linewidth=1.8, label="solver_cost")
+            ax2.set_ylabel("Solver Cost (s)")
+            has_cost = True
+        handles_l, labels_l = ax.get_legend_handles_labels()
+        handles_r, labels_r = ax2.get_legend_handles_labels()
+        if has_score or has_cost:
+            ax.legend(handles_l + handles_r, labels_l + labels_r, loc="best", fontsize=8)
+
+        # 3) 诊断状态分布
+        ax = axes[1, 0]
+        if "diagnosis_status" in df.columns:
+            status_counts = df["diagnosis_status"].fillna("unknown").astype(str).value_counts()
+            x_pos = np.arange(len(status_counts), dtype=float)
+            ax.bar(x_pos, status_counts.values, color="#55a868", alpha=0.85)
+            ax.set_xticks(x_pos)
+            ax.set_xticklabels(status_counts.index, rotation=20, ha="right")
+            ax.set_title("Diagnosis Status Distribution")
+            ax.set_ylabel("Count")
+            for idx, val in enumerate(status_counts.values):
+                ax.text(idx, float(val) + 0.05, str(int(val)), ha="center", va="bottom", fontsize=9)
+        else:
+            ax.text(0.5, 0.5, "No diagnosis_status column", transform=ax.transAxes,
+                    ha="center", va="center", fontsize=10, color="gray")
+            ax.set_title("Diagnosis Status Distribution")
+        ax.grid(True, axis="y", alpha=0.25)
+
+        # 4) 分支动作与最优标记
+        ax = axes[1, 1]
+        if "branch_action" in df.columns:
+            branch_actions = df["branch_action"].fillna("").astype(str)
+            unique_actions = sorted([item for item in branch_actions.unique() if item != ""])
+            action_to_idx = {name: idx for idx, name in enumerate(unique_actions)}
+            y_values = np.array([action_to_idx.get(name, -1) for name in branch_actions], dtype=float)
+            colors = np.full(len(y_values), "#8c8c8c", dtype=object)
+            if "is_best_attempt" in df.columns:
+                best_mask = (
+                    df["is_best_attempt"]
+                    .astype(str)
+                    .str.strip()
+                    .str.lower()
+                    .isin({"1", "true", "yes"})
+                )
+                colors[best_mask.to_numpy()] = "#d62728"
+            ax.scatter(x_ticks, y_values, c=colors, s=55, alpha=0.9)
+            ax.set_yticks(list(action_to_idx.values()))
+            ax.set_yticklabels(list(action_to_idx.keys()))
+            ax.set_title("Branch Action Timeline")
+            ax.set_xlabel("Attempt")
+            ax.set_ylabel("Branch Action")
+        else:
+            ax.text(0.5, 0.5, "No branch_action column", transform=ax.transAxes,
+                    ha="center", va="center", fontsize=10, color="gray")
+            ax.set_title("Branch Action Timeline")
+        ax.grid(True, alpha=0.2)
+
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        logger.info("pymoo_maas 轨迹图生成成功")
+
+    except Exception as e:
+        error_msg = f"生成 pymoo_maas 轨迹图失败: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        raise VisualizationError(error_msg) from e
+
+
 def plot_thermal_heatmap(design_state, thermal_data: Dict[str, float], output_path: str):
     """
     绘制热图
@@ -977,16 +2240,53 @@ def generate_visualizations(experiment_dir: str):
 
     viz_dir = os.path.join(experiment_dir, 'visualizations')
     os.makedirs(viz_dir, exist_ok=True)
+    optimization_mode = _detect_optimization_mode(experiment_dir)
+    logger.info(f"可视化模式检测: {optimization_mode}")
 
-    # 1. 演化轨迹图
+    # 1. 模式化轨迹图
     csv_path = os.path.join(experiment_dir, 'evolution_trace.csv')
-    if os.path.exists(csv_path):
+    maas_csv_path = os.path.join(experiment_dir, "pymoo_maas_trace.csv")
+    tables_dir = os.path.join(experiment_dir, "tables")
+    timeline_report: Dict[str, Any] = {}
+    if optimization_mode == "pymoo_maas":
+        if os.path.exists(maas_csv_path):
+            try:
+                output_path = os.path.join(viz_dir, "pymoo_maas_trace.png")
+                plot_pymoo_maas_trace(maas_csv_path, output_path)
+                print(f"  [OK] pymoo_maas轨迹图: {output_path}")
+            except Exception as e:
+                print(f"  [FAIL] pymoo_maas轨迹图生成失败: {e}")
+        else:
+            print("  [WARN] 未找到 pymoo_maas_trace.csv，跳过轨迹图生成")
+
+        if os.path.isdir(tables_dir):
+            try:
+                output_path = os.path.join(viz_dir, "pymoo_maas_storyboard.png")
+                plot_pymoo_maas_storyboard(tables_dir, output_path)
+                print(f"  [OK] pymoo_maas故事板: {output_path}")
+            except Exception as e:
+                print(f"  [FAIL] pymoo_maas故事板生成失败: {e}")
+
         try:
-            output_path = os.path.join(viz_dir, 'evolution_trace.png')
-            plot_evolution_trace(csv_path, output_path)
-            print(f"  [OK] 演化轨迹图: {output_path}")
+            timeline_report = plot_layout_timeline(experiment_dir, viz_dir)
+            frame_count = int(timeline_report.get("frame_count", 0) or 0)
+            if frame_count > 0:
+                print(f"  [OK] 布局时间线帧: {timeline_report.get('frames_dir', '')}")
+                gif_path = str(timeline_report.get("gif_path", "") or "")
+                if gif_path:
+                    print(f"  [OK] 布局时间线GIF: {gif_path}")
+            else:
+                print("  [WARN] 未检测到 layout_events，跳过布局时间线生成")
         except Exception as e:
-            print(f"  [FAIL] 演化轨迹图生成失败: {e}")
+            print(f"  [FAIL] 布局时间线生成失败: {e}")
+    else:
+        if os.path.exists(csv_path):
+            try:
+                output_path = os.path.join(viz_dir, 'evolution_trace.png')
+                plot_evolution_trace(csv_path, output_path)
+                print(f"  [OK] 演化轨迹图: {output_path}")
+            except Exception as e:
+                print(f"  [FAIL] 演化轨迹图生成失败: {e}")
 
     # 2. 布局与热图（需要设计状态文件）
     import glob
@@ -1005,8 +2305,27 @@ def generate_visualizations(experiment_dir: str):
     initial_state = None
     final_state = None
     thermal_data: Dict[str, float] = {}
+    layout_evolution_report: Dict[str, Any] = {}
+    snapshot_records: List[Dict[str, Any]] = []
 
-    if design_files:
+    if optimization_mode == "pymoo_maas":
+        snapshot_records = _load_layout_snapshot_records(experiment_dir)
+        if snapshot_records:
+            try:
+                first_snapshot = dict(snapshot_records[0].get("snapshot", {}) or {})
+                final_snapshot = dict(snapshot_records[-1].get("snapshot", {}) or {})
+                initial_state = DesignState(
+                    **dict(first_snapshot.get("design_state", {}) or {})
+                )
+                final_state = DesignState(
+                    **dict(final_snapshot.get("design_state", {}) or {})
+                )
+            except Exception as e:
+                logger.warning("pymoo_maas snapshot state parse failed: %s", e)
+                initial_state = None
+                final_state = None
+
+    if final_state is None and design_files:
         try:
             design_files = sorted(design_files, key=_iteration_from_filename)
             first_file = design_files[0]
@@ -1019,35 +2338,88 @@ def generate_visualizations(experiment_dir: str):
 
             initial_state = DesignState(**initial_data)
             final_state = DesignState(**latest_data)
+        except Exception as e:
+            print(f"  [FAIL] 可视化生成失败: {e}")
+            logger.error(f"可视化生成失败: {e}", exc_info=True)
 
+    if final_state is not None:
+        try:
             # 最终3D布局图
             output_path = os.path.join(viz_dir, 'final_layout_3d.png')
             plot_3d_layout(final_state, output_path)
             print(f"  [OK] 3D布局图: {output_path}")
 
-            # 布局演化图（初始 vs 最终）
+            # 布局演化图
             output_path = os.path.join(viz_dir, 'layout_evolution.png')
-            plot_layout_evolution(initial_state, final_state, output_path)
-            print(f"  [OK] 布局演化图: {output_path}")
+            if optimization_mode == "pymoo_maas":
+                layout_evolution_report = plot_layout_evolution_from_snapshots(
+                    experiment_dir,
+                    output_path,
+                )
+                if int(layout_evolution_report.get("record_count", 0) or 0) > 0:
+                    print(f"  [OK] 布局演化图(events/snapshots): {output_path}")
+                elif initial_state is not None:
+                    plot_layout_evolution(initial_state, final_state, output_path)
+                    print(f"  [OK] 布局演化图(fallback): {output_path}")
+            elif initial_state is not None:
+                plot_layout_evolution(initial_state, final_state, output_path)
+                print(f"  [OK] 布局演化图: {output_path}")
 
             # 热代理图（确定性，基于功率密度）
             thermal_data = build_power_density_proxy(final_state, csv_path=csv_path)
             output_path = os.path.join(viz_dir, 'thermal_heatmap.png')
             plot_thermal_heatmap(final_state, thermal_data, output_path)
             print(f"  [OK] 热图: {output_path}")
-
         except Exception as e:
             print(f"  [FAIL] 可视化生成失败: {e}")
             logger.error(f"可视化生成失败: {e}", exc_info=True)
 
     # 3. 可视化摘要文本
     try:
-        summary_text = _build_visualization_summary(
-            csv_path=csv_path,
-            initial_state=initial_state,
-            final_state=final_state,
-            thermal_data=thermal_data if thermal_data else None,
-        )
+        if optimization_mode == "pymoo_maas":
+            summary_text = _build_pymoo_maas_visualization_summary(maas_csv_path)
+            if os.path.isdir(tables_dir):
+                summary_text = summary_text + "\n" + _build_pymoo_maas_tables_summary(tables_dir)
+            if timeline_report:
+                summary_text = summary_text + "\n=== Layout Timeline Artifacts ==="
+                summary_text = summary_text + (
+                    f"\n- Frames rendered: {int(timeline_report.get('frame_count', 0) or 0)}"
+                )
+                frames_dir = str(timeline_report.get("frames_dir", "") or "")
+                gif_path = str(timeline_report.get("gif_path", "") or "")
+                if frames_dir:
+                    summary_text = summary_text + f"\n- Frames dir: {frames_dir}"
+                if gif_path:
+                    summary_text = summary_text + f"\n- GIF: {gif_path}"
+            if layout_evolution_report:
+                summary_text = summary_text + "\n=== Layout Evolution Truth-Source ==="
+                summary_text = summary_text + (
+                    f"\n- Snapshot records: {int(layout_evolution_report.get('record_count', 0) or 0)}"
+                )
+                summary_text = summary_text + (
+                    f"\n- Initial->Best moved: {int(layout_evolution_report.get('moved_count_initial_to_best', 0) or 0)}"
+                    f", mean={float(layout_evolution_report.get('mean_displacement_initial_to_best', 0.0) or 0.0):.4f} mm"
+                    f", max={float(layout_evolution_report.get('max_displacement_initial_to_best', 0.0) or 0.0):.4f} mm"
+                )
+                summary_text = summary_text + (
+                    f"\n- Best->Final moved: {int(layout_evolution_report.get('moved_count_best_to_final', 0) or 0)}"
+                    f", max={float(layout_evolution_report.get('max_displacement_best_to_final', 0.0) or 0.0):.4f} mm"
+                )
+                summary_text = summary_text + (
+                    f"\n- Frame transitions: {int(layout_evolution_report.get('frame_transition_count', 0) or 0)}"
+                    f", frame_max={float(layout_evolution_report.get('frame_transition_max', 0.0) or 0.0):.4f} mm"
+                )
+                zero_reason = str(layout_evolution_report.get("zero_reason", "") or "").strip()
+                if zero_reason:
+                    summary_text = summary_text + f"\n- Zero-movement reason: {zero_reason}"
+        else:
+            summary_text = _build_visualization_summary(
+                csv_path=csv_path,
+                initial_state=initial_state,
+                final_state=final_state,
+                thermal_data=thermal_data if thermal_data else None,
+            )
+        summary_text = f"Optimization mode: {optimization_mode}\n" + summary_text
         summary_path = os.path.join(viz_dir, "visualization_summary.txt")
         with open(summary_path, "w", encoding="utf-8") as f:
             f.write(summary_text + "\n")

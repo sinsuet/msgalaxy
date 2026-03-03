@@ -27,6 +27,7 @@ from .protocol import (
     StrategicPlan,
     AgentTask,
     ViolationItem,
+    ModelingIntent,
 )
 from core.logger import ExperimentLogger
 from core.exceptions import LLMError
@@ -38,7 +39,7 @@ class MetaReasoner:
     def __init__(
         self,
         api_key: str,
-        model: str = "qwen-plus",
+        model: str = "qwen3-max",
         temperature: float = 0.7,
         base_url: Optional[str] = None,  # 保留兼容性，但不使用
         logger: Optional[ExperimentLogger] = None
@@ -61,6 +62,7 @@ class MetaReasoner:
 
         # 加载系统提示词
         self.system_prompt = self._load_system_prompt()
+        self.modeling_system_prompt = self._load_modeling_system_prompt()
 
         # Few-shot示例
         self.few_shot_examples = self._load_few_shot_examples()
@@ -140,6 +142,71 @@ class MetaReasoner:
 2. **渐进式**: 优先尝试风险低的方案
 3. **可追溯**: 每个决策都要有明确的工程依据
 4. **可回滚**: 考虑失败后的回退方案
+"""
+
+    def _load_modeling_system_prompt(self) -> str:
+        """加载 MaaS 建模系统提示词（Phase A: Understanding）。"""
+        return """Role: You are the MsGalaxy Meta-Reasoner, a Senior Aerospace Software Engineer and Optimization Specialist.
+
+Task:
+- You are the Modeling-as-a-Service layer.
+- You DO NOT perform numerical optimization directly.
+- You MUST transform requirements into a rigorous modeling intent JSON.
+
+Operational rules:
+1. Output MUST be valid JSON object only.
+2. You MUST include:
+   - problem_type
+   - variables
+   - objectives
+   - hard_constraints
+   - soft_constraints
+3. Hard constraints represent physical laws or mandatory engineering limits.
+4. Soft constraints represent preferences.
+5. Do not output code at this stage.
+
+JSON schema guideline:
+{
+  "intent_id": "INTENT_YYYYMMDD_NNN",
+  "iteration": 1,
+  "problem_type": "continuous | discrete | mixed | multi_objective",
+  "variables": [
+    {
+      "name": "Battery_01_x",
+      "variable_type": "continuous",
+      "lower_bound": -120.0,
+      "upper_bound": 120.0,
+      "unit": "mm",
+      "component_id": "Battery_01",
+      "description": "x-position"
+    }
+  ],
+  "objectives": [
+    {
+      "name": "min_cg_offset",
+      "metric_key": "cg_offset",
+      "direction": "minimize",
+      "weight": 1.0,
+      "description": "keep centroid close to reference"
+    }
+  ],
+  "hard_constraints": [
+    {
+      "name": "clearance_limit",
+      "metric_key": "min_clearance",
+      "category": "geometry",
+      "relation": ">=",
+      "target_value": 5.0,
+      "unit": "mm",
+      "expression": "min_clearance >= 5.0",
+      "latex": "g_{clear}=5.0-min\\_clearance\\le 0",
+      "physical_meaning": "minimum mechanical clearance"
+    }
+  ],
+  "soft_constraints": [],
+  "assumptions": [],
+  "notes": ""
+}
 """
 
     def _load_few_shot_examples(self) -> List[Dict[str, str]]:
@@ -393,17 +460,338 @@ class MetaReasoner:
             )
             return StrategicPlan(**fallback_json)
 
-    def _to_finite_float(self, value: Any) -> Optional[float]:
-        """将任意输入安全转换为有限浮点数，失败返回 None。"""
+    def _to_finite_float(self, value: Any, default: Optional[float] = None) -> Optional[float]:
+        """将任意输入安全转换为有限浮点数，失败返回 default。"""
         if value is None or isinstance(value, bool):
-            return None
+            return default
         try:
             numeric = float(value)
         except (TypeError, ValueError):
-            return None
+            return default
         if not math.isfinite(numeric):
-            return None
+            return default
         return numeric
+
+    def generate_modeling_intent(
+        self,
+        context: GlobalContextPack,
+        runtime_constraints: Optional[Dict[str, float]] = None,
+        requirement_text: str = "",
+    ) -> ModelingIntent:
+        """
+        生成 MaaS 建模意图（Phase A）。
+
+        注意：该方法只输出结构化建模 JSON，不生成求解代码。
+        """
+        runtime_constraints = runtime_constraints or {}
+
+        try:
+            user_prompt = (
+                f"{context.to_markdown_prompt()}\n\n"
+                f"## Runtime Hard Limits\n"
+                f"{json.dumps(runtime_constraints, ensure_ascii=False, indent=2)}\n\n"
+                f"## Requirement Text\n"
+                f"{requirement_text or '未提供额外需求描述，请基于当前上下文生成建模要素。'}\n\n"
+                "请严格输出 ModelingIntent JSON。"
+            )
+
+            messages = [
+                {"role": "system", "content": self.modeling_system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+
+            if self.logger:
+                self.logger.log_llm_interaction(
+                    iteration=context.iteration,
+                    role="model_agent",
+                    request={"messages": messages, "model": self.model},
+                    response=None,
+                )
+
+            response = dashscope.Generation.call(
+                model=self.model,
+                messages=messages,
+                result_format="message",
+                temperature=min(self.temperature, 0.5),
+                response_format={"type": "json_object"},
+            )
+
+            if response.status_code != HTTPStatus.OK:
+                raise LLMError(f"DashScope API 调用失败: {response.code} - {response.message}")
+
+            payload = json.loads(response.output.choices[0].message.content)
+            payload = self._sanitize_modeling_intent_payload(
+                payload=payload,
+                context=context,
+                runtime_constraints=runtime_constraints,
+            )
+            intent = ModelingIntent(**payload)
+
+            if self.logger:
+                self.logger.log_llm_interaction(
+                    iteration=context.iteration,
+                    role="model_agent",
+                    request=None,
+                    response=intent.model_dump(),
+                )
+
+            return intent
+
+        except Exception as exc:
+            if self.logger:
+                self.logger.logger.warning(f"Modeling intent generation failed, fallback enabled: {exc}")
+
+            fallback_payload = self._build_fallback_modeling_intent_payload(
+                context=context,
+                runtime_constraints=runtime_constraints,
+                reason=str(exc),
+            )
+            return ModelingIntent(**fallback_payload)
+
+    def _sanitize_modeling_intent_payload(
+        self,
+        payload: Any,
+        context: GlobalContextPack,
+        runtime_constraints: Dict[str, float],
+    ) -> Dict[str, Any]:
+        """清洗 ModelingIntent 输出，兼容大小写字段与弱类型字段。"""
+        raw = payload if isinstance(payload, dict) else {}
+
+        clean: Dict[str, Any] = {
+            "intent_id": str(raw.get("intent_id") or f"INTENT_{datetime.now().strftime('%Y%m%d')}_{context.iteration:03d}"),
+            "iteration": int(context.iteration),
+            "problem_type": str(raw.get("problem_type") or "multi_objective"),
+            "variables": [],
+            "objectives": [],
+            "hard_constraints": [],
+            "soft_constraints": [],
+            "assumptions": [],
+            "notes": str(raw.get("notes") or ""),
+        }
+
+        if clean["problem_type"] not in {"continuous", "discrete", "mixed", "multi_objective"}:
+            clean["problem_type"] = "multi_objective"
+
+        raw_variables = raw.get("variables", raw.get("Variables", []))
+        if isinstance(raw_variables, list):
+            for idx, item in enumerate(raw_variables, start=1):
+                if not isinstance(item, dict):
+                    continue
+                lb = self._to_finite_float(item.get("lower_bound"), None)  # type: ignore[arg-type]
+                ub = self._to_finite_float(item.get("upper_bound"), None)  # type: ignore[arg-type]
+                var = {
+                    "name": str(item.get("name") or f"var_{idx}"),
+                    "variable_type": str(item.get("variable_type") or "continuous"),
+                    "lower_bound": lb,
+                    "upper_bound": ub,
+                    "unit": str(item.get("unit") or "mm"),
+                    "component_id": (str(item.get("component_id")) if item.get("component_id") is not None else None),
+                    "description": str(item.get("description") or ""),
+                }
+                if var["variable_type"] not in {"continuous", "integer", "binary", "categorical"}:
+                    var["variable_type"] = "continuous"
+                clean["variables"].append(var)
+
+        raw_objectives = raw.get("objectives", raw.get("Objectives", []))
+        if isinstance(raw_objectives, list):
+            for idx, item in enumerate(raw_objectives, start=1):
+                if not isinstance(item, dict):
+                    continue
+                direction = str(item.get("direction") or "minimize")
+                if direction not in {"minimize", "maximize"}:
+                    direction = "minimize"
+                weight = self._to_finite_float(item.get("weight"), 1.0) or 1.0
+                clean["objectives"].append({
+                    "name": str(item.get("name") or f"obj_{idx}"),
+                    "metric_key": str(item.get("metric_key") or f"metric_{idx}"),
+                    "direction": direction,
+                    "weight": float(weight),
+                    "description": str(item.get("description") or ""),
+                })
+
+        clean["hard_constraints"] = self._sanitize_modeling_constraints(
+            raw.get("hard_constraints", raw.get("Hard Constraints", [])),
+            default_hard=True,
+        )
+        clean["soft_constraints"] = self._sanitize_modeling_constraints(
+            raw.get("soft_constraints", raw.get("Soft Constraints", [])),
+            default_hard=False,
+        )
+
+        assumptions = raw.get("assumptions", [])
+        if isinstance(assumptions, list):
+            clean["assumptions"] = [str(item) for item in assumptions if str(item).strip()]
+
+        # 最低保障：缺失关键字段时补齐基础模板
+        if not clean["variables"] or not clean["objectives"] or not clean["hard_constraints"]:
+            fallback = self._build_fallback_modeling_intent_payload(
+                context=context,
+                runtime_constraints=runtime_constraints,
+                reason="incomplete_payload",
+            )
+            # 用 fallback 补齐缺失字段，但保留已有输出
+            clean["variables"] = clean["variables"] or fallback["variables"]
+            clean["objectives"] = clean["objectives"] or fallback["objectives"]
+            clean["hard_constraints"] = clean["hard_constraints"] or fallback["hard_constraints"]
+            clean["soft_constraints"] = clean["soft_constraints"] or fallback["soft_constraints"]
+            clean["assumptions"] = clean["assumptions"] or fallback["assumptions"]
+
+        return clean
+
+    def _sanitize_modeling_constraints(
+        self,
+        constraints_raw: Any,
+        default_hard: bool,
+    ) -> List[Dict[str, Any]]:
+        """清洗约束列表。"""
+        clean_constraints: List[Dict[str, Any]] = []
+        if not isinstance(constraints_raw, list):
+            return clean_constraints
+
+        for idx, item in enumerate(constraints_raw, start=1):
+            if not isinstance(item, dict):
+                continue
+
+            relation = str(item.get("relation") or "<=")
+            if relation not in {"<=", ">=", "=="}:
+                relation = "<="
+
+            target_value = self._to_finite_float(item.get("target_value"), 0.0)
+            if target_value is None:
+                target_value = 0.0
+
+            category = str(item.get("category") or "mission")
+            if category not in {"geometry", "thermal", "structural", "power", "mission", "emc"}:
+                category = "mission"
+
+            clean_constraints.append({
+                "name": str(item.get("name") or f"{'hard' if default_hard else 'soft'}_constraint_{idx}"),
+                "metric_key": str(item.get("metric_key") or f"metric_{idx}"),
+                "category": category,
+                "relation": relation,
+                "target_value": float(target_value),
+                "unit": str(item.get("unit") or ""),
+                "expression": str(item.get("expression") or ""),
+                "latex": str(item.get("latex") or ""),
+                "physical_meaning": str(item.get("physical_meaning") or ""),
+            })
+
+        return clean_constraints
+
+    def _build_fallback_modeling_intent_payload(
+        self,
+        context: GlobalContextPack,
+        runtime_constraints: Dict[str, float],
+        reason: str,
+    ) -> Dict[str, Any]:
+        """建模意图失败时的兜底模板。"""
+        max_temp = float(runtime_constraints.get("max_temp_c", 60.0))
+        min_clearance = float(runtime_constraints.get("min_clearance_mm", 3.0))
+        max_cg = float(runtime_constraints.get("max_cg_offset_mm", 20.0))
+
+        return {
+            "intent_id": f"INTENT_FALLBACK_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            "iteration": context.iteration,
+            "problem_type": "multi_objective",
+            "variables": [
+                {
+                    "name": "delta_x",
+                    "variable_type": "continuous",
+                    "lower_bound": -30.0,
+                    "upper_bound": 30.0,
+                    "unit": "mm",
+                    "component_id": None,
+                    "description": "global x perturbation",
+                },
+                {
+                    "name": "delta_y",
+                    "variable_type": "continuous",
+                    "lower_bound": -30.0,
+                    "upper_bound": 30.0,
+                    "unit": "mm",
+                    "component_id": None,
+                    "description": "global y perturbation",
+                },
+                {
+                    "name": "delta_z",
+                    "variable_type": "continuous",
+                    "lower_bound": -30.0,
+                    "upper_bound": 30.0,
+                    "unit": "mm",
+                    "component_id": None,
+                    "description": "global z perturbation",
+                },
+            ],
+            "objectives": [
+                {
+                    "name": "min_cg_offset",
+                    "metric_key": "cg_offset",
+                    "direction": "minimize",
+                    "weight": 1.0,
+                    "description": "minimize centroid offset",
+                },
+                {
+                    "name": "min_max_temp",
+                    "metric_key": "max_temp",
+                    "direction": "minimize",
+                    "weight": 1.0,
+                    "description": "minimize peak temperature",
+                },
+            ],
+            "hard_constraints": [
+                {
+                    "name": "g_clearance",
+                    "metric_key": "min_clearance",
+                    "category": "geometry",
+                    "relation": ">=",
+                    "target_value": min_clearance,
+                    "unit": "mm",
+                    "expression": f"min_clearance >= {min_clearance}",
+                    "latex": f"g_1={min_clearance}-min\\_clearance\\le 0",
+                    "physical_meaning": "minimum mechanical clearance",
+                },
+                {
+                    "name": "g_temp",
+                    "metric_key": "max_temp",
+                    "category": "thermal",
+                    "relation": "<=",
+                    "target_value": max_temp,
+                    "unit": "C",
+                    "expression": f"max_temp <= {max_temp}",
+                    "latex": f"g_2=max\\_temp-{max_temp}\\le 0",
+                    "physical_meaning": "thermal safety limit",
+                },
+                {
+                    "name": "g_cg",
+                    "metric_key": "cg_offset",
+                    "category": "geometry",
+                    "relation": "<=",
+                    "target_value": max_cg,
+                    "unit": "mm",
+                    "expression": f"cg_offset <= {max_cg}",
+                    "latex": f"g_3=cg\\_offset-{max_cg}\\le 0",
+                    "physical_meaning": "attitude controllability bound",
+                },
+            ],
+            "soft_constraints": [
+                {
+                    "name": "soft_moi_balance",
+                    "metric_key": "moi_imbalance",
+                    "category": "structural",
+                    "relation": "<=",
+                    "target_value": 1.0,
+                    "unit": "dimensionless",
+                    "expression": "moi_imbalance <= 1.0",
+                    "latex": "f_{moi}=\\sigma(I_{xx},I_{yy},I_{zz})",
+                    "physical_meaning": "prefer inertial balance",
+                }
+            ],
+            "assumptions": [
+                f"fallback generated because: {reason}",
+                "all mandatory constraints are transformed to inequality-compatible form",
+            ],
+            "notes": "fallback_modeling_intent",
+        }
 
     def _sanitize_plan_payload(
         self,

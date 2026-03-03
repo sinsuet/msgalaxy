@@ -5,7 +5,7 @@
 """
 
 from typing import List, Dict, Any, Optional, Literal, Tuple
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from datetime import datetime
 import json
 
@@ -227,6 +227,82 @@ class StrategicPlan(BaseModel):
         return (f"[{self.strategy_type}] {self.strategy_description}\n"
                 f"分配任务: {len(self.tasks)}个 | "
                 f"预期改进: {len(self.expected_improvements)}项指标")
+
+
+# ============================================================================
+# MaaS 建模协议（Phase A）
+# ============================================================================
+
+class ModelingVariable(BaseModel):
+    """建模变量定义"""
+    name: str
+    variable_type: Literal["continuous", "integer", "binary", "categorical"] = "continuous"
+    lower_bound: Optional[float] = None
+    upper_bound: Optional[float] = None
+    unit: str = "mm"
+    component_id: Optional[str] = None
+    description: str = ""
+
+    @model_validator(mode="after")
+    def _validate_bounds(self):
+        if (
+            self.lower_bound is not None and
+            self.upper_bound is not None and
+            self.lower_bound > self.upper_bound
+        ):
+            raise ValueError(
+                f"Variable {self.name} has invalid bounds: "
+                f"{self.lower_bound} > {self.upper_bound}"
+            )
+        return self
+
+
+class ModelingObjective(BaseModel):
+    """建模目标定义"""
+    name: str
+    metric_key: str
+    direction: Literal["minimize", "maximize"] = "minimize"
+    weight: float = 1.0
+    description: str = ""
+
+
+class ModelingConstraint(BaseModel):
+    """建模约束定义"""
+    name: str
+    metric_key: str
+    category: Literal["geometry", "thermal", "structural", "power", "mission", "emc"] = "mission"
+    relation: Literal["<=", ">=", "=="] = "<="
+    target_value: float = 0.0
+    unit: str = ""
+    expression: str = ""
+    latex: str = ""
+    physical_meaning: str = ""
+
+
+class ModelingIntent(BaseModel):
+    """
+    Modeling-as-a-Service 输出协议（阶段A）。
+
+    设计要求:
+    1. 严格区分 hard/soft constraints。
+    2. 输出可追溯的数学表达与工程语义。
+    """
+    intent_id: str
+    iteration: int
+    problem_type: Literal["continuous", "discrete", "mixed", "multi_objective"] = "multi_objective"
+    variables: List[ModelingVariable] = Field(default_factory=list)
+    objectives: List[ModelingObjective] = Field(default_factory=list)
+    hard_constraints: List[ModelingConstraint] = Field(default_factory=list)
+    soft_constraints: List[ModelingConstraint] = Field(default_factory=list)
+    assumptions: List[str] = Field(default_factory=list)
+    notes: str = ""
+
+    def to_summary(self) -> str:
+        return (
+            f"[{self.problem_type}] vars={len(self.variables)}, "
+            f"objs={len(self.objectives)}, "
+            f"hard={len(self.hard_constraints)}, soft={len(self.soft_constraints)}"
+        )
 
 
 # ============================================================================
