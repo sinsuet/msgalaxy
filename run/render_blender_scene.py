@@ -29,6 +29,7 @@ from visualization.blender_mcp import (  # noqa: E402
     build_render_bundle_from_run,
     generate_blender_scene_script,
 )
+from core.path_policy import serialize_repo_path  # noqa: E402
 
 
 def _discover_blender_executable() -> Optional[Path]:
@@ -106,10 +107,10 @@ def main() -> int:
 
     manifest_path = output_dir / "render_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["scene_script_path"] = str(scene_script_path)
-    manifest["brief_path"] = str(brief_path)
-    manifest["output_image_path"] = str(output_image_path)
-    manifest["output_blend_path"] = str(output_blend_path)
+    manifest["scene_script_path"] = serialize_repo_path(scene_script_path)
+    manifest["brief_path"] = serialize_repo_path(brief_path)
+    manifest["output_image_path"] = serialize_repo_path(output_image_path)
+    manifest["output_blend_path"] = serialize_repo_path(output_blend_path)
     manifest["direct_render_status"] = "skipped"
     manifest["direct_render_stdout"] = ""
     manifest["direct_render_stderr"] = ""

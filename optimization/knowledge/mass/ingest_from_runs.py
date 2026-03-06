@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 from typing import Dict, Iterable, List
 
+from core.path_policy import serialize_repo_path
+
 from .evidence_schema import MassEvidence
 from .mass_rag_system import MassRAGSystem
 
@@ -48,8 +50,8 @@ def _build_evidence_from_summary(path: Path, payload: Dict[str, object]) -> Mass
         f"best_cv_min: {payload.get('best_cv_min', None)}"
     )
     metadata = {
-        "run_dir": str(path.parent.as_posix()),
-        "summary_path": str(path.as_posix()),
+        "run_dir": serialize_repo_path(path.parent),
+        "summary_path": serialize_repo_path(path),
         "maas_attempt_count": payload.get("maas_attempt_count", None),
         "source_gate_passed": payload.get("source_gate_passed", None),
     }

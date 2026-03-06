@@ -138,6 +138,17 @@ class APIClient:
         response.raise_for_status()
         return response.json()
 
+    def get_latest_experiment(self) -> Dict[str, Any]:
+        """
+        获取最新实验索引
+
+        Returns:
+            最新实验信息
+        """
+        response = self.session.get(f"{self.base_url}/api/experiments/latest")
+        response.raise_for_status()
+        return response.json()
+
     def validate_bom(self, bom_file: str) -> Dict[str, Any]:
         """
         验证BOM文件

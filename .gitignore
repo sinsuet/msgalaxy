@@ -7,6 +7,7 @@ __pycache__/
 *.egg-info/
 .installed.cfg
 *.egg
+.pytest_cache/
 
 # Virtual Environment
 
@@ -34,10 +35,6 @@ benchmarks/
 tmp_*
 t1.*
 t2.*
-workspace/
-
-# Research papers and references
-papers/
 
 # OS
 .DS_Store
@@ -50,30 +47,12 @@ Thumbs.db
 # COMSOL
 *.mph~
 
-#docs
+# local working trees
 archive/
-docs/
-memory/
-# allow selected governance docs to be versioned
-!docs/
-docs/*
-!docs/R07_mode_runtime_split_refactor_20260304.md
-!docs/R11_stack_split_run_unification_20260305.md
-!docs/R21_l1_l4_algo_llm_campaign_20260306.md
-!docs/adr/
-docs/adr/*
-!docs/adr/0001-mode-runtime-decoupling.md
-!docs/adr/0002-vop-maas-reserved-mode.md
-!docs/adr/0003-stack-config-run-separation.md
-# Runtime logs
+docs/archive/
+latex/
 logs/
 
 # Local-only runtime/developer assets (not distributed by default)
 ylq.md
-tests/manual/artifacts/
-tex/
-
-# local-only working trees excluded from git
-docs/
-latex/
 tests/

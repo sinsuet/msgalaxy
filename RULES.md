@@ -36,16 +36,16 @@ Scope: execution, documentation governance, repository hygiene, and scientific r
 7. **Major-Change Sync Gate (重大变更文档同步闸门)**:
    - For major architecture/function changes, update in the same change set:
      - `HANDOFF.md`
-     - `PROJECT_SUMMARY.md`
      - `README*` (project entry README)
+     - relevant docs under `docs/` (when applicable)
      - `AGENTS.md` (if agent behavior/boundary changed)
    - "Major change" includes: optimizer/control-flow changes, constraint semantics changes, new benchmark protocol, new runtime mode, or COMSOL evaluation contract changes.
 
 8. **Sync Order + Consistency Rule (同步顺序与一致性规则)**:
    - Update order MUST be:
      1. `HANDOFF.md`
-     2. `PROJECT_SUMMARY.md`
-     3. `README*`
+     2. `README*`
+     3. relevant docs under `docs/`
      4. `AGENTS.md` (when guidance changes)
    - Do not leave cross-file contradictions (especially implemented vs planned status).
 
@@ -56,9 +56,13 @@ Scope: execution, documentation governance, repository hygiene, and scientific r
    - Deprecated but valuable docs should be moved to `docs/archive/` instead of silent deletion.
 
 10. **Important Doc Naming Rule (重要文档命名规则)**:
-   - New important governance/report docs MUST be placed under `docs/`.
-   - Naming format (new files): `docs/R<rule_id>_<topic>_<YYYYMMDD>.md`
-   - Example: `docs/R07_v3_hard_constraint_rollout_20260304.md`
+   - Formal documentation stays under `docs/`, with fixed subfolders:
+     - `docs/reports/` for governance/report documents
+     - `docs/adr/` for architecture decision records
+     - `docs/archive/` for deprecated historical documents
+   - New important governance/report docs MUST be placed under `docs/reports/`.
+   - Naming format (new files): `docs/reports/R<rule_id>_<topic>_<YYYYMMDD>.md`
+   - Example: `docs/reports/R07_v3_hard_constraint_rollout_20260304.md`
    - Existing historical files are not forced to rename.
 
 11. **Architecture Decision Record Rule (架构决策记录规则)**:
@@ -148,6 +152,7 @@ Scope: execution, documentation governance, repository hygiene, and scientific r
 
 28. **Runtime Artifact Placement Rule (运行产物归位规则)**:
    - Default runtime-generated files must write to designated artifact paths (`experiments/` or `tests/manual/artifacts/` for manual scripts).
+   - Experiment-scoped logs MUST be written under the corresponding `experiments/<run>/` directory; root `logs/` is reserved for long-lived global service logs only.
    - Do not hardcode root `workspace/` as a default output directory in active runtime code.
 
 29. **Rename Completion Gate Rule (命名迁移完成闸门规则)**:
@@ -212,7 +217,7 @@ Scope: execution, documentation governance, repository hygiene, and scientific r
      - deterministic smoke run command exists and passes,
      - mode-specific tests exist under `tests/` and pass,
      - observability artifacts (`summary/events/tables`) are emitted with mode tag,
-     - docs are synchronized (`HANDOFF -> PROJECT_SUMMARY -> README -> AGENTS if needed`).
+     - docs are synchronized (`HANDOFF -> README -> AGENTS if needed`).
 
 37. **No Shared-File Ambiguity Rule (共享文件去歧义规则)**:
    - Shared modules may expose contracts/facades only; mode-specific policy logic must live in mode folders.
@@ -229,3 +234,26 @@ Scope: execution, documentation governance, repository hygiene, and scientific r
    - Any implementation change involving COMSOL operators, physics features, studies, solvers, material/BC setup, or multiphysics coupling MUST include online search against official COMSOL documentation before coding.
    - Any COMSOL runtime error investigation MUST include online troubleshooting with official documentation (and official support/knowledge-base pages when relevant) before applying fixes.
    - Change notes and validation summaries MUST record the consulted references (URLs), and clearly distinguish documented facts from local inferences.
+
+### H. Shell Deletion Safety
+
+40. **Safe Deletion Command Rule (安全删除命令规则)**:
+   - For cleanup of known empty directories or single files, prefer the least-destructive explicit command first:
+     - file: `Remove-Item -LiteralPath <path> -Force`
+     - empty directory: `Remove-Item -LiteralPath <path> -Force`
+   - Do **not** use `Remove-Item -Recurse -Force` by default for routine cleanup when the target is expected to be empty or narrowly scoped.
+   - Do **not** chain deletion commands together with read-only checks/search/status commands in one compound shell line; run deletion as a separate command step.
+   - Always use `-LiteralPath` (or equivalently explicit non-glob path handling) for deletion commands to avoid wildcard/path-expansion surprises on Windows.
+   - Before recursive deletion, first verify the target contents in a separate command, and only recurse when the target is confirmed to be intentionally removable.
+   - When working through Codex/agent tooling, prefer “inspect -> delete -> verify” as three separate steps, because recursive force-delete commands are more likely to trigger safety-policy interception even when local filesystem permissions are sufficient.
+
+### I. Windows Conda Python Invocation
+
+41. **Windows Conda Inline Python Rule (Windows 下 conda 内联 Python 调用规则)**:
+   - Keep the mandatory runtime prefix from Rule 4: `PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy ...`.
+   - On Windows PowerShell, do **not** rely on piping a here-string or other stdin content into `conda run -n msgalaxy python -` for multi-line scripts; this path is not reliable for Codex/terminal automation and may drop stdin or fall into interactive REPL behavior.
+   - Preferred order for Python snippets under Windows:
+     - short one-liners / compact probes: `conda run -n msgalaxy python -c "..."`
+     - multi-line analysis / AST scan / structured output: write a temporary `.py` file first, then run `conda run -n msgalaxy python <temp_script.py>`
+   - Do **not** treat `conda run --no-capture-output` as a fix for stdin-piped `python -`; it may still behave interactively instead of executing the intended script.
+   - Temporary helper scripts for this purpose should be placed in OS temp or another explicit temporary path, not mixed into repository source directories, and cleanup should be executed as a separate command step.

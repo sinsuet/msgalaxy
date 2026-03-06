@@ -8,6 +8,7 @@ Command Line Interface
 """
 
 import argparse
+import json
 import sys
 import io
 from pathlib import Path
@@ -23,6 +24,14 @@ if sys.platform == 'win32':
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
+from api.experiment_index import (
+    find_experiment_dir,
+    iter_experiment_dirs,
+    load_json_if_exists,
+    load_latest_index,
+    resolve_experiments_root,
+    serialize_experiment_dir,
+)
 from workflow.orchestrator import WorkflowOrchestrator
 
 
@@ -53,13 +62,20 @@ def cmd_optimize(args):
 
 def cmd_list_experiments(args):
     """列出所有实验"""
-    exp_dir = Path(args.exp_dir)
+    exp_dir = resolve_experiments_root(args.exp_dir)
 
     if not exp_dir.exists():
         print(f"Experiments directory not found: {exp_dir}")
         return
 
-    experiments = sorted(exp_dir.glob("run_*"), reverse=True)
+    experiments = iter_experiment_dirs(exp_dir)
+    experiments.sort(
+        key=lambda path: (
+            str(load_json_if_exists(path / "summary.json").get("run_started_at", "") or ""),
+            serialize_experiment_dir(exp_dir, path),
+        ),
+        reverse=True,
+    )
 
     if not experiments:
         print("No experiments found.")
@@ -67,16 +83,26 @@ def cmd_list_experiments(args):
 
     print(f"\nFound {len(experiments)} experiments:\n")
     for exp in experiments[:args.limit]:
-        print(f"  - {exp.name}")
+        summary = load_json_if_exists(exp / "summary.json")
+        run_id = str(summary.get("run_id", "") or "")
+        status = str(summary.get("status", "") or "")
+        print(f"  - {serialize_experiment_dir(exp_dir, exp)}")
+        if run_id:
+            print(f"    run_id: {run_id}")
+        if status:
+            print(f"    status: {status}")
 
 
 def cmd_show_experiment(args):
     """显示实验详情"""
-    exp_path = Path(args.exp_dir) / args.exp_name
+    exp_root = resolve_experiments_root(args.exp_dir)
+    exp_path = find_experiment_dir(exp_root, args.exp_name)
 
-    if not exp_path.exists():
-        print(f"Experiment not found: {exp_path}")
+    if exp_path is None or not exp_path.exists():
+        print(f"Experiment not found: {args.exp_name}")
         return
+
+    print(f"Experiment: {serialize_experiment_dir(exp_root, exp_path)}")
 
     # 读取报告
     report_file = exp_path / "report.md"
@@ -89,7 +115,16 @@ def cmd_show_experiment(args):
     # 读取演化轨迹
     trace_file = exp_path / "evolution_trace.csv"
     if trace_file.exists():
-        print(f"\nEvolution trace: {trace_file}")
+        print(f"\nEvolution trace: {serialize_experiment_dir(exp_root, trace_file)}")
+
+
+def cmd_latest_experiment(args):
+    """显示最新实验索引"""
+    latest_payload = load_latest_index(args.exp_dir)
+    if not latest_payload:
+        print("Latest experiment not found.")
+        return
+    print(json.dumps(latest_payload, ensure_ascii=False, indent=2))
 
 
 def cmd_add_knowledge(args):
@@ -129,7 +164,10 @@ Examples:
   python -m api.cli list
 
   # Show experiment details
-  python -m api.cli show run_0305_184221_mass
+  python -m api.cli show 0307/0236_pathrel_nsga3
+
+  # Show latest experiment
+  python -m api.cli latest
 
   # Add knowledge to knowledge base
   python -m api.cli add-knowledge --title "My Rule" --content "..." --category heuristic
@@ -182,7 +220,7 @@ Examples:
     parser_show = subparsers.add_parser("show", help="Show experiment details")
     parser_show.add_argument(
         "exp_name",
-        help="Experiment name (e.g., run_0305_184221_mass)"
+        help="Experiment leaf name / relative path / 'latest'"
     )
     parser_show.add_argument(
         "--exp-dir",
@@ -190,6 +228,15 @@ Examples:
         help="Experiments directory (default: experiments)"
     )
     parser_show.set_defaults(func=cmd_show_experiment)
+
+    # latest命令
+    parser_latest = subparsers.add_parser("latest", help="Show latest experiment index")
+    parser_latest.add_argument(
+        "--exp-dir",
+        default="experiments",
+        help="Experiments directory (default: experiments)"
+    )
+    parser_latest.set_defaults(func=cmd_latest_experiment)
 
     # add-knowledge命令
     parser_kb = subparsers.add_parser("add-knowledge", help="Add knowledge to knowledge base")

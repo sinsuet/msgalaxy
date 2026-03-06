@@ -1,0 +1,81 @@
+2:
+  0: 瀹為獙鏃ュ織绯荤粺
+  1: 实验日志系统
+320:
+  0:         # 鍒涘缓瀛愭枃浠跺す
+  1:         # 创建子文件夹
+333:
+  0:         # 鍘嗗彶璁板綍
+  1:         # 历史记录
+336:
+  0:         # 鍒涘缓Python logger
+  1:         # 创建Python logger
+355:
+  0:             timestamp: 鏃堕棿鎴冲瓧绗︿覆
+  1:             timestamp: 时间戳字符串
+368:
+  0:                 "璐ㄥ績:",
+  1:                 "质心:",
+412:
+  0:         # run_log_debug.txt: 瀹屾暣鐗堬紝淇濈暀鍏ㄩ儴 INFO 缁嗚妭鐢ㄤ簬娣辨寲
+  1:         # run_log_debug.txt: 完整版，保留全部 INFO 细节用于深挖
+441:
+  0:         璁板綍LLM浜や簰
+  1:         记录LLM交互
+449:
+  0:             role: 瑙掕壊鍚嶇О锛坢eta_reasoner, thermal_agent绛夛級
+  1:             role: 角色名称（meta_reasoner, thermal_agent等）
+450:
+  0:             request: 璇锋眰鏁版嵁
+  1:             request: 请求数据
+451:
+  0:             response: 鍝嶅簲鏁版嵁
+  1:             response: 响应数据
+452:
+  0:             context_dict: 杈撳叆涓婁笅鏂囷紙鏃ф柟寮忥級
+  1:             context_dict: 输入上下文（旧方式）
+472:
+  0:             print(f"  馃捑 LLM interaction saved: {prefix}")
+  1:             print(f"  💾 LLM interaction saved: {prefix}")
+479:
+  0:             data: 鎸囨爣鏁版嵁瀛楀吀
+  1:             data: 指标数据字典
+486:
+  0:         娣诲姞鍘嗗彶璁板綍
+  1:         添加历史记录
+489:
+  0:             message: 鍘嗗彶娑堟伅
+  1:             message: 历史消息
+501:
+  0:             鍘嗗彶璁板綍鍒楄〃
+  1:             历史记录列表
+691:
+  0:         print(f"  馃搳 Visualization saved: {fig_name}")
+  1:         print(f"  📊 Visualization saved: {fig_name}")
+725:
+  0:         # 鐢熸垚Markdown鎶ュ憡
+  1:         # 生成Markdown报告
+919:
+  0:         print(f"  馃摑 Report generated: report.md")
+  1:         print(f"  📝 Report generated: report.md")
+945:
+  0:         # 淇濆瓨 ContextPack
+  1:         # 保存 ContextPack
+951:
+  0:         # 淇濆瓨 StrategicPlan
+  1:         # 保存 StrategicPlan
+957:
+  0:         # 淇濆瓨 EvalResult
+  1:         # 保存 EvalResult
+963:
+  0:         self.logger.info(f"  馃捑 Trace data saved: {prefix}")
+  1:         self.logger.info(f"  💾 Trace data saved: {prefix}")
+987:
+  0:         self.logger.info(f"  馃捑 MaaS diagnostics saved: iter={iteration}, attempt={attempt}")
+  1:         self.logger.info(f"  💾 MaaS diagnostics saved: iter={iteration}, attempt={attempt}")
+1094:
+  0:     璁板綍寮傚父璇︽儏
+  1:     记录异常详情
+1098:
+  0:         exception: 寮傚父瀵硅薄
+  1:         exception: 异常对象

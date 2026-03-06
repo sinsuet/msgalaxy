@@ -13,19 +13,26 @@ REST API服务器
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
-import os
 import json
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 import threading
 import uuid
 from datetime import datetime
 
+from api.experiment_index import (
+    iter_experiment_dirs,
+    load_json_if_exists,
+    load_latest_index,
+    resolve_experiment_dir,
+    resolve_experiments_root,
+    serialize_experiment_dir,
+)
 from workflow.orchestrator import WorkflowOrchestrator
 from core.logger import get_logger
 from core.exceptions import SatelliteDesignError
 
-logger = get_logger("api_server")
+logger = get_logger("api_server", persist_global=True)
 
 # 创建Flask应用
 app = Flask(__name__)
@@ -45,6 +52,35 @@ class TaskStatus:
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+def _experiments_root() -> Path:
+    configured = app.config.get("EXPERIMENTS_DIR", "experiments")
+    return resolve_experiments_root(configured)
+
+
+def _resolve_experiment_dir(path_value: str) -> Path:
+    return resolve_experiment_dir(_experiments_root(), path_value)
+
+
+def _serialize_experiment_dir(path_value: str | Path) -> str:
+    return serialize_experiment_dir(_experiments_root(), path_value)
+
+
+def _load_json_if_exists(path: Path) -> Dict[str, Any]:
+    return load_json_if_exists(path)
+
+
+def _serialize_task(task: Dict[str, Any]) -> Dict[str, Any]:
+    payload = dict(task or {})
+    result = payload.get("result")
+    if isinstance(result, dict) and result.get("experiment_dir"):
+        result_payload = dict(result)
+        result_payload["experiment_dir"] = _serialize_experiment_dir(
+            str(result_payload.get("experiment_dir", "") or "")
+        )
+        payload["result"] = result_payload
+    return payload
 
 
 def emit_task_update(task_id: str, event_type: str, data: Dict[str, Any]):
@@ -126,7 +162,7 @@ def run_optimization_task(task_id: str, config: Dict[str, Any]):
 
         # 更新任务状态
         result_payload = {
-            "experiment_dir": orchestrator.logger.run_dir,
+            "experiment_dir": _serialize_experiment_dir(orchestrator.logger.run_dir),
             "final_iteration": final_state.iteration,
             "num_components": len(final_state.components)
         }
@@ -268,14 +304,14 @@ def get_task(task_id: str):
     if not task:
         return jsonify({"error": "Task not found"}), 404
 
-    return jsonify(task)
+    return jsonify(_serialize_task(task))
 
 
 @app.route("/api/tasks", methods=["GET"])
 def list_tasks():
     """列出所有任务"""
     with tasks_lock:
-        task_list = list(tasks.values())
+        task_list = [_serialize_task(item) for item in tasks.values()]
 
     # 按创建时间倒序排序
     task_list.sort(key=lambda x: x["created_at"], reverse=True)
@@ -284,6 +320,15 @@ def list_tasks():
         "tasks": task_list,
         "total": len(task_list)
     })
+
+
+@app.route("/api/experiments/latest", methods=["GET"])
+def get_latest_experiment():
+    """Get the latest experiment index."""
+    latest_payload = load_latest_index(_experiments_root())
+    if not latest_payload:
+        return jsonify({"error": "Latest experiment not found"}), 404
+    return jsonify(latest_payload)
 
 
 @app.route("/api/tasks/<task_id>/result", methods=["GET"])
@@ -299,22 +344,18 @@ def get_task_result(task_id: str):
         return jsonify({"error": "Task not completed"}), 400
 
     # 读取实验结果
-    experiment_dir = task["result"]["experiment_dir"]
+    experiment_dir = str(task["result"]["experiment_dir"] or "")
+    experiment_path = _resolve_experiment_dir(experiment_dir)
 
     # 读取summary
-    summary_path = os.path.join(experiment_dir, "summary.json")
-    if os.path.exists(summary_path):
-        with open(summary_path, 'r', encoding='utf-8') as f:
-            summary = json.load(f)
-    else:
-        summary = {}
+    summary = _load_json_if_exists(experiment_path / "summary.json")
 
     # 读取evolution trace
-    csv_path = os.path.join(experiment_dir, "evolution_trace.csv")
+    csv_path = experiment_path / "evolution_trace.csv"
     evolution_data = []
-    if os.path.exists(csv_path):
+    if csv_path.exists():
         import csv
-        with open(csv_path, 'r', encoding='utf-8') as f:
+        with csv_path.open('r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             evolution_data = list(reader)
 
@@ -322,7 +363,7 @@ def get_task_result(task_id: str):
         "task_id": task_id,
         "summary": summary,
         "evolution": evolution_data,
-        "experiment_dir": experiment_dir
+        "experiment_dir": _serialize_experiment_dir(experiment_path)
     })
 
 
@@ -339,10 +380,11 @@ def get_visualization(task_id: str, filename: str):
         return jsonify({"error": "Task not completed"}), 400
 
     # 构建文件路径
-    experiment_dir = task["result"]["experiment_dir"]
-    viz_path = os.path.join(experiment_dir, "visualizations", filename)
+    experiment_dir = str(task["result"]["experiment_dir"] or "")
+    experiment_path = _resolve_experiment_dir(experiment_dir)
+    viz_path = experiment_path / "visualizations" / filename
 
-    if not os.path.exists(viz_path):
+    if not viz_path.exists():
         return jsonify({"error": "Visualization not found"}), 404
 
     return send_file(viz_path, mimetype='image/png')
@@ -351,30 +393,28 @@ def get_visualization(task_id: str, filename: str):
 @app.route("/api/experiments", methods=["GET"])
 def list_experiments():
     """列出所有实验"""
-    experiments_dir = Path("experiments")
+    experiments_dir = _experiments_root()
 
     if not experiments_dir.exists():
         return jsonify({"experiments": [], "total": 0})
 
     experiments = []
-    for exp_dir in experiments_dir.iterdir():
-        if exp_dir.is_dir() and exp_dir.name.startswith("run_"):
-            # 读取summary
-            summary_path = exp_dir / "summary.json"
-            if summary_path.exists():
-                with open(summary_path, 'r', encoding='utf-8') as f:
-                    summary = json.load(f)
-            else:
-                summary = {}
-
-            experiments.append({
-                "name": exp_dir.name,
-                "path": str(exp_dir),
-                "summary": summary
-            })
+    for exp_dir in iter_experiment_dirs(experiments_dir):
+        summary = _load_json_if_exists(exp_dir / "summary.json")
+        experiments.append({
+            "name": exp_dir.name,
+            "path": _serialize_experiment_dir(exp_dir),
+            "summary": summary
+        })
 
     # 按时间倒序排序
-    experiments.sort(key=lambda x: x["name"], reverse=True)
+    experiments.sort(
+        key=lambda item: (
+            str(dict(item.get("summary", {}) or {}).get("run_started_at", "") or ""),
+            str(item.get("path", "") or ""),
+        ),
+        reverse=True,
+    )
 
     return jsonify({
         "experiments": experiments,

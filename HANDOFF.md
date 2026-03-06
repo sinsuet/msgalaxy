@@ -147,6 +147,7 @@
   - 运行目录：`experiments/<YYYYMMDD>/<HHMM>_<stack>_<level>_<algo>_<intent>_<eval>[_tag]`
   - helper 脚本：`bm_<scope>.py` / `tool_<topic>.py` / `audit_<topic>.py`
 - 主文档已开始同步收口，不再保留旧批量 benchmark 命令作为当前推荐路径。
+- 全局日志策略已收口：实验日志仅保留在 `experiments/<run>/run_log*.txt`；根路径 `logs/` 仅保留长期服务日志（如 `api_server`）。
 
 ---
 
@@ -224,6 +225,8 @@ $run = 'experiments/0307/0209_l2_nsga3'
 - `config/system/mass/base.yaml`
 - `config/system/mass/level_profiles_l1_l4.yaml`
 - `config/system/mass/level_profiles_l1_l4_real_strict.yaml`
+- `docs/adr/`
+- `docs/reports/`
 - `config/bom/mass/level_L1_foundation_stack.json`
 - `config/bom/mass/level_L2_thermal_power_stack.json`
 - `config/bom/mass/level_L3_structural_mission_stack.json`

@@ -1,8 +1,8 @@
 ﻿# MsGalaxy
 
-**面向小卫星三维布局的神经符号多物理约束优化系统**
+**面向微小卫星三维布局的神经符号多物理约束优化系统**
 
-MsGalaxy 聚焦卫星组件布局自动设计问题：  
+MsGalaxy 聚焦卫星领域组件布局自动设计问题：  
 从需求文本与 BOM 约束出发，构建可执行的多目标约束优化问题，并在多物理评估（proxy + online COMSOL + 电源网络方程）下输出可行布局候选、诊断证据与可视化轨迹。
 
 > 真实实现边界与状态以 `HANDOFF.md` 为唯一事实源（SSOT）。
@@ -223,11 +223,14 @@ PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python -m optimization
 单次运行目录推荐短名：`experiments/<YYYYMMDD>/<HHMM>_<stack>_<level>_<algo>_<intent>_<eval>[_tag]`
 - `summary.json`
 - `report.md`
+- `run_log.txt` / `run_log_debug.txt`
 - `events/*.jsonl`
 - `tables/*.csv`
 - `trace/*.json`
 - `snapshots/*.json`
 - `visualizations/*`
+
+说明：实验级日志统一写入对应 `experiments/<run>/` 目录；根路径 `logs/` 仅保留 `api_server` 等长期服务日志，不再复制实验运行日志。
 
 `benchmarks/` 当前刻意保持为空；后续重建时统一使用：`bm_<stack>_<scope>_<algo>_<intent>_<eval>[_sNN][_tag]`
 - 详细实验说明、修复原因、附加标签统一写入 `summary.json` / manifest
@@ -238,9 +241,8 @@ PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python -m optimization
 ## 8. 文档导航
 
 - `HANDOFF.md`：状态与实现边界（SSOT）
-- `PROJECT_SUMMARY.md`：项目全景与科研口径
 - `RULES.md`：执行、命名与证据治理规则
 - `AGENTS.md`：代理协作规范
-- `docs/R23_blender_mcp_visualization_plan_20260306.md`：Blender MCP 可视化方案
-- `docs/R24_blender_mcp_setup_20260306.md`：Blender MCP / Codex / Blender Windows 接入说明
+- `docs/reports/R23_blender_mcp_visualization_plan_20260306.md`：Blender MCP 可视化方案
+- `docs/reports/R24_blender_mcp_setup_20260306.md`：Blender MCP / Codex / Blender Windows 接入说明
 - `docs/adr/0006-blender-mcp-visualization-sidecar.md`：Blender 可视化侧链 ADR

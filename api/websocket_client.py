@@ -12,7 +12,7 @@ from typing import Callable, Optional
 
 from core.logger import get_logger
 
-logger = get_logger("websocket_client")
+logger = get_logger("websocket_client", persist_global=True)
 
 
 class TaskWebSocketClient:

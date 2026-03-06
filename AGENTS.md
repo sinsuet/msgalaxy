@@ -165,9 +165,14 @@ Preferred scenario entry (stack-safe):
 
 For architecture/workflow changes, update docs in this order:
 1. `HANDOFF.md`
-2. `PROJECT_SUMMARY.md`
+2. `README.md`
 3. relevant docs under `docs/`
 4. this `AGENTS.md` when agent guidance changes
+
+Formal docs stay under `docs/`:
+- `docs/reports/` for governance/report documents
+- `docs/adr/` for ADRs
+- `docs/archive/` for ignored archived history
 
 ## Preferred Heuristics
 

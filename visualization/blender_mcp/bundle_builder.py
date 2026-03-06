@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, Tuple
 
+from core.path_policy import serialize_repo_path, serialize_run_path
 from core.protocol import DesignState
 from geometry.cad_export_occ import export_design_occ
 from visualization.blender_mcp.contracts import (
@@ -243,16 +244,21 @@ def build_render_bundle_from_run(
 
     step_output_path = output_root / "final_layout.step"
     step_path, step_error = _export_step_if_requested(design_state, step_output_path, export_step)
+    persisted_run_dir = serialize_repo_path(run_path)
+    persisted_snapshot_path = serialize_run_path(run_path, snapshot_path)
+    persisted_summary_path = serialize_run_path(run_path, summary_path)
+    persisted_final_mph_path = serialize_repo_path(summary.get("final_mph_path", "") or "")
+    persisted_step_path = serialize_repo_path(step_path)
 
     bundle = RenderBundle(
         run_id=str(summary.get("run_id", run_path.name) or run_path.name),
         run_label=str(summary.get("run_label", "") or ""),
         source=RenderSource(
-            run_dir=str(run_path),
-            snapshot_path=str(snapshot_path.resolve()),
-            summary_path=str(summary_path.resolve()),
-            final_mph_path=str(summary.get("final_mph_path", "") or ""),
-            step_path=step_path,
+            run_dir=persisted_run_dir,
+            snapshot_path=persisted_snapshot_path,
+            summary_path=persisted_summary_path,
+            final_mph_path=persisted_final_mph_path,
+            step_path=persisted_step_path,
         ),
         envelope=RenderEnvelope(
             outer_size_mm=_to_vector_list(design_state.envelope.outer_size),
@@ -284,11 +290,11 @@ def build_render_bundle_from_run(
 
     manifest = {
         "status": "success",
-        "bundle_path": str(bundle_path),
-        "run_dir": str(run_path),
-        "snapshot_path": str(snapshot_path.resolve()),
-        "summary_path": str(summary_path.resolve()),
-        "step_path": step_path,
+        "bundle_path": serialize_repo_path(bundle_path),
+        "run_dir": persisted_run_dir,
+        "snapshot_path": persisted_snapshot_path,
+        "summary_path": persisted_summary_path,
+        "step_path": persisted_step_path,
         "step_export_error": step_error,
         "profile_name": profile_name,
         "component_count": len(render_components),

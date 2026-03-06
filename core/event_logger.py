@@ -28,8 +28,9 @@ from core.observability_schema import (
 class EventLogger:
     """Minimal typed event sink for MaaS pipeline observability."""
 
-    def __init__(self, run_dir: str):
+    def __init__(self, run_dir: str, *, persisted_run_dir: str | None = None):
         self.run_dir = str(run_dir)
+        self.persisted_run_dir = str(persisted_run_dir or run_dir)
         self.run_id = Path(run_dir).name
         self.events_dir = Path(run_dir) / "events"
         self.events_dir.mkdir(parents=True, exist_ok=True)
@@ -44,7 +45,7 @@ class EventLogger:
         self.layout_events_path = self.events_dir / "layout_events.jsonl"
 
         # Seed manifest with minimal stable identity for downstream tooling.
-        self.write_run_manifest({"run_id": self.run_id, "run_dir": self.run_dir})
+        self.write_run_manifest({"run_id": self.run_id, "run_dir": self.persisted_run_dir})
 
     def _inject_defaults(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         data = dict(payload or {})
@@ -103,7 +104,7 @@ class EventLogger:
 
         merged.update(dict(payload or {}))
         merged.setdefault("run_id", self.run_id)
-        merged.setdefault("run_dir", self.run_dir)
+        merged.setdefault("run_dir", self.persisted_run_dir)
         merged.setdefault("created_at", datetime.now().isoformat())
         merged["updated_at"] = datetime.now().isoformat()
         parsed = RunManifestEvent(**merged)
