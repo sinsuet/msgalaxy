@@ -1,0 +1,55 @@
+﻿version: 2
+
+stacks:
+  mass:
+    description: "MaaS baseline stack (mass)"
+    mode: "mass"
+    base_config: "config/system/mass/base.yaml"
+    levels:
+      L1:
+        runner: "run.mass.run_L1"
+        bom: "config/bom/mass/level_L1_foundation_stack.json"
+        max_iterations: 4
+        deterministic_intent: true
+      L2:
+        runner: "run.mass.run_L2"
+        bom: "config/bom/mass/level_L2_thermal_power_stack.json"
+        max_iterations: 5
+        deterministic_intent: true
+      L3:
+        runner: "run.mass.run_L3"
+        bom: "config/bom/mass/level_L3_structural_mission_stack.json"
+        max_iterations: 6
+        deterministic_intent: true
+      L4:
+        runner: "run.mass.run_L4"
+        bom: "config/bom/mass/level_L4_full_stack_operator.json"
+        max_iterations: 7
+        deterministic_intent: true
+
+  agent_loop:
+    description: "agent_loop stack"
+    mode: "agent_loop"
+    base_config: "config/system/agent_loop/base.yaml"
+    levels:
+      L1:
+        runner: "run.agent_loop.run_L1"
+        bom: "config/bom/agent_loop/level_L1_foundation_stack.json"
+        max_iterations: 4
+        deterministic_intent: false
+      L2:
+        runner: "run.agent_loop.run_L2"
+        bom: "config/bom/agent_loop/level_L2_thermal_power_stack.json"
+        max_iterations: 5
+        deterministic_intent: false
+      L3:
+        runner: "run.agent_loop.run_L3"
+        bom: "config/bom/agent_loop/level_L3_structural_mission_stack.json"
+        max_iterations: 6
+        deterministic_intent: false
+      L4:
+        runner: "run.agent_loop.run_L4"
+        bom: "config/bom/agent_loop/level_L4_full_stack_operator.json"
+        max_iterations: 7
+        deterministic_intent: false
+

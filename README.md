@@ -1,501 +1,246 @@
-# MsGalaxy - 卫星设计优化系统
+﻿# MsGalaxy
 
-基于三层神经符号协同架构的智能卫星设计优化系统，整合了三维布局、COMSOL多物理场仿真和AI驱动的多学科优化决策。
+**面向小卫星三维布局的神经符号多物理约束优化系统**
 
-> **项目状态**: ✅ v2.0.5 核心修复已落地（待复测） | **系统成熟度**: 99.6% | **最后更新**: 2026-03-01
+MsGalaxy 聚焦卫星组件布局自动设计问题：  
+从需求文本与 BOM 约束出发，构建可执行的多目标约束优化问题，并在多物理评估（proxy + online COMSOL + 电源网络方程）下输出可行布局候选、诊断证据与可视化轨迹。
 
----
-
-## 🎯 核心特性
-
-### 🧠 三层神经符号协同架构
-- **战略层**: Meta-Reasoner元推理器，负责多学科协调和战略决策
-- **战术层**: Multi-Agent系统（几何、热控、结构、电源专家）
-- **执行层**: COMSOL动态导入 + 工具集成
-
-### 💡 创新亮点
-- **学术创新**: 首次在卫星设计领域实现战略-战术-执行的分层决策
-- **工程创新**: 完整审计链、智能回退机制、知识自动积累
-- **可用性创新**: 自然语言交互、实时可视化、自动报告生成
-
-### 🚀 核心功能
-- **智能布局**: 3D装箱算法（py3dbp）+ 多面墙面安装 + 层切割策略
-- **动态仿真**: COMSOL 动态 STEP 导入 + Box Selection 自动识别
-- **真实物理**: T⁴ 辐射边界 + 功率斜坡加载 + 数值稳定锚
-- **知识检索**: RAG系统（语义检索 + 关键词检索 + 图检索）
-- **完整追溯**: 记录每个决策的推理链和工程依据
-
-### 🔥 最新突破（v2.0.5）
-- ✅ **DV2.0 十类算子完成**: 8类几何算子 + 5类热学算子
-- ✅ **COMSOL 动态导入架构**: 几何引擎成为唯一真理来源，支持拓扑重构
-- ✅ **功率斜坡加载**: 三阶段加载策略（1% → 20% → 100%）
-- ✅ **智能回退机制**: 历史状态树 + 惩罚分驱动的自动回退
-- ✅ **候选态几何门控**: 仿真前拦截碰撞/间隙违规候选，减少无效 COMSOL 调用
-- ✅ **no-op 跳过机制**: 无变化执行计划直接拒绝，避免空转迭代
-- ✅ **MOVE 自适应回退**: 大步长不可行时自动缩放到可行步长
-- ✅ **热源绑定防串域**: Box Selection 多域歧义时拒绝绑定热源
-- ✅ **Thermal Contact 级联修复**: `h_tc/h_joint/h` + `htot/hconstr/hgap/Rtot` 多级回退
-- ✅ **Agent鲁棒性增强**: 防幻觉、参数验证、超时保护
-- ✅ **静态模式完全移除**: 不再依赖预置 `model.mph`，运行期统一动态建模
-- ✅ **.mph 保存锁冲突修复**: 基于 `state_id` 唯一命名 + 重试回退，避免反复“文件被锁定”
-- ✅ **迭代指标增强**: 新增惩罚分分解、增量指标、`effectiveness_score`
-- ✅ **可视化升级**: 新增 `layout_evolution.png`，违规曲线同图高亮，热图改为确定性热代理
-- ✅ **运行结果摘要**: 自动生成 `visualization_summary.txt`，L1-L4 脚本结束时自动打印
-- ✅ **RAG 401 修复**: 语义检索客户端透传 `base_url`，DashScope 场景默认 `text-embedding-v4`
+> 真实实现边界与状态以 `HANDOFF.md` 为唯一事实源（SSOT）。
 
 ---
 
-## 📦 项目结构
+## 1. 研究定位
 
-```
-msgalaxy/
-├── core/                          # 核心基础设施
-│   ├── protocol.py               # 统一数据协议 (Pydantic)
-│   ├── logger.py                 # 实验日志系统 + run_log.txt
-│   ├── exceptions.py             # 自定义异常
-│   ├── bom_parser.py             # BOM文件解析器
-│   └── visualization.py          # 可视化生成器
-│
-├── geometry/                      # 几何布局引擎
-│   ├── schema.py                 # AABB、Part数据结构
-│   ├── keepout.py                # AABB六面减法算法
-│   ├── packing.py                # 3D装箱优化 (py3dbp)
-│   ├── layout_engine.py          # 主布局引擎
-│   ├── ffd.py                    # 自由变形 (FFD)
-│   └── cad_export_occ.py         # OpenCASCADE STEP导出 ⭐
-│
-├── simulation/                    # 仿真驱动器
-│   ├── base.py                   # 仿真驱动器基类
-│   ├── comsol_driver.py          # COMSOL MPh集成 ⭐ (动态导入)
-│   └── structural_physics.py     # 结构物理场 (质心偏移)
-│
-├── optimization/                  # LLM语义优化层 ⭐⭐⭐
-│   ├── protocol.py               # 优化协议定义 (DV2.0)
-│   ├── meta_reasoner.py          # Meta-Reasoner (战略层)
-│   ├── coordinator.py            # Agent协调器 (战术层)
-│   ├── agents/                   # 专家Agent系统
-│   │   ├── geometry_agent.py    # 几何专家 (激进质心配平)
-│   │   ├── thermal_agent.py     # 热控专家 (5种热学算子)
-│   │   ├── structural_agent.py  # 结构专家
-│   │   └── power_agent.py       # 电源专家
-│   ├── knowledge/                # 知识库系统
-│   │   └── rag_system.py        # RAG混合检索
-│   ├── multi_objective.py        # 多目标优化
-│   └── parallel_optimizer.py     # 并行优化器
-│
-├── workflow/                      # 工作流编排
-│   ├── orchestrator.py           # 主编排器 ⭐ (智能回退)
-│   └── operation_executor.py     # 操作执行器 (DV2.0)
-│
-├── api/                           # API接口
-│   ├── cli.py                    # 命令行接口
-│   ├── server.py                 # FastAPI服务器
-│   ├── client.py                 # Python客户端
-│   └── websocket_client.py       # WebSocket客户端
-│
-├── config/                        # 配置文件
-│   ├── system.yaml               # 系统配置
-│   ├── bom_L1_simple.json        # L1入门级BOM (2组件) ⭐
-│   ├── bom_L2_intermediate.json  # L2进阶级BOM (3组件) ⭐
-│   ├── bom_L3_complex.json       # L3复杂级BOM (7组件) ⭐
-│   ├── bom_L4_extreme.json       # L4极限级BOM (10组件) ⭐
-│   ├── bom_L5_stress.json        # L5压力级BOM (16组件)
-│   ├── bom_L6_heavy.json         # L6重载级BOM (24组件)
-│   ├── bom_L7_dense.json         # L7高密级BOM (32组件)
-│   ├── bom_L8_40components.json  # L8瓶颈级BOM (40组件)
-│   └── ...                       # 未来可扩展BOM（按需新增）
-│
-├── run/                           # 开箱即用运行脚本 ⭐⭐⭐
-│   ├── run_L1_simple.py          # L1入门级测试
-│   ├── run_L2_intermediate.py    # L2进阶级测试
-│   ├── run_L3_complex.py         # L3复杂级测试
-│   └── run_L4_extreme.py         # L4极限级测试
-│
-├── scripts/                       # 本地开发辅助（默认不纳入Git）
-├── tests/                         # 本地测试集合（默认不纳入Git）
-├── logs/                          # 本地运行日志（默认不纳入Git）
-│
-├── experiments/                   # 实验数据
-│   └── run_YYYYMMDD_HHMMSS/      # 每次运行的实验目录
-│       ├── run_log.txt           # 完整终端日志 ⭐
-│       ├── evolution_trace.csv   # 演化轨迹
-│       ├── trace/                # 完整上下文追踪
-│       ├── llm_interactions/     # LLM交互日志
-│       ├── step_files/           # STEP几何文件
-│       ├── mph_models/           # COMSOL模型文件
-│       └── visualizations/       # 可视化图表
-│
-├── docs/                          # 文档
-│   ├── archive/                  # 归档文档
-│   ├── LLM_Semantic_Layer_Architecture.md  ⭐ 架构设计
-│   ├── COMSOL_GUIDE.md
-│   └── QWEN_GUIDE.md
-│
-├── README.md                      # 本文档
-├── PROJECT_SUMMARY.md             # 项目总结 ⭐
-├── HANDOFF.md                     # 项目交接文档 ⭐⭐⭐
-├── CLAUDE.md                      # Claude Code 指令
-├── RULES.md                       # 开发规范
-└── requirements.txt               # Python依赖
-```
+MsGalaxy 解决的是“高维、强约束、昂贵评估预算”条件下的布局优化难题：
+- 设计变量维度高，几何/热/结构/电源等约束耦合紧密；
+- 高保真仿真代价高，传统单一路径优化在可行域搜索上效率受限；
+- 工程落地要求“可追溯、可解释、可复现实证”，而非黑箱坐标输出。
+
+方法上采用 **Neuro-Symbolic** 范式：
+- LLM 负责需求理解、建模意图组织与策略反射；
+- pymoo MOEA 负责可执行数值搜索（`NSGA-II/III`、`MOEA/D`）；
+- 物理层采用 proxy 快评估 + online COMSOL（热/结构/电学）+ DC 电源网络求解。
 
 ---
 
-## 🚀 快速开始
+## 2. 当前能力快照（2026-03-07）
 
-### 1. 环境准备
+### 2.1 已实现（可执行）
+- 双模式主链路：
+  - `optimization.mode=agent_loop`
+  - `optimization.mode=mass`（当前主线）
+- 栈级配置已分离并启用 fail-fast 契约：
+  - `config/bom/{mass,agent_loop}` + `config/system/{mass,agent_loop}`
+  - 统一入口 `run/run_scenario.py --stack --level`
+  - 强约束：`stack->mode`、BOM/base-config 路径绑定，跨栈混用直接报错
+- `mass` A/B/C/D 闭环可执行：
+  - A：建模意图生成
+  - B：硬约束规范化为 `g(x) <= 0`
+  - C：编译并执行 MOEA 搜索
+  - D：诊断、反射与可选重试
+- L1-L4 已按当前真实能力重构为统一档位：
+  - level profile：`config/system/mass/level_profiles_l1_l4.yaml`
+  - strict-real profile：`config/system/mass/level_profiles_l1_l4_real_strict.yaml`
+  - BOM：`config/bom/mass/level_L1_foundation_stack.json` 至 `level_L4_full_stack_operator.json`
+  - canonical 算子（10）：`group_move/cg_recenter/hot_spread/swap/add_heatstrap/set_thermal_contact/add_bracket/stiffener_insert/bus_proximity_opt/fov_keepout_push`
+  - canonical 物理域：`geometry/thermal/structural/power/mission(keepout)`
+- v3 分阶段落地已到 M3 薄切片：
+  - COMSOL 结构支路：`Solid + Stationary + Eigenfrequency`
+  - COMSOL 电学支路：`ec + terminal/ground + std_power`
+  - 电源网络方程回退：`simulation/power_network_solver.py`
+  - 热-结构-电耦合 study 框架：`std_coupled`
+  - `Operator Program DSL v3` 动作族已打通 `validator -> handler -> codec -> runner`
+- strict gate 体系已成形：
+  - `source gate`
+  - `operator-family gate`
+  - `operator-realization gate`
+- Blender 可视化侧链 P0 已具备：可从 run 目录生成 `render_bundle.json`、Blender 场景脚本与 Codex brief。
+- 旧 benchmark 入口、旧模板、旧批量测试链已删除；`benchmarks/` 历史目录已清空，后续再按新命名规则重建。
 
+### 2.2 未实现（不可过度声明）
+- M4（神经可行性预测、神经算子策略、多保真神经调度）尚未实现；
+- mission/FOV/EMC 的仓内高保真联立求解尚未实现；
+- 新版轻量 benchmark 框架尚未重建；
+- 新版 `LLM intent vs deterministic` 对照尚未启动。
+
+### 2.3 当前阶段推进目标（2026-03-07）
+- 当前只做串行、小规模、真实 COMSOL 的 `NSGA-III` 主线验证；
+- 逐级推进：`L1 -> L2 -> L3 -> L4`；
+- 不做大规模矩阵，不做并行，不做对照，不做最终大消融；
+- 先把新版模板与真实物理链逐级跑通，再谈 benchmark 与 A/B。
+
+### 2.4 最新运行状态补充（2026-03-07）
+- `L1` 已 strict-real 跑通：`experiments/0307/0141_l1_nsga3`
+  - `status=SUCCESS`
+  - `diagnosis_status=feasible`
+  - `best_cv_min=0.0`
+  - strict gates 全通过，`dset` 错误计数为 `0`
+- `L2` 已 strict-real 跑通：`experiments/0307/0209_l2_nsga3`
+  - `status=SUCCESS`
+  - `diagnosis_status=feasible`
+  - `best_cv_min=0.0`
+  - strict gates 全通过，`dset` 错误计数为 `0`
+- 当前暂停点：`L3`。
+
+### 2.5 命名与收尾（2026-03-07）
+- `benchmarks/` 历史产物已清空。
+- `RULES.md` 已冻结新的短名规则：
+  - benchmark 目录：`bm_<stack>_<scope>_<algo>_<intent>_<eval>[_sNN][_tag]`
+  - experiments 目录：`experiments/<YYYYMMDD>/<HHMM>_<stack>_<level>_<algo>_<intent>_<eval>[_tag]`
+  - helper 脚本：`bm_<scope>.py` / `tool_<topic>.py` / `audit_<topic>.py`
+- 详细修复原因、调参背景、临时说明统一写入 `summary.json` / manifest，不再塞进目录名或脚本名。
+
+---
+
+## 3. 方法契约（Method Contract）
+
+- 不直接让 LLM 输出最终坐标作为优化结果。
+- 统一由 `ModelingIntent -> compile -> pymoo problem -> solve -> diagnose` 闭环执行。
+- 硬约束必须可表达为 `g(x) <= 0`：
+  - `metric <= target` -> `g = metric - target`
+  - `metric >= target` -> `g = target - metric`
+  - `metric == target` -> `g = |metric - target| - eps`
+- strict-real 复核最少检查：
+  - `source_gate_passed`
+  - `operator_family_gate_passed`
+  - `operator_realization_gate_passed`
+  - `run_log.txt` 中 `Dataset "dset*" does not exist` 计数为 `0`
+
+---
+
+## 4. 代表性证据（Representative Evidence）
+
+### 4.1 L1 strict-real 可行
+- 证据：`experiments/0307/0141_l1_nsga3/summary.json`
+- 关键结果：
+  - `status=SUCCESS`
+  - `diagnosis_status=feasible`
+  - `best_cv_min=0.0`
+  - `min_clearance=5.0`
+  - `cg_offset=38.858394212138705`
+  - strict gates 全通过，`dset` 错误计数为 `0`
+
+### 4.2 L2 strict-real 可行
+- 调参中间证据：`experiments/0307/0200_l2_nsga3/summary.json`
+  - 只剩 `clearance` 主违例
+- 收口后证据：`experiments/0307/0209_l2_nsga3/summary.json`
+  - `status=SUCCESS`
+  - `diagnosis_status=feasible`
+  - `best_cv_min=0.0`
+  - `min_clearance=5.0`
+  - `cg_offset=28.11641116193352`
+  - `power_margin=61.4`
+  - strict gates 全通过，`dset` 错误计数为 `0`
+
+### 4.3 最新回归测试
+- `PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy pytest tests/test_operator_program.py tests/test_operator_program_core.py tests/test_maas_pipeline.py tests/test_comsol_driver_p0.py tests/test_maas_core.py tests/test_api.py -q`
+  - `140 passed`
+- `PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy pytest tests/test_maas_core.py tests/test_api.py -q`
+  - `66 passed`
+
+---
+
+## 5. 快速开始与复现
+
+所有 Python/pytest 命令统一前缀：
 ```bash
-# 创建conda环境（Python 3.12）
-conda create -n msgalaxy python=3.12
+PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy ...
+```
+
+测试收集默认由 `pytest.ini` 限定到 `tests/` 目录，归档目录不会被自动收集。
+
+### 5.1 环境安装
+```bash
+conda create -n msgalaxy python=3.12 -y
 conda activate msgalaxy
-
-# 安装依赖
 pip install -r requirements.txt
+```
 
-# 可选：安装pythonocc-core（STEP导出）
-conda install -c conda-forge pythonocc-core
-
-# 可选：安装MPh（COMSOL仿真）
+可选（online COMSOL 路径）：
+```bash
 pip install mph
 ```
 
-> **Windows用户注意**: 系统已自动处理中文编码问题（UTF-8）
-
-### 2. 配置系统
-
-编辑 `config/system.yaml`:
-
-```yaml
-# LLM配置（Qwen通义千问）
-openai:
-  api_key: "${OPENAI_API_KEY}"  # 从环境变量读取
-  model: "qwen3-max"  # 推荐模型
-  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-  temperature: 0.7
-
-# 知识检索配置
-knowledge:
-  base_path: "data/knowledge_base"
-  enable_semantic: true
-  embedding_model: "text-embedding-v4"
-
-# 仿真配置
-simulation:
-  backend: "comsol"  # 仅支持 comsol (v2.0+ 动态架构)
-
-# 优化配置
-optimization:
-  max_iterations: 20
-  allowed_operators:  # DV2.0 十类算子
-    - "MOVE"
-    - "SWAP"
-    - "ROTATE"
-    - "DEFORM"
-    - "ALIGN"
-    - "CHANGE_ENVELOPE"
-    - "ADD_BRACKET"
-    - "REPACK"
-    - "MODIFY_COATING"
-    - "ADD_HEATSINK"
-    - "SET_THERMAL_CONTACT"
-    - "ADJUST_LAYOUT"
-    - "CHANGE_ORIENTATION"
-```
-
-### 3. 🚀 快速开始：阶梯化测试用例（开箱即用）
-
-我们提供了 L1-L4 四个难度级别的测试用例，让您无需修改配置即可快速体验系统能力：
-
-| 级别 | 脚本 | 组件数 | 测试目标 | 预期时间 | 迭代次数 |
-|------|------|--------|----------|----------|----------|
-| **L1 入门级** | `run/run_L1_simple.py` | 2个 | 验证系统基础连通性、CAD导出、COMSOL收敛 | 5-10分钟 | 5次 |
-| **L2 进阶级** | `run/run_L2_intermediate.py` | 3个 | 质心偏置+高热源，触发散热器、涂层、支架算子 | 15-25分钟 | 10次 |
-| **L3 复杂级** | `run/run_L3_complex.py` | 7个 | 空间拥挤+多物理场耦合，展现Meta-Reasoner冲突解决 | 30-50分钟 | 20次 |
-| **L4 极限级** | `run/run_L4_extreme.py` | 10个 | 双高热源+装填极限，测试系统极限鲁棒性 | 60-90分钟 | 30次 |
-
-**运行示例**：
-
+### 5.2 统一栈入口（推荐）
 ```bash
-# L1 入门级（推荐首次使用）
-PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python run/run_L1_simple.py
-
-# L2 进阶级
-PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python run/run_L2_intermediate.py
-
-# L3 复杂级
-PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python run/run_L3_complex.py
-
-# L4 极限级（需要较长时间）
-PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python run/run_L4_extreme.py
+PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python run/run_scenario.py --stack mass --level L1 --backend simplified --max-iterations 1 --deterministic-intent
+PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python run/run_scenario.py --stack agent_loop --level L1 --backend simplified --max-iterations 1
 ```
 
-**查看结果**：
-
+### 5.3 当前主线：串行 real COMSOL 单次运行
 ```bash
-# 检查生成的可视化
-ls experiments/run_*/visualizations/
-
-# 查看完整日志
-cat experiments/run_*/run_log.txt
-
-# 查看演化轨迹
-cat experiments/run_*/evolution_trace.csv
+PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python run/mass/run_L1.py --backend comsol --thermal-evaluator-mode online_comsol --level-profile config/system/mass/level_profiles_l1_l4_real_strict.yaml --deterministic-intent --run-naming-strategy compact
+PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python run/mass/run_L2.py --backend comsol --thermal-evaluator-mode online_comsol --level-profile config/system/mass/level_profiles_l1_l4_real_strict.yaml --deterministic-intent --run-naming-strategy compact
+PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python run/mass/run_L3.py --backend comsol --thermal-evaluator-mode online_comsol --level-profile config/system/mass/level_profiles_l1_l4_real_strict.yaml --deterministic-intent --run-naming-strategy compact
+PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python run/mass/run_L4.py --backend comsol --thermal-evaluator-mode online_comsol --level-profile config/system/mass/level_profiles_l1_l4_real_strict.yaml --deterministic-intent --run-naming-strategy compact
 ```
 
-### 4. 运行优化（高级用户）
+### 5.4 strict-real 复核
+```powershell
+$run = 'experiments/0307/0209_l2_nsga3'
+(Get-Content "$run/summary.json" -Raw | ConvertFrom-Json) | Select-Object status, diagnosis_status, best_cv_min, source_gate_passed, operator_family_gate_passed, operator_realization_gate_passed
+(Select-String -Path "$run/run_log.txt" -Pattern 'Dataset "dset.*does not exist' -AllMatches | Measure-Object).Count
+```
 
+### 5.5 Mass RAG（CGRAG-Mass）
+- 当前 `mass` 检索后端已切换为 `optimization/knowledge/mass/*`，不再使用旧通用 RAG 路径。
+- 默认结构化证据库路径：`data/knowledge_base/mass_evidence.jsonl`。
+- 可从历史运行产物导入 evidence：
 ```bash
-# 使用CLI运行优化
-PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python -m api.cli optimize --max-iter 10
-
-# 查看实验列表
-PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python -m api.cli list
-
-# 查看实验详情
-PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python -m api.cli show run_20260228_000935
+PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python -m optimization.knowledge.mass.ingest_from_runs --runs-root experiments --kb-path data/knowledge_base
 ```
 
 ---
 
-## 📊 系统状态
+## 6. 关键入口
 
-### 模块成熟度
-
-| 模块 | 状态 | 成熟度 | 备注 |
-|------|------|--------|------|
-| core/protocol.py | ✅ | 95% | DV2.0 完成，支持状态版本树 |
-| core/logger.py | ✅ | 95% | run_log.txt 完成 |
-| geometry/layout_engine.py | ✅ | 95% | 算法优秀，支持 FFD 变形 |
-| geometry/cad_export_occ.py | ✅ | 90% | pythonocc-core 集成完成 |
-| simulation/comsol_driver.py | ✅ | 90% | 动态导入架构完成，API 修复完成 |
-| simulation/structural_physics.py | ✅ | 90% | 质心偏移计算完成 |
-| optimization/meta_reasoner.py | ✅ | 85% | 需要更多端到端测试 |
-| optimization/agents/ | ✅ | 85% | DV2.0 十类算子完成 |
-| optimization/coordinator.py | ✅ | 85% | 需要更多端到端测试 |
-| workflow/orchestrator.py | ✅ | 95% | 智能回退机制完成 |
-| workflow/operation_executor.py | ✅ | 85% | DV2.0 操作执行器完成 |
-| core/visualization.py | ✅ | 85% | 图片生成正常 |
-
-**总体成熟度**: 99.6% (DV2.0 核心功能完成)
-
-### 最新修复 (v2.0.5)
-
-✅ **收敛性修复（代码已落地，待复测）**:
-- 候选态几何门控：不可行几何直接拒绝，不进入 COMSOL
-- no-op 检测：执行计划无实质变化时直接跳过仿真
-- MOVE 自适应步长回退：1.0/0.5/0.25/0.1/0.05
-- Thermal Contact 参数级联：`h_tc/h_joint/h` → `htot` → `hconstr/hgap` → `Rtot`
-- Box Selection 多域歧义热源拒绑，防止热功率串域
-- 几何 Agent 步长策略改为阈值感知（近阈值 5-15mm 小步）
-
-✅ **运行稳定性修复（历史）**:
-- 静态模式遗留逻辑移除，不再依赖预置 `model.mph`
-- `.mph` 保存锁冲突修复（唯一命名 + 重试回退）
-- L1-L4 运行脚本适配导入兼容逻辑
-
-✅ **可观测性增强**:
-- 演化日志新增惩罚分分解、delta指标、`effectiveness_score`
-- 可视化新增 `layout_evolution.png` 和 `visualization_summary.txt`
-- 违规数量在同一子图显著高亮（便于判断约束收敛）
-
-✅ **RAG 401 修复**:
-- RAG embedding 客户端透传 `base_url`
-- DashScope 场景支持 `text-embedding-v4`
-
-详细信息请参考: [HANDOFF.md](HANDOFF.md)
+- `run/run_scenario.py`
+- `run/mass/run_L1.py`
+- `run/mass/run_L2.py`
+- `run/mass/run_L3.py`
+- `run/mass/run_L4.py`
+- `run/agent_loop/run_L1.py`
+- `run/agent_loop/run_L2.py`
+- `run/agent_loop/run_L3.py`
+- `run/agent_loop/run_L4.py`
+- `config/system/mass/base.yaml`
+- `config/system/mass/level_profiles_l1_l4.yaml`
+- `config/system/mass/level_profiles_l1_l4_real_strict.yaml`
+- `config/bom/mass/level_L1_foundation_stack.json`
+- `config/bom/mass/level_L2_thermal_power_stack.json`
+- `config/bom/mass/level_L3_structural_mission_stack.json`
+- `config/bom/mass/level_L4_full_stack_operator.json`
+- `workflow/modes/mass/pipeline_service.py`
+- `optimization/modes/mass/pymoo_integration/problem_generator.py`
+- `simulation/comsol_driver.py`
+- `simulation/power_network_solver.py`
+- `run/render_blender_scene.py`
 
 ---
 
-## 🔧 工作流程
+## 7. 产物结构
 
-### 完整优化循环
+单次运行目录推荐短名：`experiments/<YYYYMMDD>/<HHMM>_<stack>_<level>_<algo>_<intent>_<eval>[_tag]`
+- `summary.json`
+- `report.md`
+- `events/*.jsonl`
+- `tables/*.csv`
+- `trace/*.json`
+- `snapshots/*.json`
+- `visualizations/*`
 
-```
-1. 初始化设计
-   └─> BOM解析 → 3D布局生成（装箱算法）
-
-2. 迭代优化循环（最多10次）
-   ├─> 导出 STEP 文件（pythonocc-core）
-   │
-   ├─> COMSOL 动态仿真
-   │   ├─ 导入 STEP 几何
-   │   ├─ Box Selection 自动识别组件
-   │   ├─ 动态赋予热源和边界条件
-   │   ├─ 数值稳定锚（微弱对流边界）
-   │   ├─ 全局导热网络（防止热悬浮）
-   │   └─ 求解器运行
-   │
-   ├─> 物理评估
-   │   ├─ 几何分析（间隙、质心偏移、转动惯量）
-   │   ├─ 热分析（温度分布、梯度）
-   │   ├─ 结构分析（应力、频率）
-   │   └─ 电源分析（功耗、压降）
-   │
-   ├─> 候选态几何门控（仿真前）
-   │   ├─ 检查碰撞数（必须为0）
-   │   ├─ 检查最小间隙（>=运行时阈值）
-   │   └─ no-op 状态直接跳过
-   │
-   ├─> 约束检查与惩罚分计算
-   │   ├─ 温度超标（>运行时阈值）
-   │   ├─ 质心偏移超标（>运行时阈值）
-   │   ├─ 间隙不足（<运行时阈值）
-   │   └─ 计算惩罚分
-   │
-   ├─> 智能回退检查
-   │   ├─ 仿真失败？
-   │   ├─ 惩罚分异常高（>1000）？
-   │   ├─ 连续3次上升？
-   │   └─ 回退到历史最优状态
-   │
-   ├─> RAG知识检索
-   │   ├─ 语义检索（embedding相似度）
-   │   ├─ 关键词检索（约束类型匹配）
-   │   └─ 返回top-5相关知识
-   │
-   ├─> Meta-Reasoner战略决策
-   │   ├─ 输入：GlobalContextPack（当前状态+违规+知识+历史失败）
-   │   ├─ 推理：Chain-of-Thought分析
-   │   └─ 输出：StrategicPlan（策略+任务分配）
-   │
-   ├─> Multi-Agent战术执行
-   │   ├─ Geometry Agent → 几何操作（MOVE/SWAP/ROTATE/DEFORM/ALIGN/CHANGE_ENVELOPE/ADD_BRACKET）
-   │   ├─ Thermal Agent → 热学操作（MODIFY_COATING/ADD_HEATSINK/SET_THERMAL_CONTACT/ADJUST_LAYOUT/CHANGE_ORIENTATION）
-   │   ├─ Structural Agent → 结构操作
-   │   └─ Power Agent → 电源操作
-   │
-   ├─> Agent协调
-   │   ├─ 提案验证
-   │   ├─ 冲突检测
-   │   ├─ 冲突解决
-   │   └─ 生成ExecutionPlan
-   │
-   ├─> 执行优化操作
-   │   ├─ 更新组件位置/尺寸/形状
-   │   ├─ 调整材料/涂层/热接触
-   │   └─ 更新设计状态
-   │
-   ├─> 状态更新与验证
-   │   ├─ 保存到状态池
-   │   ├─ 记录到 Trace 审计日志
-   │   └─ 更新演化轨迹
-   │
-   └─> 知识学习
-       └─ 将成功/失败案例加入知识库
-
-3. 输出结果
-   ├─ evolution_trace.csv（量化指标）
-   ├─ run_log.txt（完整终端日志）
-   ├─ trace/（完整上下文追踪）
-   ├─ llm_interactions/（LLM输入输出）
-   ├─ visualizations/（3D布局、热图、演化轨迹）
-   └─ rollback_events.jsonl（回退事件日志）
-```
+`benchmarks/` 当前刻意保持为空；后续重建时统一使用：`bm_<stack>_<scope>_<algo>_<intent>_<eval>[_sNN][_tag]`
+- 详细实验说明、修复原因、附加标签统一写入 `summary.json` / manifest
+- 不再使用冗长目录名堆叠阶段说明
 
 ---
 
-## 📁 输出文件
+## 8. 文档导航
 
-每次运行会在`experiments/run_YYYYMMDD_HHMMSS/`目录下生成：
-
-- `run_log.txt` - 完整终端日志（所有模块）⭐
-- `evolution_trace.csv` - 迭代指标数据（含惩罚分、state_id）
-- `trace/` - 完整上下文追踪
-  - `iter_XX_context.json` - 输入给 LLM 的上下文
-  - `iter_XX_plan.json` - LLM 的战略计划
-  - `iter_XX_eval.json` - 物理仿真评估结果
-- `rollback_events.jsonl` - 回退事件日志
-- `llm_interactions/` - LLM输入输出记录
-- `step_files/` - STEP 几何文件
-- `mph_models/` - COMSOL 模型文件
-- `visualizations/` - 可视化图表
-  - `evolution_trace.png` - 演化轨迹图
-  - `final_layout_3d.png` - 3D布局图
-  - `layout_evolution.png` - 初末状态布局位移对比图
-  - `thermal_heatmap.png` - 温度热图
-  - `visualization_summary.txt` - 可视化摘要（penalty/违规/位移/热代理）
-- `design_state_iter_XX.json` - 每次迭代的设计状态
-
-> 说明：为保持交付仓库简洁，`scripts/`、`tests/`、`logs/` 默认本地化管理，不作为主交付内容跟踪。
-
----
-
-## 📚 重要文档
-
-### 核心文档
-- [HANDOFF.md](HANDOFF.md) - 项目交接文档 ⭐⭐⭐ (最重要)
-- [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md) - 项目总结
-- [CLAUDE.md](CLAUDE.md) - Claude Code 指令
-- [RULES.md](RULES.md) - 开发规范
-
-### 技术文档
-- [docs/LLM_Semantic_Layer_Architecture.md](docs/LLM_Semantic_Layer_Architecture.md) - 架构设计
-- [docs/COMSOL_GUIDE.md](docs/COMSOL_GUIDE.md) - COMSOL使用指南
-- [docs/QWEN_GUIDE.md](docs/QWEN_GUIDE.md) - Qwen模型使用指南
-
-### 归档文档
-- [docs/archive/phase2/](docs/archive/phase2/) - Phase 2 完成报告
-- [docs/archive/phase3/](docs/archive/phase3/) - Phase 3 完成报告
-- [docs/archive/v202_fixes/](docs/archive/v202_fixes/) - v2.0.2 修复文档
-- [docs/archive/tests/](docs/archive/tests/) - 测试分析报告
-
----
-
-## 🔬 技术栈
-
-- **语言**: Python 3.12
-- **LLM**: qwen3-max
-- **数据验证**: Pydantic 2.6+
-- **几何算法**: py3dbp（3D装箱）
-- **CAD导出**: pythonocc-core（STEP文件）
-- **仿真接口**: COMSOL MPh（动态STEP导入）
-- **数值优化**: Scipy
-- **向量检索**: OpenAI-compatible Embeddings（DashScope `text-embedding-v4`）
-- **Web框架**: FastAPI
-- **可视化**: Matplotlib
-
----
-
-## 📈 项目统计
-
-- **总代码行数**: ~10000行
-- **核心模块**: 15个
-- **Agent数量**: 4个（几何、热控、结构、电源）
-- **优化算子**: 10类（DV2.0）
-- **数据协议**: 40+ Pydantic模型
-- **知识库**: 8个默认知识项（可扩展）
-- **测试覆盖**: 集成测试 + 单元测试（测试资产默认本地化）
-- **异常类型**: 10个自定义异常
-- **可视化类型**: 4种（演化轨迹、3D布局、布局演化、热图）
-- **核心文档**: 5个
-- **归档文档**: 20+ 个
-
----
-
-## 📄 许可证
-
-MIT License
-
----
-
-## ⚠️ 注意事项
-
-**仿真软件许可**: 使用COMSOL仿真功能需要相应的合法许可证。
-
-**API密钥**: 使用LLM功能需要有效的OpenAI API密钥或Qwen API密钥。
-
-**COMSOL配置**: 系统已实现数值稳定锚、功率斜坡加载、几何门控与动态建模路径清理。详见 [HANDOFF.md](HANDOFF.md) v2.0.5 章节。
-
----
-
-## 🤝 贡献
-
-欢迎提交Issue和Pull Request！
-
----
-
-**开发团队**: MsGalaxy Project
-**项目版本**: v2.0.5
-**系统成熟度**: 99.6%
-**最后更新**: 2026-03-01 02:24
+- `HANDOFF.md`：状态与实现边界（SSOT）
+- `PROJECT_SUMMARY.md`：项目全景与科研口径
+- `RULES.md`：执行、命名与证据治理规则
+- `AGENTS.md`：代理协作规范
+- `docs/R23_blender_mcp_visualization_plan_20260306.md`：Blender MCP 可视化方案
+- `docs/R24_blender_mcp_setup_20260306.md`：Blender MCP / Codex / Blender Windows 接入说明
+- `docs/adr/0006-blender-mcp-visualization-sidecar.md`：Blender 可视化侧链 ADR

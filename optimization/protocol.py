@@ -310,12 +310,12 @@ class ModelingIntent(BaseModel):
 # ============================================================================
 
 class GeometryAction(BaseModel):
-    """几何操作 (DV2.0: 支持全部几何类算子)"""
+    """几何操作（当前基线：支持完整几何类算子）"""
     action_id: str
     op_type: Literal[
-        "MOVE", "ROTATE", "SWAP", "REPACK", "DEFORM",  # 基础几何算子
-        "ALIGN", "CHANGE_ENVELOPE", "ADD_BRACKET",      # DV2.0 新增算子
-        "ADD_HEATSINK"                                  # 几何层热学辅助算子
+        "MOVE", "ROTATE", "SWAP", "REPACK", "DEFORM",
+        "ALIGN", "CHANGE_ENVELOPE", "ADD_BRACKET",
+        "ADD_HEATSINK",
     ]
     component_id: str
     parameters: Dict[str, Any]  # 操作参数，如 {"axis": "X", "range": [-5, 0]} 或 {"deform_type": "stretch_z", "magnitude": 15.0}
@@ -346,12 +346,12 @@ class GeometryProposal(BaseModel):
 
 
 class ThermalAction(BaseModel):
-    """热控操作 (DV2.0: 支持全部热学算子)"""
+    """热控操作（当前基线：支持完整热学算子）"""
     action_id: str
     op_type: Literal[
-        "ADJUST_LAYOUT", "CHANGE_ORIENTATION",           # 布局调整
-        "ADD_HEATSINK", "MODIFY_COATING",                # 热控核心算子
-        "SET_THERMAL_CONTACT"                            # DV2.0 新增算子
+        "ADJUST_LAYOUT", "CHANGE_ORIENTATION",
+        "ADD_HEATSINK", "MODIFY_COATING",
+        "SET_THERMAL_CONTACT",
     ]
     target_components: List[str]
     parameters: Dict[str, Any]

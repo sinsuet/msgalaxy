@@ -8,6 +8,7 @@ Writes structured events under:
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
@@ -52,9 +53,45 @@ class EventLogger:
         return data
 
     @staticmethod
+    def _sanitize_json_value(value: Any) -> Any:
+        if isinstance(value, float):
+            return value if math.isfinite(value) else None
+
+        if isinstance(value, dict):
+            return {str(k): EventLogger._sanitize_json_value(v) for k, v in value.items()}
+
+        if isinstance(value, (list, tuple, set)):
+            return [EventLogger._sanitize_json_value(v) for v in value]
+
+        tolist_fn = getattr(value, "tolist", None)
+        if callable(tolist_fn):
+            try:
+                return EventLogger._sanitize_json_value(tolist_fn())
+            except Exception:
+                pass
+
+        item_fn = getattr(value, "item", None)
+        if callable(item_fn):
+            try:
+                return EventLogger._sanitize_json_value(item_fn())
+            except Exception:
+                return value
+
+        return value
+
+    @staticmethod
+    def _json_dumps_safe(payload: Dict[str, Any], *, indent: int | None = None) -> str:
+        return json.dumps(
+            EventLogger._sanitize_json_value(payload),
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=indent,
+        )
+
+    @staticmethod
     def _append_jsonl(path: Path, payload: Dict[str, Any]) -> None:
         with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            f.write(EventLogger._json_dumps_safe(payload) + "\n")
 
     def write_run_manifest(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         merged = {}
@@ -71,7 +108,7 @@ class EventLogger:
         merged["updated_at"] = datetime.now().isoformat()
         parsed = RunManifestEvent(**merged)
         self.run_manifest_path.write_text(
-            json.dumps(parsed.model_dump(), ensure_ascii=False, indent=2),
+            EventLogger._json_dumps_safe(parsed.model_dump(), indent=2),
             encoding="utf-8",
         )
         return parsed.model_dump()

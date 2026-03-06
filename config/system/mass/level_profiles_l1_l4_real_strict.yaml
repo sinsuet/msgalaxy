@@ -1,0 +1,412 @@
+version: 2
+
+canonical_physics_domains:
+  - geometry
+  - thermal_real
+  - structural_real
+  - power_real
+  - mission_keepout_real
+
+canonical_operator_actions:
+  - cg_recenter
+  - group_move
+  - fov_keepout_push
+  - hot_spread
+  - swap
+  - bus_proximity_opt
+  - add_heatstrap
+  - set_thermal_contact
+  - add_bracket
+  - stiffener_insert
+
+levels:
+  L1:
+    description: "Real-online strict foundation level"
+    max_iterations: 1
+    deterministic_move_ratio: 0.18
+    deterministic_min_delta_mm: 10.0
+    deterministic_max_delta_mm: 72.0
+    mandatory_groups:
+      - collision
+      - clearance
+      - boundary
+      - thermal
+      - cg_limit
+      - struct_safety
+      - struct_modal
+      - power_vdrop
+      - power_margin
+      - power_peak
+      - mission_keepout
+    runtime_overrides:
+      pymoo_pop_size: 10
+      pymoo_n_gen: 4
+      mass_search_space: operator_program
+      mass_enable_operator_program: true
+      mass_hard_constraint_coverage_mode: strict
+      mass_metric_registry_mode: strict
+      mass_physics_real_only: true
+      mass_source_gate_mode: strict
+      mass_source_gate_require_structural_real: true
+      mass_source_gate_require_power_real: true
+      mass_source_gate_require_thermal_real: true
+      mass_source_gate_require_mission_real: true
+      mass_comsol_feature_domain_audit_mode: strict
+      mass_operator_family_gate_mode: strict
+      mass_operator_realization_gate_mode: strict
+      mass_operator_family_required: geometry,thermal,structural,power,mission
+      mass_mission_fov_evaluator: simulation.mission_real_fov:evaluate_fov_keepout_real
+      mass_max_attempts: 1
+      mass_dynamic_attempts_enabled: false
+      mass_enable_mcts: true
+      mass_mcts_budget: 2
+      mass_online_comsol_eval_budget: 8
+      mass_online_comsol_geometry_gate: false
+      mass_online_comsol_schedule_mode: ucb_topk
+      mass_online_comsol_schedule_top_fraction: 0.35
+      mass_online_comsol_schedule_min_observations: 4
+      mass_online_comsol_schedule_warmup_calls: 4
+      mass_online_comsol_schedule_explore_prob: 0.10
+      mass_enable_physics_audit: true
+      mass_audit_top_k: 2
+      mass_enforce_audit_feasible: true
+      mass_operator_program_action_slots: 10
+      mass_operator_program_max_components: 5
+      mass_operator_program_action_safety_tolerance: 1000.0
+      mass_operator_program_forced_slot_actions:
+        - cg_recenter
+        - group_move
+        - fov_keepout_push
+        - hot_spread
+        - swap
+        - bus_proximity_opt
+        - add_heatstrap
+        - set_thermal_contact
+        - add_bracket
+        - stiffener_insert
+      mass_operator_program_forced_slot_action_params:
+        - axes: [x, y, z]
+          strength: 0.95
+          focus_ratio: 0.90
+        - delta_mm: 2.0
+          axis: x
+          focus_ratio: 0.46
+        - axis: z
+          keepout_center_mm: 0.0
+          min_separation_mm: 10.0
+          preferred_side: auto
+          focus_ratio: 0.52
+        - axis: y
+          min_pair_distance_mm: 10.0
+          spread_strength: 0.44
+          focus_ratio: 0.46
+        - {}
+        - axes: [x, y]
+          focus_ratio: 0.36
+        - conductance: 225.0
+          update_mode: set
+          focus_ratio: 0.56
+        - conductance: 225.0
+          update_mode: set
+          bidirectional: true
+          focus_ratio: 0.56
+        - stiffness_gain: 0.20
+          axes: [x, y]
+          focus_ratio: 0.46
+        - stiffness_gain: 0.25
+          axes: [x, y, z]
+          focus_ratio: 0.46
+
+  L2:
+    description: "Real-online strict thermal-power level"
+    max_iterations: 1
+    deterministic_move_ratio: 0.24
+    deterministic_min_delta_mm: 12.0
+    deterministic_max_delta_mm: 96.0
+    mandatory_groups:
+      - collision
+      - clearance
+      - boundary
+      - thermal
+      - cg_limit
+      - struct_safety
+      - struct_modal
+      - power_vdrop
+      - power_margin
+      - power_peak
+      - mission_keepout
+    runtime_overrides:
+      mission_keepout_axis: x
+      mission_keepout_center_mm: 0.0
+      mission_min_separation_mm: 0.0
+      pymoo_pop_size: 14
+      pymoo_n_gen: 5
+      mass_search_space: operator_program
+      mass_enable_operator_program: true
+      mass_hard_constraint_coverage_mode: strict
+      mass_metric_registry_mode: strict
+      mass_physics_real_only: true
+      mass_source_gate_mode: strict
+      mass_source_gate_require_structural_real: true
+      mass_source_gate_require_power_real: true
+      mass_source_gate_require_thermal_real: true
+      mass_source_gate_require_mission_real: true
+      mass_comsol_feature_domain_audit_mode: strict
+      mass_operator_family_gate_mode: strict
+      mass_operator_realization_gate_mode: strict
+      mass_operator_family_required: geometry,thermal,structural,power,mission
+      mass_mission_fov_evaluator: simulation.mission_real_fov:evaluate_fov_keepout_real
+      mass_max_attempts: 1
+      mass_dynamic_attempts_enabled: false
+      mass_enable_mcts: true
+      mass_mcts_budget: 2
+      mass_online_comsol_eval_budget: 10
+      mass_online_comsol_geometry_gate: false
+      mass_online_comsol_schedule_mode: ucb_topk
+      mass_online_comsol_schedule_top_fraction: 0.35
+      mass_online_comsol_schedule_min_observations: 4
+      mass_online_comsol_schedule_warmup_calls: 4
+      mass_online_comsol_schedule_explore_prob: 0.10
+      mass_enable_physics_audit: true
+      mass_audit_top_k: 2
+      mass_enforce_audit_feasible: true
+      mass_operator_program_action_slots: 10
+      mass_operator_program_max_components: 6
+      mass_operator_program_action_safety_tolerance: 1000.0
+      mass_operator_program_forced_slot_actions:
+        - cg_recenter
+        - group_move
+        - fov_keepout_push
+        - hot_spread
+        - swap
+        - bus_proximity_opt
+        - add_heatstrap
+        - set_thermal_contact
+        - add_bracket
+        - stiffener_insert
+      mass_operator_program_forced_slot_action_params:
+        - axes: [x, y, z]
+          strength: 0.96
+          focus_ratio: 0.92
+        - delta_mm: 3.0
+          axis: x
+          focus_ratio: 0.48
+        - axis: x
+          keepout_center_mm: 0.0
+          min_separation_mm: 12.0
+          preferred_side: auto
+          focus_ratio: 0.54
+        - axis: y
+          min_pair_distance_mm: 12.0
+          spread_strength: 0.50
+          focus_ratio: 0.48
+        - {}
+        - axes: [x, y]
+          focus_ratio: 0.40
+        - conductance: 240.0
+          update_mode: set
+          focus_ratio: 0.58
+        - conductance: 240.0
+          update_mode: set
+          bidirectional: true
+          focus_ratio: 0.58
+        - stiffness_gain: 0.24
+          axes: [x, y]
+          focus_ratio: 0.48
+        - stiffness_gain: 0.28
+          axes: [x, y, z]
+          focus_ratio: 0.48
+
+  L3:
+    description: "Real-online strict structural-mission level"
+    max_iterations: 1
+    deterministic_move_ratio: 0.30
+    deterministic_min_delta_mm: 14.0
+    deterministic_max_delta_mm: 128.0
+    mandatory_groups:
+      - collision
+      - clearance
+      - boundary
+      - thermal
+      - cg_limit
+      - struct_safety
+      - struct_modal
+      - power_vdrop
+      - power_margin
+      - power_peak
+      - mission_keepout
+    runtime_overrides:
+      pymoo_pop_size: 12
+      pymoo_n_gen: 5
+      mass_search_space: operator_program
+      mass_enable_operator_program: true
+      mass_hard_constraint_coverage_mode: strict
+      mass_metric_registry_mode: strict
+      mass_physics_real_only: true
+      mass_source_gate_mode: strict
+      mass_source_gate_require_structural_real: true
+      mass_source_gate_require_power_real: true
+      mass_source_gate_require_thermal_real: true
+      mass_source_gate_require_mission_real: true
+      mass_comsol_feature_domain_audit_mode: strict
+      mass_operator_family_gate_mode: strict
+      mass_operator_realization_gate_mode: strict
+      mass_operator_family_required: geometry,thermal,structural,power,mission
+      mass_mission_fov_evaluator: simulation.mission_real_fov:evaluate_fov_keepout_real
+      mass_max_attempts: 1
+      mass_dynamic_attempts_enabled: false
+      mass_enable_mcts: true
+      mass_mcts_budget: 2
+      mass_online_comsol_eval_budget: 12
+      mass_online_comsol_geometry_gate: false
+      mass_online_comsol_schedule_mode: ucb_topk
+      mass_online_comsol_schedule_top_fraction: 0.35
+      mass_online_comsol_schedule_min_observations: 4
+      mass_online_comsol_schedule_warmup_calls: 4
+      mass_online_comsol_schedule_explore_prob: 0.10
+      mass_enable_physics_audit: true
+      mass_audit_top_k: 2
+      mass_enforce_audit_feasible: true
+      mass_operator_program_action_slots: 10
+      mass_operator_program_max_components: 7
+      mass_operator_program_action_safety_tolerance: 1000.0
+      mass_operator_program_forced_slot_actions:
+        - cg_recenter
+        - group_move
+        - fov_keepout_push
+        - hot_spread
+        - swap
+        - bus_proximity_opt
+        - add_heatstrap
+        - set_thermal_contact
+        - add_bracket
+        - stiffener_insert
+      mass_operator_program_forced_slot_action_params:
+        - axes: [x, y, z]
+          strength: 0.97
+          focus_ratio: 0.93
+        - delta_mm: 3.0
+          axis: x
+          focus_ratio: 0.50
+        - axis: z
+          keepout_center_mm: 0.0
+          min_separation_mm: 12.0
+          preferred_side: auto
+          focus_ratio: 0.56
+        - axis: y
+          min_pair_distance_mm: 13.0
+          spread_strength: 0.56
+          focus_ratio: 0.50
+        - {}
+        - axes: [x, y]
+          focus_ratio: 0.42
+        - conductance: 250.0
+          update_mode: set
+          focus_ratio: 0.60
+        - conductance: 250.0
+          update_mode: set
+          bidirectional: true
+          focus_ratio: 0.60
+        - stiffness_gain: 0.26
+          axes: [x, y]
+          focus_ratio: 0.50
+        - stiffness_gain: 0.30
+          axes: [x, y, z]
+          focus_ratio: 0.50
+
+  L4:
+    description: "Real-online strict full-stack operator-program level"
+    max_iterations: 1
+    deterministic_move_ratio: 0.36
+    deterministic_min_delta_mm: 16.0
+    deterministic_max_delta_mm: 160.0
+    mandatory_groups:
+      - collision
+      - clearance
+      - boundary
+      - thermal
+      - cg_limit
+      - struct_safety
+      - struct_modal
+      - power_vdrop
+      - power_margin
+      - power_peak
+      - mission_keepout
+    runtime_overrides:
+      pymoo_pop_size: 14
+      pymoo_n_gen: 6
+      mass_search_space: operator_program
+      mass_enable_operator_program: true
+      mass_hard_constraint_coverage_mode: strict
+      mass_metric_registry_mode: strict
+      mass_physics_real_only: true
+      mass_source_gate_mode: strict
+      mass_source_gate_require_structural_real: true
+      mass_source_gate_require_power_real: true
+      mass_source_gate_require_thermal_real: true
+      mass_source_gate_require_mission_real: true
+      mass_comsol_feature_domain_audit_mode: strict
+      mass_operator_family_gate_mode: strict
+      mass_operator_realization_gate_mode: strict
+      mass_operator_family_required: geometry,thermal,structural,power,mission
+      mass_mission_fov_evaluator: simulation.mission_real_fov:evaluate_fov_keepout_real
+      mass_max_attempts: 2
+      mass_dynamic_attempts_enabled: false
+      mass_enable_mcts: true
+      mass_mcts_budget: 2
+      mass_online_comsol_eval_budget: 14
+      mass_online_comsol_geometry_gate: false
+      mass_online_comsol_schedule_mode: ucb_topk
+      mass_online_comsol_schedule_top_fraction: 0.35
+      mass_online_comsol_schedule_min_observations: 4
+      mass_online_comsol_schedule_warmup_calls: 4
+      mass_online_comsol_schedule_explore_prob: 0.10
+      mass_enable_physics_audit: true
+      mass_audit_top_k: 2
+      mass_enforce_audit_feasible: true
+      mass_operator_program_action_slots: 10
+      mass_operator_program_max_components: 8
+      mass_operator_program_action_safety_tolerance: 1000.0
+      mass_operator_program_forced_slot_actions:
+        - cg_recenter
+        - group_move
+        - fov_keepout_push
+        - hot_spread
+        - swap
+        - bus_proximity_opt
+        - add_heatstrap
+        - set_thermal_contact
+        - add_bracket
+        - stiffener_insert
+      mass_operator_program_forced_slot_action_params:
+        - axes: [x, y, z]
+          strength: 0.98
+          focus_ratio: 0.94
+        - delta_mm: 4.0
+          axis: x
+          focus_ratio: 0.52
+        - axis: z
+          keepout_center_mm: 0.0
+          min_separation_mm: 14.0
+          preferred_side: auto
+          focus_ratio: 0.58
+        - axis: y
+          min_pair_distance_mm: 14.0
+          spread_strength: 0.60
+          focus_ratio: 0.52
+        - {}
+        - axes: [x, y]
+          focus_ratio: 0.45
+        - conductance: 260.0
+          update_mode: set
+          focus_ratio: 0.62
+        - conductance: 260.0
+          update_mode: set
+          bidirectional: true
+          focus_ratio: 0.62
+        - stiffness_gain: 0.28
+          axes: [x, y]
+          focus_ratio: 0.52
+        - stiffness_gain: 0.32
+          axes: [x, y, z]
+          focus_ratio: 0.52

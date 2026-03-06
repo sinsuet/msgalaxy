@@ -1,0 +1,336 @@
+version: 2
+
+canonical_physics_domains:
+  - geometry
+  - thermal
+  - structural
+  - power
+  - mission_keepout
+
+canonical_operator_actions:
+  - cg_recenter
+  - group_move
+  - fov_keepout_push
+  - hot_spread
+  - swap
+  - bus_proximity_opt
+  - add_heatstrap
+  - set_thermal_contact
+  - add_bracket
+  - stiffener_insert
+
+levels:
+  L1:
+    description: "Foundation full-stack level with relaxed thresholds and full operator coverage"
+    max_iterations: 4
+    deterministic_move_ratio: 0.18
+    deterministic_min_delta_mm: 10.0
+    deterministic_max_delta_mm: 72.0
+    mandatory_groups:
+      - collision
+      - clearance
+      - boundary
+      - thermal
+      - cg_limit
+      - struct_safety
+      - struct_modal
+      - power_vdrop
+      - power_margin
+      - power_peak
+      - mission_keepout
+    runtime_overrides:
+      pymoo_pop_size: 20
+      pymoo_n_gen: 8
+      mass_search_space: operator_program
+      mass_enable_operator_program: true
+      mass_max_attempts: 2
+      mass_dynamic_attempts_enabled: false
+      mass_enable_mcts: true
+      mass_mcts_budget: 2
+      mass_hard_constraint_coverage_mode: strict
+      mass_metric_registry_mode: strict
+      mass_source_gate_mode: warn
+      mass_operator_realization_gate_mode: warn
+      mass_operator_program_action_slots: 10
+      mass_operator_program_max_components: 5
+      mass_operator_program_action_safety_tolerance: 1000.0
+      mass_operator_program_forced_slot_actions:
+        - cg_recenter
+        - group_move
+        - fov_keepout_push
+        - hot_spread
+        - swap
+        - bus_proximity_opt
+        - add_heatstrap
+        - set_thermal_contact
+        - add_bracket
+        - stiffener_insert
+      mass_operator_program_forced_slot_action_params:
+        - axes: [x, y, z]
+          strength: 0.94
+          focus_ratio: 0.88
+        - delta_mm: 2.0
+          axis: x
+          focus_ratio: 0.45
+        - axis: z
+          keepout_center_mm: 0.0
+          min_separation_mm: 10.0
+          preferred_side: auto
+          focus_ratio: 0.50
+        - axis: y
+          min_pair_distance_mm: 10.0
+          spread_strength: 0.42
+          focus_ratio: 0.45
+        - {}
+        - axes: [x, y]
+          focus_ratio: 0.35
+        - conductance: 220.0
+          update_mode: set
+          focus_ratio: 0.55
+        - conductance: 220.0
+          update_mode: set
+          bidirectional: true
+          focus_ratio: 0.55
+        - stiffness_gain: 0.20
+          axes: [x, y]
+          focus_ratio: 0.45
+        - stiffness_gain: 0.25
+          axes: [x, y, z]
+          focus_ratio: 0.45
+
+  L2:
+    description: "Thermal-power level with full-stack contract and moderate routing/thermal stress"
+    max_iterations: 5
+    deterministic_move_ratio: 0.24
+    deterministic_min_delta_mm: 12.0
+    deterministic_max_delta_mm: 96.0
+    mandatory_groups:
+      - collision
+      - clearance
+      - boundary
+      - thermal
+      - cg_limit
+      - struct_safety
+      - struct_modal
+      - power_vdrop
+      - power_margin
+      - power_peak
+      - mission_keepout
+    runtime_overrides:
+      mission_keepout_axis: x
+      mission_keepout_center_mm: 0.0
+      mission_min_separation_mm: 0.0
+      pymoo_pop_size: 24
+      pymoo_n_gen: 10
+      mass_search_space: operator_program
+      mass_enable_operator_program: true
+      mass_max_attempts: 2
+      mass_dynamic_attempts_enabled: false
+      mass_enable_mcts: true
+      mass_mcts_budget: 2
+      mass_hard_constraint_coverage_mode: strict
+      mass_metric_registry_mode: strict
+      mass_source_gate_mode: warn
+      mass_operator_realization_gate_mode: warn
+      mass_operator_program_action_slots: 10
+      mass_operator_program_max_components: 6
+      mass_operator_program_action_safety_tolerance: 1000.0
+      mass_operator_program_forced_slot_actions:
+        - cg_recenter
+        - group_move
+        - fov_keepout_push
+        - hot_spread
+        - swap
+        - bus_proximity_opt
+        - add_heatstrap
+        - set_thermal_contact
+        - add_bracket
+        - stiffener_insert
+      mass_operator_program_forced_slot_action_params:
+        - axes: [x, y, z]
+          strength: 0.95
+          focus_ratio: 0.90
+        - delta_mm: 3.0
+          axis: x
+          focus_ratio: 0.48
+        - axis: x
+          keepout_center_mm: 0.0
+          min_separation_mm: 12.0
+          preferred_side: auto
+          focus_ratio: 0.52
+        - axis: y
+          min_pair_distance_mm: 12.0
+          spread_strength: 0.50
+          focus_ratio: 0.48
+        - {}
+        - axes: [x, y]
+          focus_ratio: 0.40
+        - conductance: 240.0
+          update_mode: set
+          focus_ratio: 0.58
+        - conductance: 240.0
+          update_mode: set
+          bidirectional: true
+          focus_ratio: 0.58
+        - stiffness_gain: 0.24
+          axes: [x, y]
+          focus_ratio: 0.48
+        - stiffness_gain: 0.28
+          axes: [x, y, z]
+          focus_ratio: 0.48
+
+  L3:
+    description: "Structural-mission level with denser mass distribution and full operator coverage"
+    max_iterations: 6
+    deterministic_move_ratio: 0.30
+    deterministic_min_delta_mm: 14.0
+    deterministic_max_delta_mm: 128.0
+    mandatory_groups:
+      - collision
+      - clearance
+      - boundary
+      - thermal
+      - cg_limit
+      - struct_safety
+      - struct_modal
+      - power_vdrop
+      - power_margin
+      - power_peak
+      - mission_keepout
+    runtime_overrides:
+      pymoo_pop_size: 28
+      pymoo_n_gen: 12
+      mass_search_space: operator_program
+      mass_enable_operator_program: true
+      mass_max_attempts: 2
+      mass_dynamic_attempts_enabled: false
+      mass_enable_mcts: true
+      mass_mcts_budget: 3
+      mass_hard_constraint_coverage_mode: strict
+      mass_metric_registry_mode: strict
+      mass_source_gate_mode: warn
+      mass_operator_realization_gate_mode: warn
+      mass_operator_program_action_slots: 10
+      mass_operator_program_max_components: 7
+      mass_operator_program_action_safety_tolerance: 1000.0
+      mass_operator_program_forced_slot_actions:
+        - cg_recenter
+        - group_move
+        - fov_keepout_push
+        - hot_spread
+        - swap
+        - bus_proximity_opt
+        - add_heatstrap
+        - set_thermal_contact
+        - add_bracket
+        - stiffener_insert
+      mass_operator_program_forced_slot_action_params:
+        - axes: [x, y, z]
+          strength: 0.96
+          focus_ratio: 0.92
+        - delta_mm: 3.0
+          axis: x
+          focus_ratio: 0.50
+        - axis: z
+          keepout_center_mm: 0.0
+          min_separation_mm: 12.0
+          preferred_side: auto
+          focus_ratio: 0.55
+        - axis: y
+          min_pair_distance_mm: 13.0
+          spread_strength: 0.55
+          focus_ratio: 0.50
+        - {}
+        - axes: [x, y]
+          focus_ratio: 0.42
+        - conductance: 250.0
+          update_mode: set
+          focus_ratio: 0.60
+        - conductance: 250.0
+          update_mode: set
+          bidirectional: true
+          focus_ratio: 0.60
+        - stiffness_gain: 0.26
+          axes: [x, y]
+          focus_ratio: 0.50
+        - stiffness_gain: 0.30
+          axes: [x, y, z]
+          focus_ratio: 0.50
+
+  L4:
+    description: "Full-stack operator-program level with dense packing, real mission keepout, and balanced feasibility"
+    max_iterations: 7
+    deterministic_move_ratio: 0.36
+    deterministic_min_delta_mm: 16.0
+    deterministic_max_delta_mm: 160.0
+    mandatory_groups:
+      - collision
+      - clearance
+      - boundary
+      - thermal
+      - cg_limit
+      - struct_safety
+      - struct_modal
+      - power_vdrop
+      - power_margin
+      - power_peak
+      - mission_keepout
+    runtime_overrides:
+      pymoo_pop_size: 32
+      pymoo_n_gen: 14
+      mass_search_space: operator_program
+      mass_enable_operator_program: true
+      mass_max_attempts: 2
+      mass_dynamic_attempts_enabled: false
+      mass_enable_mcts: true
+      mass_mcts_budget: 3
+      mass_hard_constraint_coverage_mode: strict
+      mass_metric_registry_mode: strict
+      mass_source_gate_mode: warn
+      mass_operator_realization_gate_mode: warn
+      mass_operator_program_action_slots: 10
+      mass_operator_program_max_components: 8
+      mass_operator_program_action_safety_tolerance: 1000.0
+      mass_operator_program_forced_slot_actions:
+        - cg_recenter
+        - group_move
+        - fov_keepout_push
+        - hot_spread
+        - swap
+        - bus_proximity_opt
+        - add_heatstrap
+        - set_thermal_contact
+        - add_bracket
+        - stiffener_insert
+      mass_operator_program_forced_slot_action_params:
+        - axes: [x, y, z]
+          strength: 0.98
+          focus_ratio: 0.94
+        - delta_mm: 4.0
+          axis: x
+          focus_ratio: 0.52
+        - axis: z
+          keepout_center_mm: 0.0
+          min_separation_mm: 14.0
+          preferred_side: auto
+          focus_ratio: 0.58
+        - axis: y
+          min_pair_distance_mm: 14.0
+          spread_strength: 0.60
+          focus_ratio: 0.52
+        - {}
+        - axes: [x, y]
+          focus_ratio: 0.45
+        - conductance: 260.0
+          update_mode: set
+          focus_ratio: 0.62
+        - conductance: 260.0
+          update_mode: set
+          bidirectional: true
+          focus_ratio: 0.62
+        - stiffness_gain: 0.28
+          axes: [x, y]
+          focus_ratio: 0.52
+        - stiffness_gain: 0.32
+          axes: [x, y, z]
+          focus_ratio: 0.52

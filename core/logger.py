@@ -6,45 +6,308 @@
 
 import os
 import json
-import csv
 import logging
+import math
+import re
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 
 from core.event_logger import EventLogger
+from core.llm_interaction_store import LLMInteractionStore
+from core.mode_contract import normalize_observability_mode
+from core.path_policy import serialize_artifact_path, serialize_run_path
+from core.modes.agent_loop.trace_store import (
+    append_agent_loop_trace_row,
+    init_agent_loop_trace_csv,
+    materialize_metrics_payload,
+)
+from core.modes.mass.trace_store import (
+    append_mass_trace_row,
+    init_mass_trace_csv,
+    materialize_trace_payload,
+)
+
+def _sanitize_json_value(value: Any) -> Any:
+    """Convert non-JSON-safe numeric values (NaN/Inf) into JSON-safe nulls."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+
+    if isinstance(value, dict):
+        return {str(k): _sanitize_json_value(v) for k, v in value.items()}
+
+    if isinstance(value, (list, tuple, set)):
+        return [_sanitize_json_value(v) for v in value]
+
+    # Handle numpy arrays or similar containers with .tolist()
+    tolist_fn = getattr(value, "tolist", None)
+    if callable(tolist_fn):
+        try:
+            return _sanitize_json_value(tolist_fn())
+        except Exception:
+            pass
+
+    # Handle numpy scalars or similar objects with .item()
+    item_fn = getattr(value, "item", None)
+    if callable(item_fn):
+        try:
+            return _sanitize_json_value(item_fn())
+        except Exception:
+            return value
+
+    return value
 
 
-def _safe_float(value: Any, digits: int = 6) -> str:
-    try:
-        return f"{float(value):.{digits}f}"
-    except (TypeError, ValueError):
+def _json_dump_safe(payload: Any, fp) -> None:
+    json.dump(
+        _sanitize_json_value(payload),
+        fp,
+        indent=2,
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+
+
+def _json_dumps_safe(payload: Any) -> str:
+    return json.dumps(
+        _sanitize_json_value(payload),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+
+
+def _sanitize_run_label(raw_label: Any) -> str:
+    """Normalize run label for directory/file-system safety."""
+    text = str(raw_label or "").strip().lower()
+    if not text:
         return ""
+    text = text.replace(" ", "_")
+    text = re.sub(r"[^a-z0-9._-]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("._-")
+    if not text:
+        return ""
+    return text[:64]
+
+
+def _normalize_run_algorithm(raw_algorithm: Any) -> str:
+    """Normalize algorithm tag for run naming."""
+    text = str(raw_algorithm or "").strip().lower()
+    if not text:
+        return ""
+
+    compact = re.sub(r"[^a-z0-9]+", "", text)
+    aliases = {
+        "nsga2": "nsga2",
+        "nsgaii": "nsga2",
+        "nsga3": "nsga3",
+        "nsgaiii": "nsga3",
+        "moead": "moead",
+    }
+    mapped = aliases.get(compact, "")
+    if mapped:
+        return mapped
+
+    token = _sanitize_run_label(text)
+    return token[:16]
+
+
+def _contains_algorithm_token(label: str, algorithm: str) -> bool:
+    normalized_label = _sanitize_run_label(label)
+    normalized_algorithm = _normalize_run_algorithm(algorithm)
+    if not normalized_label or not normalized_algorithm:
+        return False
+    tokens = [item for item in normalized_label.split("_") if item]
+    for token in tokens:
+        if _normalize_run_algorithm(token) == normalized_algorithm:
+            return True
+    return False
+
+
+def _build_compact_run_label(raw_label: Any, *, run_mode: str, run_algorithm: str) -> str:
+    label = _sanitize_run_label(raw_label)
+    algorithm = _normalize_run_algorithm(run_algorithm)
+    mode_tag = "agent" if str(run_mode or "").strip().lower() == "agent_loop" else _sanitize_run_label(run_mode)
+
+    if not label:
+        label = mode_tag or "run"
+
+    replacements = (
+        ("operator_program", "op"),
+        ("meta_policy", "mp"),
+        ("baseline", "base"),
+        ("deterministic", "det"),
+        ("strict_replay", "replay"),
+        ("agent_loop", "agent"),
+        ("online_comsol", "ocomsol"),
+        ("real_only", "real"),
+        ("intermediate", "mid"),
+        ("complex", "cx"),
+        ("extreme", "x"),
+    )
+    for source, target in replacements:
+        label = label.replace(source, target)
+
+    raw_tokens = [item for item in label.split("_") if item]
+    compacted_tokens: List[str] = []
+    seen = set()
+    for token in raw_tokens:
+        if token in {"bm", "run"}:
+            continue
+        if re.fullmatch(r"\d{4}", token) or re.fullmatch(r"\d{6}", token):
+            continue
+        if token == "simple" and compacted_tokens and re.fullmatch(r"l\d+", compacted_tokens[-1]):
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        compacted_tokens.append(token)
+
+    if not compacted_tokens:
+        compacted_tokens = [mode_tag or "run"]
+
+    compacted = "_".join(compacted_tokens)
+    if algorithm and algorithm != "na" and not _contains_algorithm_token(compacted, algorithm):
+        compacted = f"{compacted}_{algorithm}"
+    compacted = _sanitize_run_label(compacted)
+
+    if len(compacted) <= 40:
+        return compacted
+
+    preferred: List[str] = []
+    for token in compacted.split("_"):
+        if token.startswith("l") and token[1:].isdigit():
+            preferred.append(token)
+        elif token in {"op", "mp", "base", "agent", "mass"}:
+            preferred.append(token)
+        elif token.startswith("s") and token[1:].isdigit():
+            preferred.append(token)
+        elif _normalize_run_algorithm(token) in {"nsga2", "nsga3", "moead"}:
+            preferred.append(_normalize_run_algorithm(token))
+        elif token.startswith("t") and any(ch.isdigit() for ch in token):
+            preferred.append(token)
+        elif len(preferred) < 4:
+            preferred.append(token)
+    compacted = _sanitize_run_label("_".join(preferred) or compacted)
+    return compacted[:40]
+
+
+def _next_run_sequence(parent_dir: str, name_prefix: str) -> int:
+    """Resolve next collision index for a run leaf name."""
+    root = Path(str(parent_dir)).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    pattern = re.compile(rf"^{re.escape(name_prefix)}(?:_(\d{{2}}))?$")
+    max_seq = 0
+    try:
+        for item in root.iterdir():
+            if not item.is_dir():
+                continue
+            match = pattern.match(item.name)
+            if not match:
+                continue
+            try:
+                suffix = match.group(1)
+                seq = int(suffix) if suffix is not None else 1
+                max_seq = max(max_seq, seq)
+            except Exception:
+                continue
+    except Exception:
+        return 1
+    return max_seq + 1
 
 
 class ExperimentLogger:
     """实验日志管理器"""
 
-    def __init__(self, base_dir: str = "experiments"):
+    def __init__(
+        self,
+        base_dir: str = "experiments",
+        run_mode: Optional[str] = None,
+        run_label: Optional[str] = None,
+        run_algorithm: Optional[str] = None,
+        run_naming_strategy: Optional[str] = None,
+    ):
         """
         初始化日志管理器
 
         Args:
             base_dir: 实验输出根目录
+            run_mode: 运行模式标签（agent_loop/mass）
+            run_label: 运行标签（通常来自 BOM/测试名）
+            run_algorithm: 算法标签（如 NSGA-II/MOEAD）
+            run_naming_strategy: 命名策略（compact/verbose）
         """
         self.base_dir = base_dir
+        self.base_dir_path = Path(self.base_dir).resolve()
+        resolved_mode = str(run_mode or "").strip().lower()
+        if resolved_mode not in {"agent_loop", "mass"}:
+            resolved_mode = "unknown"
+        self.run_mode = resolved_mode
+        self.run_mode_bucket = (
+            normalize_observability_mode(self.run_mode, default="shared")
+            if self.run_mode in {"agent_loop", "mass"}
+            else "shared"
+        )
+        self.run_label = _sanitize_run_label(run_label)
+        self.run_algorithm = _normalize_run_algorithm(run_algorithm) or "na"
+        strategy = str(run_naming_strategy or "compact").strip().lower()
+        if strategy not in {"compact", "verbose"}:
+            strategy = "compact"
+        self.run_naming_strategy = strategy
+        mode_tag = "agent" if self.run_mode == "agent_loop" else self.run_mode
 
-        # 创建带时间戳的实验文件夹
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.run_dir = os.path.join(base_dir, f"run_{timestamp}")
+        started_at = datetime.now()
+        self.run_started_at = started_at.isoformat()
+        self.run_date = started_at.strftime("%m%d")
+        self.run_time = started_at.strftime("%H%M")
+        self.run_time_precise = started_at.strftime("%H%M%S")
+        self.run_timestamp = f"{self.run_date}_{self.run_time_precise}"
+        date_root = self.base_dir_path / self.run_date
+        if self.run_naming_strategy == "verbose":
+            run_prefix = f"{self.run_time_precise}_{mode_tag}"
+            if self.run_label:
+                run_prefix = f"{run_prefix}_{self.run_label}"
+            if self.run_algorithm != "na" and not _contains_algorithm_token(run_prefix, self.run_algorithm):
+                run_prefix = f"{run_prefix}_{self.run_algorithm}"
+        else:
+            short_tag = _build_compact_run_label(
+                self.run_label,
+                run_mode=self.run_mode,
+                run_algorithm=self.run_algorithm,
+            )
+            run_prefix = f"{self.run_time}_{short_tag}"
+
+        self.run_sequence = int(max(1, _next_run_sequence(parent_dir=str(date_root), name_prefix=run_prefix)))
+        run_stem = run_prefix if self.run_sequence == 1 else f"{run_prefix}_{self.run_sequence:02d}"
+        run_dir = date_root / run_stem
+        while run_dir.exists():
+            self.run_sequence += 1
+            run_stem = f"{run_prefix}_{self.run_sequence:02d}"
+            run_dir = date_root / run_stem
+        self.run_dir = str(run_dir)
         self.exp_dir = self.run_dir  # 添加exp_dir别名
-        self.run_id = Path(self.run_dir).name
+        self.run_id = f"run_{self.run_date}_{run_stem}"
+        self.latest_index_path = str(self.base_dir_path / "_latest.json")
         os.makedirs(self.run_dir, exist_ok=True)
         self.event_logger = EventLogger(self.run_dir)
+        self.event_logger.run_id = self.run_id
+        self.save_run_manifest(
+            {
+                "run_mode": self.run_mode,
+                "run_mode_bucket": self.run_mode_bucket,
+                "run_label": self.run_label,
+                "run_algorithm": self.run_algorithm,
+                "run_naming_strategy": self.run_naming_strategy,
+                "run_date": self.run_date,
+                "run_time": self.run_time,
+                "run_timestamp": self.run_timestamp,
+                "run_started_at": self.run_started_at,
+                "run_sequence": int(self.run_sequence),
+            }
+        )
 
         # 创建子文件夹
-        self.llm_log_dir = os.path.join(self.run_dir, "llm_interactions")
-        os.makedirs(self.llm_log_dir, exist_ok=True)
+        self.llm_store = LLMInteractionStore(self.run_dir)
+        self.llm_log_dir = self.llm_store.root_dir
 
         self.viz_dir = os.path.join(self.run_dir, "visualizations")
         os.makedirs(self.viz_dir, exist_ok=True)
@@ -52,19 +315,25 @@ class ExperimentLogger:
         # 初始化CSV统计文件
         self.csv_path = os.path.join(self.run_dir, "evolution_trace.csv")
         self._init_csv()
-        self.pymoo_maas_csv_path = os.path.join(self.run_dir, "pymoo_maas_trace.csv")
-        self._init_pymoo_maas_csv()
+        self.mass_csv_path = os.path.join(self.run_dir, "mass_trace.csv")
+        self._init_mass_csv()
 
         # 历史记录
         self.history: List[str] = []
 
         # 创建Python logger
-        self.logger = get_logger(f"experiment_{timestamp}")
+        self.logger = get_logger(f"experiment_{self.run_id}")
 
         # 添加文件处理器，将日志输出到实验目录的 run_log.txt
-        self._add_run_log_handler(timestamp)
+        self._add_run_log_handler(self.run_timestamp)
 
         print(f"Experiment logs: {self.run_dir}")
+
+    def serialize_artifact_path(self, path_value: Any) -> str:
+        return serialize_artifact_path(self.base_dir_path, path_value)
+
+    def serialize_run_path(self, path_value: Any) -> str:
+        return serialize_run_path(self.run_dir, path_value)
 
     def _add_run_log_handler(self, timestamp: str):
         """
@@ -151,79 +420,15 @@ class ExperimentLogger:
 
     def _init_csv(self):
         """初始化CSV文件头"""
-        headers = [
-            "iteration",
-            "timestamp",
-            "max_temp",
-            "min_clearance",
-            "total_mass",
-            "total_power",
-            "num_violations",
-            "is_safe",
-            "solver_cost",
-            "llm_tokens",
-            "penalty_score",  # Phase 4: 惩罚分
-            "state_id",       # Phase 4: 状态ID
-            # 高信息密度字段（用于分析迭代有效性）
-            "avg_temp",
-            "min_temp",
-            "temp_gradient",
-            "cg_offset",
-            "num_collisions",
-            "penalty_violation",
-            "penalty_temp",
-            "penalty_clearance",
-            "penalty_cg",
-            "penalty_collision",
-            "delta_penalty",
-            "delta_cg_offset",
-            "delta_max_temp",
-            "delta_min_clearance",
-            "effectiveness_score",
-        ]
-        with open(self.csv_path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow(headers)
+        init_agent_loop_trace_csv(self.csv_path)
 
-    def _init_pymoo_maas_csv(self):
-        """初始化 pymoo_maas 运行轨迹 CSV 文件头。"""
-        headers = [
-            "iteration",
-            "attempt",
-            "timestamp",
-            "branch_action",
-            "branch_source",
-            "operator_program_id",
-            "operator_actions",
-            "operator_bias_strategy",
-            "intent_id",
-            "thermal_evaluator_mode",
-            "diagnosis_status",
-            "diagnosis_reason",
-            "solver_message",
-            "solver_cost",
-            "score",
-            "best_cv",
-            "aocc_cv",
-            "aocc_objective",
-            "has_candidate_state",
-            "relaxation_applied_count",
-            "physics_audit_selected_reason",
-            "mcts_enabled",
-            "is_best_attempt",
-            "dominant_violation",
-            "dominant_violation_value",
-            "best_candidate_cg_offset",
-            "best_candidate_max_temp",
-            "best_candidate_min_clearance",
-        ]
-        with open(self.pymoo_maas_csv_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(headers)
+    def _init_mass_csv(self):
+        """初始化 mass 运行轨迹 CSV 文件头。"""
+        init_mass_trace_csv(self.mass_csv_path)
 
     def log_llm_interaction(self, iteration: int, role: str = None, request: Dict[str, Any] = None,
                            response: Dict[str, Any] = None, context_dict: Dict[str, Any] = None,
-                           response_dict: Dict[str, Any] = None):
+                           response_dict: Dict[str, Any] = None, mode: Optional[str] = None):
         """
         记录LLM交互
 
@@ -238,6 +443,7 @@ class ExperimentLogger:
             response: 响应数据
             context_dict: 输入上下文（旧方式）
             response_dict: LLM响应（旧方式）
+            mode: 可选模式标签（agent_loop/mass）
         """
         # 兼容旧方式
         if context_dict is not None:
@@ -249,22 +455,13 @@ class ExperimentLogger:
         if request is None and response is None:
             return
 
-        # 确定文件名前缀
-        prefix = f"iter_{iteration:02d}"
-        if role:
-            prefix = f"iter_{iteration:02d}_{role}"
-
-        # 保存请求
-        if request is not None:
-            req_path = os.path.join(self.llm_log_dir, f"{prefix}_req.json")
-            with open(req_path, 'w', encoding='utf-8') as f:
-                json.dump(request, f, indent=2, ensure_ascii=False)
-
-        # 保存响应
-        if response is not None:
-            resp_path = os.path.join(self.llm_log_dir, f"{prefix}_resp.json")
-            with open(resp_path, 'w', encoding='utf-8') as f:
-                json.dump(response, f, indent=2, ensure_ascii=False)
+        prefix = self.llm_store.write(
+            iteration=int(iteration),
+            role=role,
+            request=request,
+            response=response,
+            mode=mode if mode is not None else self.run_mode_bucket,
+        )
 
         if request is not None or response is not None:
             print(f"  💾 LLM interaction saved: {prefix}")
@@ -276,45 +473,8 @@ class ExperimentLogger:
         Args:
             data: 指标数据字典
         """
-        def _fmt_float(value: Any, digits: int = 2) -> str:
-            try:
-                return f"{float(value):.{digits}f}"
-            except (TypeError, ValueError):
-                return ""
-
-        row = [
-            data.get("iteration", 0),
-            data.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-            _fmt_float(data.get('max_temp', 0), 2),
-            _fmt_float(data.get('min_clearance', 0), 2),
-            _fmt_float(data.get('total_mass', 0), 2),
-            _fmt_float(data.get('total_power', 0), 2),
-            data.get("num_violations", 0),
-            data.get("is_safe", False),
-            _fmt_float(data.get('solver_cost', 0), 4),
-            data.get("llm_tokens", 0),
-            _fmt_float(data.get('penalty_score', 0), 2),  # Phase 4
-            data.get("state_id", ""),                    # Phase 4
-            _fmt_float(data.get('avg_temp', 0), 2),
-            _fmt_float(data.get('min_temp', 0), 2),
-            _fmt_float(data.get('temp_gradient', 0), 2),
-            _fmt_float(data.get('cg_offset', 0), 2),
-            int(data.get('num_collisions', 0)),
-            _fmt_float(data.get('penalty_violation', 0), 2),
-            _fmt_float(data.get('penalty_temp', 0), 2),
-            _fmt_float(data.get('penalty_clearance', 0), 2),
-            _fmt_float(data.get('penalty_cg', 0), 2),
-            _fmt_float(data.get('penalty_collision', 0), 2),
-            _fmt_float(data.get('delta_penalty', 0), 2),
-            _fmt_float(data.get('delta_cg_offset', 0), 2),
-            _fmt_float(data.get('delta_max_temp', 0), 2),
-            _fmt_float(data.get('delta_min_clearance', 0), 2),
-            _fmt_float(data.get('effectiveness_score', 0), 2),
-        ]
-
-        with open(self.csv_path, 'a', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow(row)
+        row = materialize_metrics_payload(data)
+        append_agent_loop_trace_row(self.csv_path, row)
 
     def add_history(self, message: str):
         """
@@ -347,7 +507,7 @@ class ExperimentLogger:
         """
         state_path = os.path.join(self.run_dir, f"design_state_iter_{iteration:02d}.json")
         with open(state_path, 'w', encoding='utf-8') as f:
-            json.dump(design_state, f, indent=2, ensure_ascii=False)
+            _json_dump_safe(design_state, f)
 
     @staticmethod
     def _component_diff_lists(
@@ -478,7 +638,7 @@ class ExperimentLogger:
         delta = self._component_diff_lists(prev_payload, state_payload)
         payload = {
             "run_id": self.run_id,
-            "run_dir": self.run_dir,
+            "run_dir": self.serialize_artifact_path(self.run_dir),
             "timestamp": datetime.now().isoformat(),
             "sequence": int(sequence),
             "iteration": int(iteration),
@@ -498,14 +658,14 @@ class ExperimentLogger:
         }
 
         with open(snapshot_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
+            _json_dump_safe(payload, f)
 
         event_payload = {
             "iteration": int(iteration),
             "attempt": int(attempt),
             "sequence": int(sequence),
             "stage": str(stage or ""),
-            "snapshot_path": snapshot_path,
+            "snapshot_path": self.serialize_run_path(snapshot_path),
             "thermal_source": str(thermal_source or ""),
             "diagnosis_status": str(diagnosis_status or ""),
             "diagnosis_reason": str(diagnosis_reason or ""),
@@ -557,7 +717,17 @@ class ExperimentLogger:
             "status": status,
             "final_iteration": final_iteration,
             "timestamp": datetime.now().isoformat(),
-            "run_dir": self.run_dir,
+            "run_dir": self.serialize_artifact_path(self.run_dir),
+            "run_id": self.run_id,
+            "run_mode": self.run_mode,
+            "run_label": self.run_label,
+            "run_algorithm": self.run_algorithm,
+            "run_naming_strategy": self.run_naming_strategy,
+            "run_date": self.run_date,
+            "run_time": self.run_time,
+            "run_timestamp": self.run_timestamp,
+            "run_started_at": self.run_started_at,
+            "run_sequence": int(self.run_sequence),
             "notes": notes
         }
         if extra:
@@ -565,7 +735,7 @@ class ExperimentLogger:
 
         summary_path = os.path.join(self.run_dir, "summary.json")
         with open(summary_path, 'w', encoding='utf-8') as f:
-            json.dump(summary, f, indent=2, ensure_ascii=False)
+            _json_dump_safe(summary, f)
 
         # 生成Markdown报告
         self._generate_markdown_report(summary)
@@ -579,12 +749,79 @@ class ExperimentLogger:
             }
         )
 
+    def _write_latest_index(self, manifest_payload: Dict[str, Any]) -> None:
+        latest_path = Path(self.latest_index_path)
+        latest_path.parent.mkdir(parents=True, exist_ok=True)
+
+        existing: Dict[str, Any] = {}
+        if latest_path.exists():
+            try:
+                existing = json.loads(latest_path.read_text(encoding="utf-8")) or {}
+            except Exception:
+                existing = {}
+
+        existing_started_at = str(existing.get("run_started_at", "") or "").strip()
+        existing_run_id = str(existing.get("run_id", "") or "").strip()
+        if (
+            existing_started_at
+            and existing_run_id
+            and existing_run_id != self.run_id
+            and existing_started_at > self.run_started_at
+        ):
+            return
+
+        extra = dict(manifest_payload.get("extra", {}) or {})
+        latest_payload = {
+            "run_id": self.run_id,
+            "run_dir": self.serialize_artifact_path(self.run_dir),
+            "run_leaf_dir": Path(self.run_dir).name,
+            "run_date_dir": Path(self.run_dir).parent.name,
+            "run_label": self.run_label,
+            "run_mode": self.run_mode,
+            "run_algorithm": self.run_algorithm,
+            "run_naming_strategy": self.run_naming_strategy,
+            "run_date": self.run_date,
+            "run_time": self.run_time,
+            "run_timestamp": self.run_timestamp,
+            "run_started_at": self.run_started_at,
+            "run_sequence": int(self.run_sequence),
+            "optimization_mode": str(manifest_payload.get("optimization_mode", "") or ""),
+            "pymoo_algorithm": str(manifest_payload.get("pymoo_algorithm", "") or ""),
+            "thermal_evaluator_mode": str(manifest_payload.get("thermal_evaluator_mode", "") or ""),
+            "search_space_mode": str(manifest_payload.get("search_space_mode", "") or ""),
+            "profile": str(manifest_payload.get("profile", "") or ""),
+            "level": str(manifest_payload.get("level", "") or ""),
+            "seed": manifest_payload.get("seed"),
+            "status": str(manifest_payload.get("status", "") or ""),
+            "diagnosis_status": str(extra.get("diagnosis_status", "") or ""),
+            "diagnosis_reason": str(extra.get("diagnosis_reason", "") or ""),
+            "summary_path": self.serialize_artifact_path(Path(self.run_dir) / "summary.json"),
+            "manifest_path": self.serialize_artifact_path(
+                Path(self.run_dir) / "events" / "run_manifest.json"
+            ),
+            "updated_at": datetime.now().isoformat(),
+        }
+        with latest_path.open("w", encoding="utf-8") as f:
+            _json_dump_safe(latest_payload, f)
+
     def save_run_manifest(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """更新事件层 run manifest。"""
         data = dict(payload or {})
         data.setdefault("run_id", self.run_id)
-        data.setdefault("run_dir", self.run_dir)
-        return self.event_logger.write_run_manifest(data)
+        data["run_dir"] = self.serialize_artifact_path(data.get("run_dir", self.run_dir))
+        data.setdefault("run_mode", self.run_mode)
+        data.setdefault("run_mode_bucket", self.run_mode_bucket)
+        data.setdefault("run_label", self.run_label)
+        data.setdefault("run_algorithm", self.run_algorithm)
+        data.setdefault("run_naming_strategy", self.run_naming_strategy)
+        data.setdefault("run_date", self.run_date)
+        data.setdefault("run_time", self.run_time)
+        data.setdefault("run_timestamp", self.run_timestamp)
+        data.setdefault("run_started_at", self.run_started_at)
+        data.setdefault("run_sequence", int(self.run_sequence))
+        manifest = self.event_logger.write_run_manifest(data)
+        self._write_latest_index(manifest)
+        return manifest
 
     def log_maas_phase_event(self, data: Dict[str, Any]) -> None:
         """写入 A/B/C/D 阶段事件。"""
@@ -644,108 +881,22 @@ class ExperimentLogger:
         except Exception as exc:
             self.logger.debug("maas physics event write failed: %s", exc)
 
-    def log_pymoo_maas_trace(self, data: Dict[str, Any]):
-        """记录 pymoo_maas 尝试级别轨迹。"""
-        diagnosis = data.get("diagnosis") or {}
-        dominant_violation = str(data.get("dominant_violation", "") or "")
-        violation_breakdown = dict(data.get("constraint_violation_breakdown") or {})
-        best_candidate_metrics = dict(data.get("best_candidate_metrics") or {})
-        operator_actions = list(data.get("operator_actions", []) or [])
-        operator_bias = dict(data.get("operator_bias", {}) or {})
-        row = [
-            int(data.get("iteration", 0)),
-            int(data.get("attempt", 0)),
-            data.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-            str(data.get("branch_action", "")),
-            str(data.get("branch_source", "")),
-            str(data.get("operator_program_id", "")),
-            ",".join(str(item) for item in operator_actions),
-            str(operator_bias.get("strategy", "")),
-            str(data.get("intent_id", "")),
-            str(data.get("thermal_evaluator_mode", "")),
-            str(diagnosis.get("status", data.get("diagnosis_status", ""))),
-            str(diagnosis.get("reason", data.get("diagnosis_reason", ""))),
-            str(data.get("solver_message", "")),
-            _safe_float(data.get("solver_cost"), digits=6),
-            _safe_float(data.get("score"), digits=6),
-            _safe_float(data.get("best_cv"), digits=6),
-            _safe_float(data.get("aocc_cv"), digits=6),
-            _safe_float(data.get("aocc_objective"), digits=6),
-            bool(data.get("has_candidate_state", False)),
-            int(data.get("relaxation_applied_count", 0)),
-            str(data.get("physics_audit_selected_reason", "")),
-            bool(data.get("mcts_enabled", False)),
-            bool(data.get("is_best_attempt", False)),
-            dominant_violation,
-            _safe_float(violation_breakdown.get(dominant_violation), digits=6),
-            _safe_float(best_candidate_metrics.get("cg_offset"), digits=6),
-            _safe_float(best_candidate_metrics.get("max_temp"), digits=6),
-            _safe_float(best_candidate_metrics.get("min_clearance"), digits=6),
-        ]
-        with open(self.pymoo_maas_csv_path, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(row)
+    def log_mass_trace(self, data: Dict[str, Any]):
+        """记录 mass 尝试级别轨迹。"""
+        materialized = materialize_trace_payload(dict(data or {}))
+        append_mass_trace_row(
+            self.mass_csv_path,
+            list(materialized.get("row", []) or []),
+        )
 
-        # Phase-1 双写：CSV 继续保留，同时写入结构化事件层。
-        iteration = int(data.get("iteration", 0) or 0)
-        attempt = int(data.get("attempt", 0) or 0)
-        is_best_attempt = bool(data.get("is_best_attempt", False))
-        attempt_event_payload = {
-            "iteration": iteration,
-            "attempt": attempt,
-            "branch_action": str(data.get("branch_action", "")),
-            "branch_source": str(data.get("branch_source", "")),
-            "search_space_mode": str(data.get("search_space_mode", "")),
-            "pymoo_algorithm": str(data.get("pymoo_algorithm", "")),
-            "thermal_evaluator_mode": str(data.get("thermal_evaluator_mode", "")),
-            "diagnosis_status": str(diagnosis.get("status", data.get("diagnosis_status", ""))),
-            "diagnosis_reason": str(diagnosis.get("reason", data.get("diagnosis_reason", ""))),
-            "solver_message": str(data.get("solver_message", "")),
-            "solver_cost": _safe_float(data.get("solver_cost"), digits=6) or None,
-            "score": _safe_float(data.get("score"), digits=6) or None,
-            "best_cv": _safe_float(data.get("best_cv"), digits=6) or None,
-            "aocc_cv": _safe_float(data.get("aocc_cv"), digits=6) or None,
-            "aocc_objective": _safe_float(data.get("aocc_objective"), digits=6) or None,
-            "dominant_violation": dominant_violation,
-            "constraint_violation_breakdown": violation_breakdown,
-            "best_candidate_metrics": best_candidate_metrics,
-            "operator_program_id": str(data.get("operator_program_id", "")),
-            "operator_actions": operator_actions,
-            "operator_bias_strategy": str(operator_bias.get("strategy", "")),
-            "mcts_enabled": bool(data.get("mcts_enabled", False)),
-            "has_candidate_state": bool(data.get("has_candidate_state", False)),
-            "is_best_attempt": is_best_attempt,
-        }
-
-        # Convert numeric strings produced by _safe_float back to float for typed events.
-        for field in ("solver_cost", "score", "best_cv", "aocc_cv", "aocc_objective"):
-            value = attempt_event_payload.get(field)
-            if isinstance(value, str) and value.strip() != "":
-                try:
-                    attempt_event_payload[field] = float(value)
-                except Exception:
-                    attempt_event_payload[field] = None
-
+        attempt_event_payload = dict(materialized.get("attempt_event_payload", {}) or {})
+        candidate_event_payload = materialized.get("candidate_event_payload", None)
+        is_best_attempt = bool(materialized.get("is_best_attempt", False))
         try:
             if not is_best_attempt:
                 self.event_logger.append_attempt_event(attempt_event_payload)
-            else:
-                self.event_logger.append_candidate_event(
-                    {
-                        "iteration": iteration,
-                        "attempt": attempt,
-                        "source": "best_attempt_marker",
-                        "diagnosis_status": attempt_event_payload.get("diagnosis_status", ""),
-                        "diagnosis_reason": attempt_event_payload.get("diagnosis_reason", ""),
-                        "best_cv": attempt_event_payload.get("best_cv", None),
-                        "dominant_violation": dominant_violation,
-                        "best_candidate_metrics": best_candidate_metrics,
-                        "physics_audit_selected_reason": str(
-                            data.get("physics_audit_selected_reason", "")
-                        ),
-                        "is_selected": True,
-                    }
-                )
+            elif isinstance(candidate_event_payload, dict):
+                self.event_logger.append_candidate_event(dict(candidate_event_payload))
         except Exception as exc:
             self.logger.debug("maas attempt/candidate event write failed: %s", exc)
 
@@ -764,11 +915,20 @@ class ExperimentLogger:
 
             f.write(f"## Files\n\n")
             f.write(f"- Evolution trace: `evolution_trace.csv`\n")
-            f.write(f"- pymoo_maas trace: `pymoo_maas_trace.csv`\n")
+            f.write(f"- mass trace: `mass_trace.csv`\n")
             f.write(f"- Events: `events/`\n")
             f.write(f"  - generation events: `events/generation_events.jsonl`\n")
             f.write(f"- Materialized tables: `tables/`\n")
             f.write(f"- LLM interactions: `llm_interactions/`\n")
+            active_buckets = self.llm_store.get_active_buckets()
+            if active_buckets:
+                f.write(
+                    "- mode buckets: "
+                    + ", ".join([f"`{name}/`" for name in active_buckets])
+                    + "\n"
+                )
+            else:
+                f.write("- mode buckets: (none)\n")
             f.write(f"- Visualizations: `visualizations/`\n")
 
         print(f"  📝 Report generated: report.md")
@@ -801,19 +961,19 @@ class ExperimentLogger:
         if context_pack is not None:
             context_path = os.path.join(trace_dir, f"{prefix}_context.json")
             with open(context_path, 'w', encoding='utf-8') as f:
-                json.dump(context_pack, f, indent=2, ensure_ascii=False)
+                _json_dump_safe(context_pack, f)
 
         # 保存 StrategicPlan
         if strategic_plan is not None:
             plan_path = os.path.join(trace_dir, f"{prefix}_plan.json")
             with open(plan_path, 'w', encoding='utf-8') as f:
-                json.dump(strategic_plan, f, indent=2, ensure_ascii=False)
+                _json_dump_safe(strategic_plan, f)
 
         # 保存 EvalResult
         if eval_result is not None:
             eval_path = os.path.join(trace_dir, f"{prefix}_eval.json")
             with open(eval_path, 'w', encoding='utf-8') as f:
-                json.dump(eval_result, f, indent=2, ensure_ascii=False)
+                _json_dump_safe(eval_result, f)
 
         self.logger.info(f"  💾 Trace data saved: {prefix}")
 
@@ -839,7 +999,7 @@ class ExperimentLogger:
             "payload": payload,
         }
         with open(log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+            f.write(_json_dumps_safe(event) + "\n")
         self.logger.info(f"  💾 MaaS diagnostics saved: iter={iteration}, attempt={attempt}")
 
     def save_rollback_event(
@@ -876,7 +1036,7 @@ class ExperimentLogger:
 
         # 追加到 JSONL 文件
         with open(rollback_log_path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(event, ensure_ascii=False) + '\n')
+            f.write(_json_dumps_safe(event) + '\n')
 
         self.logger.warning(f"  ⚠️ Rollback event logged: {from_state_id} → {to_state_id}")
 

@@ -9,6 +9,8 @@
 import sys
 import os
 import json
+import ast
+from collections import defaultdict
 
 # 设置UTF-8编码
 if sys.platform == 'win32':
@@ -32,6 +34,10 @@ from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 from core.exceptions import VisualizationError
 from core.logger import get_logger
+from core.mode_contract import is_mass_mode, normalize_observability_mode
+from core.path_policy import serialize_run_path
+from core.modes.agent_loop.visualization_dispatch import render_agent_loop_artifacts
+from core.modes.mass.visualization_dispatch import render_mass_artifacts
 
 logger = get_logger("visualization")
 
@@ -97,11 +103,67 @@ def _parse_bool_series(df: pd.DataFrame, column: str) -> np.ndarray:
     )
 
 
+def _parse_operator_actions(raw_value: Any) -> List[str]:
+    if raw_value is None:
+        return []
+    if isinstance(raw_value, float) and not np.isfinite(raw_value):
+        return []
+
+    if isinstance(raw_value, list):
+        values = raw_value
+    else:
+        text = str(raw_value or "").strip()
+        if not text:
+            return []
+        if text.lower() in {"nan", "none", "null", "[]"}:
+            return []
+        values = []
+        if text.startswith("[") and text.endswith("]"):
+            parsed = None
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                try:
+                    parsed = ast.literal_eval(text)
+                except Exception:
+                    parsed = None
+            if isinstance(parsed, list):
+                values = list(parsed)
+        if not values:
+            values = [item for item in text.split(",") if str(item).strip()]
+    actions: List[str] = []
+    seen = set()
+    for item in values:
+        action = str(item or "").strip().strip("'\"[]() ").lower()
+        if action in {"nan", "none", "null"}:
+            continue
+        if not action or action in seen:
+            continue
+        seen.add(action)
+        actions.append(action)
+    return actions
+
+
+def _operator_action_family(action: str) -> str:
+    name = str(action or "").strip().lower()
+    if name in {"group_move", "cg_recenter", "hot_spread", "swap"}:
+        return "geometry"
+    if name in {"add_heatstrap", "set_thermal_contact"}:
+        return "thermal"
+    if name in {"add_bracket", "stiffener_insert"}:
+        return "structural"
+    if name in {"bus_proximity_opt"}:
+        return "power"
+    if name in {"fov_keepout_push"}:
+        return "mission"
+    return "other"
+
+
 def _detect_optimization_mode(experiment_dir: str) -> str:
     """
     检测本次实验的优化模式：
-    - 优先读取 summary.json 的 optimization_mode
-    - 其次看 pymoo_maas_trace.csv 是否有有效记录
+    - 优先读取 summary.json 的 optimization_mode（归一化到两种活跃模式）
+    - 其次看 mass_trace.csv 是否有有效记录
     - 默认 agent_loop
     """
     summary_path = os.path.join(experiment_dir, "summary.json")
@@ -111,18 +173,17 @@ def _detect_optimization_mode(experiment_dir: str) -> str:
 
             with open(summary_path, "r", encoding="utf-8") as f:
                 summary = json.load(f) or {}
-            mode = str(summary.get("optimization_mode", "")).strip().lower()
-            if mode in {"agent_loop", "pymoo_maas"}:
-                return mode
+            mode = normalize_observability_mode(summary.get("optimization_mode", "agent_loop"))
+            return mode
     except Exception:
         pass
 
-    maas_trace_path = os.path.join(experiment_dir, "pymoo_maas_trace.csv")
+    mass_trace_path = os.path.join(experiment_dir, "mass_trace.csv")
     try:
-        if os.path.exists(maas_trace_path):
-            df = pd.read_csv(maas_trace_path)
+        if os.path.exists(mass_trace_path):
+            df = pd.read_csv(mass_trace_path)
             if len(df) > 0:
-                return "pymoo_maas"
+                return "mass"
     except Exception:
         pass
     return "agent_loop"
@@ -298,19 +359,19 @@ def _build_visualization_summary(
     return "\n".join(lines)
 
 
-def _build_pymoo_maas_visualization_summary(maas_csv_path: str) -> str:
-    """构建 pymoo_maas 运行摘要。"""
+def _build_mass_visualization_summary(mass_csv_path: str) -> str:
+    """构建 mass 运行摘要。"""
     lines: List[str] = []
-    lines.append("=== Pymoo MaaS Visualization Summary ===")
+    lines.append("=== MASS Visualization Summary ===")
 
-    if not maas_csv_path or not os.path.exists(maas_csv_path):
-        lines.append("- No pymoo_maas_trace.csv found.")
+    if not mass_csv_path or not os.path.exists(mass_csv_path):
+        lines.append("- No mass_trace.csv found.")
         return "\n".join(lines)
 
     try:
-        df = pd.read_csv(maas_csv_path)
+        df = pd.read_csv(mass_csv_path)
     except Exception:
-        lines.append("- Failed to read pymoo_maas_trace.csv.")
+        lines.append("- Failed to read mass_trace.csv.")
         return "\n".join(lines)
 
     if len(df) == 0:
@@ -322,6 +383,18 @@ def _build_pymoo_maas_visualization_summary(maas_csv_path: str) -> str:
         counts = df["diagnosis_status"].fillna("unknown").value_counts()
         status_desc = ", ".join([f"{idx}:{int(val)}" for idx, val in counts.items()])
         lines.append(f"- Diagnosis distribution: {status_desc}")
+    if "dominant_violation" in df.columns:
+        dom_counts = (
+            df["dominant_violation"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .replace("", "none")
+            .value_counts()
+        )
+        dom_desc = ", ".join([f"{idx}:{int(val)}" for idx, val in dom_counts.items()][:5])
+        if dom_desc:
+            lines.append(f"- Dominant violation(top): {dom_desc}")
 
     if "is_best_attempt" in df.columns:
         best_mask = (
@@ -349,6 +422,38 @@ def _build_pymoo_maas_visualization_summary(maas_csv_path: str) -> str:
         selected_reason = str(best.get("physics_audit_selected_reason", "")).strip()
         if selected_reason:
             lines.append(f"- Physics audit selection: {selected_reason}")
+        mp_pairs = [
+            ("best_candidate_safety_factor", "safety_factor"),
+            ("best_candidate_first_modal_freq", "modal_freq"),
+            ("best_candidate_voltage_drop", "voltage_drop"),
+            ("best_candidate_power_margin", "power_margin"),
+            ("best_candidate_peak_power", "peak_power"),
+        ]
+        mp_items: List[str] = []
+        for column, label in mp_pairs:
+            if column not in df.columns:
+                continue
+            value = _safe_float(best.get(column), default=np.nan)
+            if np.isfinite(value):
+                mp_items.append(f"{label}={value:.4f}")
+        if mp_items:
+            lines.append("- Best attempt multiphysics: " + ", ".join(mp_items))
+
+    if "operator_actions" in df.columns:
+        family_counts: Dict[str, int] = defaultdict(int)
+        for raw_actions in df["operator_actions"].tolist():
+            for action in _parse_operator_actions(raw_actions):
+                family = _operator_action_family(action)
+                family_counts[family] += 1
+        if family_counts:
+            ordering = ["geometry", "thermal", "structural", "power", "mission", "other"]
+            family_desc = ", ".join(
+                f"{name}={int(family_counts.get(name, 0))}"
+                for name in ordering
+                if int(family_counts.get(name, 0)) > 0
+            )
+            if family_desc:
+                lines.append(f"- Operator family coverage: {family_desc}")
 
     if "solver_cost" in df.columns:
         solver_cost = pd.to_numeric(df["solver_cost"], errors="coerce").fillna(0.0)
@@ -361,10 +466,10 @@ def _build_pymoo_maas_visualization_summary(maas_csv_path: str) -> str:
     return "\n".join(lines)
 
 
-def _build_pymoo_maas_tables_summary(tables_dir: str) -> str:
+def _build_mass_tables_summary(tables_dir: str) -> str:
     """基于 tables/*.csv 构建补充摘要。"""
     lines: List[str] = []
-    lines.append("=== Pymoo MaaS Tables Summary ===")
+    lines.append("=== MASS Tables Summary ===")
 
     attempts = _read_csv_safely(os.path.join(tables_dir, "attempts.csv"))
     generations = _read_csv_safely(os.path.join(tables_dir, "generations.csv"))
@@ -410,6 +515,50 @@ def _build_pymoo_maas_tables_summary(tables_dir: str) -> str:
                 lines.append(
                     f"- First feasible generation: {int(gen_values[int(first_feasible_idx[0])] if len(gen_values) > int(first_feasible_idx[0]) else 0)}"
                 )
+
+    if len(attempts) > 0 and "operator_actions" in attempts.columns:
+        family_counts: Dict[str, int] = defaultdict(int)
+        for raw_actions in attempts["operator_actions"].tolist():
+            for action in _parse_operator_actions(raw_actions):
+                family_counts[_operator_action_family(action)] += 1
+        if family_counts:
+            ordering = ["geometry", "thermal", "structural", "power", "mission", "other"]
+            family_desc = ", ".join(
+                f"{name}={int(family_counts.get(name, 0))}"
+                for name in ordering
+                if int(family_counts.get(name, 0)) > 0
+            )
+            if family_desc:
+                lines.append(f"- Operator family coverage: {family_desc}")
+
+    if len(attempts) > 0:
+        mp_columns = [
+            ("metric_safety_factor", "safety_factor"),
+            ("metric_first_modal_freq", "modal_freq"),
+            ("metric_voltage_drop", "voltage_drop"),
+            ("metric_power_margin", "power_margin"),
+            ("metric_peak_power", "peak_power"),
+        ]
+        best_row = attempts.tail(1).iloc[0]
+        if "is_best_attempt" in attempts.columns:
+            best_mask = (
+                attempts["is_best_attempt"]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .isin({"1", "true", "yes", "y"})
+            )
+            if bool(best_mask.any()):
+                best_row = attempts[best_mask].tail(1).iloc[0]
+        mp_items: List[str] = []
+        for column, label in mp_columns:
+            if column not in attempts.columns:
+                continue
+            value = _safe_float(best_row.get(column), default=np.nan)
+            if np.isfinite(value):
+                mp_items.append(f"{label}={value:.4f}")
+        if mp_items:
+            lines.append("- Best-attempt multiphysics: " + ", ".join(mp_items))
 
     if len(lines) == 1:
         lines.append("- No materialized table data available.")
@@ -767,6 +916,10 @@ def _plot_layout_timeline_frame(
     bracket_ids = set(str(item) for item in list(event.get("added_brackets", delta.get("added_brackets", [])) or []))
     contact_ids = set(str(item) for item in list(event.get("changed_contacts", delta.get("changed_contacts", [])) or []))
     coating_ids = set(str(item) for item in list(event.get("changed_coatings", delta.get("changed_coatings", [])) or []))
+    operator_actions = _parse_operator_actions(event.get("operator_actions", []))
+    operator_family_counts: Dict[str, int] = defaultdict(int)
+    for action in operator_actions:
+        operator_family_counts[_operator_action_family(action)] += 1
 
     x_min, x_max, y_min, y_max = _envelope_bounds_from_state_dict(state)
     thermal_proxy = _build_component_thermal_proxy_from_state(state, metrics=metrics)
@@ -926,10 +1079,20 @@ def _plot_layout_timeline_frame(
             f"Contacts*={len(contact_ids)} | Coatings*={len(coating_ids)} | "
             f"best_cv={best_cv if best_cv is not None else 'NA'} | "
             f"max_temp={max_temp if max_temp is not None else 'NA'} | "
-            f"min_clearance={min_clearance if min_clearance is not None else 'NA'}"
+            f"min_clearance={min_clearance if min_clearance is not None else 'NA'} | "
+            f"actions={','.join(operator_actions[:4]) if operator_actions else 'none'}"
         ),
         fontsize=9,
     )
+    if operator_family_counts:
+        family_order = ["geometry", "thermal", "structural", "power", "mission", "other"]
+        family_desc = ", ".join(
+            f"{name}={int(operator_family_counts.get(name, 0))}"
+            for name in family_order
+            if int(operator_family_counts.get(name, 0)) > 0
+        )
+        if family_desc:
+            fig.text(0.01, 0.955, f"operator_families: {family_desc}", fontsize=8)
 
     plt.tight_layout(rect=[0.0, 0.05, 1.0, 0.95])
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
@@ -1004,6 +1167,8 @@ def plot_layout_timeline(experiment_dir: str, viz_dir: str) -> Dict[str, Any]:
     gif_ok = _build_layout_timeline_gif(frame_paths, gif_path) if frame_paths else False
     if not gif_ok:
         gif_path = ""
+    frames_dir_text = serialize_run_path(experiment_dir, frames_dir if frame_paths else "")
+    gif_path_text = serialize_run_path(experiment_dir, gif_path)
 
     summary_path = os.path.join(viz_dir, "layout_timeline_summary.txt")
     with open(summary_path, "w", encoding="utf-8") as f:
@@ -1011,8 +1176,8 @@ def plot_layout_timeline(experiment_dir: str, viz_dir: str) -> Dict[str, Any]:
         f.write(f"- Events loaded: {len(events)}\n")
         f.write(f"- Records with valid snapshots: {len(records)}\n")
         f.write(f"- Frames rendered: {len(frame_paths)}\n")
-        f.write(f"- Frames dir: {frames_dir if frame_paths else ''}\n")
-        f.write(f"- GIF: {gif_path}\n")
+        f.write(f"- Frames dir: {frames_dir_text}\n")
+        f.write(f"- GIF: {gif_path_text}\n")
 
     return {
         "frame_count": int(len(frame_paths)),
@@ -1191,12 +1356,12 @@ def plot_layout_evolution_from_snapshots(experiment_dir: str, output_path: str) 
     }
 
 
-def plot_pymoo_maas_storyboard(tables_dir: str, output_path: str) -> None:
+def plot_mass_storyboard(tables_dir: str, output_path: str) -> None:
     """
-    绘制 pymoo_maas 单次运行的四宫格故事板（基于 tables/*.csv）。
+    绘制 mass 单次运行的四宫格故事板（基于 tables/*.csv）。
     """
     try:
-        logger.info(f"生成 pymoo_maas 故事板: {output_path}")
+        logger.info(f"生成 mass 故事板: {output_path}")
 
         attempts = _read_csv_safely(os.path.join(tables_dir, "attempts.csv"))
         generations = _read_csv_safely(os.path.join(tables_dir, "generations.csv"))
@@ -1212,7 +1377,7 @@ def plot_pymoo_maas_storyboard(tables_dir: str, output_path: str) -> None:
             and len(physics) == 0 and len(phases) == 0 and len(candidates) == 0
             and len(layouts) == 0 and len(layout_deltas) == 0
         ):
-            logger.warning("pymoo_maas 故事板跳过：tables 为空")
+            logger.warning("mass 故事板跳过：tables 为空")
             return
 
         fig, axes = plt.subplots(2, 2, figsize=(16, 10))
@@ -1333,6 +1498,30 @@ def plot_pymoo_maas_storyboard(tables_dir: str, output_path: str) -> None:
             ax.text(0.5, 0.5, "No policy/physics events", transform=ax.transAxes,
                     ha="center", va="center", fontsize=10, color="gray")
             ax.set_title("Runtime Policy & Physics Events")
+        if len(attempts) > 0 and "operator_actions" in attempts.columns:
+            family_counts: Dict[str, int] = defaultdict(int)
+            for raw_actions in attempts["operator_actions"].tolist():
+                for action in _parse_operator_actions(raw_actions):
+                    family_counts[_operator_action_family(action)] += 1
+            if family_counts:
+                family_order = ["geometry", "thermal", "structural", "power", "mission", "other"]
+                family_desc = ", ".join(
+                    f"{name}:{int(family_counts.get(name, 0))}"
+                    for name in family_order
+                    if int(family_counts.get(name, 0)) > 0
+                )
+                if family_desc:
+                    ax.text(
+                        0.02,
+                        0.98,
+                        f"operator_families {family_desc}",
+                        transform=ax.transAxes,
+                        ha="left",
+                        va="top",
+                        fontsize=8,
+                        color="#1f2937",
+                        bbox={"boxstyle": "round", "facecolor": "#f8f9fa", "alpha": 0.75, "edgecolor": "#d0d7de"},
+                    )
 
         # 4) 事件漏斗总览
         ax = axes[1, 1]
@@ -1369,10 +1558,10 @@ def plot_pymoo_maas_storyboard(tables_dir: str, output_path: str) -> None:
         plt.tight_layout()
         plt.savefig(output_path, dpi=150, bbox_inches="tight")
         plt.close()
-        logger.info("pymoo_maas 故事板生成成功")
+        logger.info("mass 故事板生成成功")
 
     except Exception as e:
-        error_msg = f"生成 pymoo_maas 故事板失败: {str(e)}"
+        error_msg = f"生成 mass 故事板失败: {str(e)}"
         logger.error(error_msg, exc_info=True)
         raise VisualizationError(error_msg) from e
 
@@ -1934,15 +2123,15 @@ def plot_evolution_trace(csv_path: str, output_path: str):
         raise VisualizationError(error_msg) from e
 
 
-def plot_pymoo_maas_trace(csv_path: str, output_path: str):
+def plot_mass_trace(csv_path: str, output_path: str):
     """
-    绘制 pymoo_maas 尝试级轨迹图。
+    绘制 mass 尝试级轨迹图。
     """
     try:
-        logger.info(f"生成 pymoo_maas 轨迹图: {output_path}")
+        logger.info(f"生成 mass 轨迹图: {output_path}")
         df = pd.read_csv(csv_path)
         if len(df) == 0:
-            logger.warning("pymoo_maas 轨迹图跳过：没有数据可绘制")
+            logger.warning("mass 轨迹图跳过：没有数据可绘制")
             return
 
         if "attempt" not in df.columns:
@@ -2052,10 +2241,10 @@ def plot_pymoo_maas_trace(csv_path: str, output_path: str):
         plt.tight_layout()
         plt.savefig(output_path, dpi=150, bbox_inches="tight")
         plt.close()
-        logger.info("pymoo_maas 轨迹图生成成功")
+        logger.info("mass 轨迹图生成成功")
 
     except Exception as e:
-        error_msg = f"生成 pymoo_maas 轨迹图失败: {str(e)}"
+        error_msg = f"生成 mass 轨迹图失败: {str(e)}"
         logger.error(error_msg, exc_info=True)
         raise VisualizationError(error_msg) from e
 
@@ -2245,48 +2434,24 @@ def generate_visualizations(experiment_dir: str):
 
     # 1. 模式化轨迹图
     csv_path = os.path.join(experiment_dir, 'evolution_trace.csv')
-    maas_csv_path = os.path.join(experiment_dir, "pymoo_maas_trace.csv")
+    mass_csv_path = os.path.join(experiment_dir, "mass_trace.csv")
     tables_dir = os.path.join(experiment_dir, "tables")
-    timeline_report: Dict[str, Any] = {}
-    if optimization_mode == "pymoo_maas":
-        if os.path.exists(maas_csv_path):
-            try:
-                output_path = os.path.join(viz_dir, "pymoo_maas_trace.png")
-                plot_pymoo_maas_trace(maas_csv_path, output_path)
-                print(f"  [OK] pymoo_maas轨迹图: {output_path}")
-            except Exception as e:
-                print(f"  [FAIL] pymoo_maas轨迹图生成失败: {e}")
-        else:
-            print("  [WARN] 未找到 pymoo_maas_trace.csv，跳过轨迹图生成")
-
-        if os.path.isdir(tables_dir):
-            try:
-                output_path = os.path.join(viz_dir, "pymoo_maas_storyboard.png")
-                plot_pymoo_maas_storyboard(tables_dir, output_path)
-                print(f"  [OK] pymoo_maas故事板: {output_path}")
-            except Exception as e:
-                print(f"  [FAIL] pymoo_maas故事板生成失败: {e}")
-
-        try:
-            timeline_report = plot_layout_timeline(experiment_dir, viz_dir)
-            frame_count = int(timeline_report.get("frame_count", 0) or 0)
-            if frame_count > 0:
-                print(f"  [OK] 布局时间线帧: {timeline_report.get('frames_dir', '')}")
-                gif_path = str(timeline_report.get("gif_path", "") or "")
-                if gif_path:
-                    print(f"  [OK] 布局时间线GIF: {gif_path}")
-            else:
-                print("  [WARN] 未检测到 layout_events，跳过布局时间线生成")
-        except Exception as e:
-            print(f"  [FAIL] 布局时间线生成失败: {e}")
+    if is_mass_mode(optimization_mode):
+        timeline_report = render_mass_artifacts(
+            mass_csv_path=mass_csv_path,
+            tables_dir=tables_dir,
+            viz_dir=viz_dir,
+            experiment_dir=experiment_dir,
+            plot_mass_trace=plot_mass_trace,
+            plot_mass_storyboard=plot_mass_storyboard,
+            plot_layout_timeline=plot_layout_timeline,
+        )
     else:
-        if os.path.exists(csv_path):
-            try:
-                output_path = os.path.join(viz_dir, 'evolution_trace.png')
-                plot_evolution_trace(csv_path, output_path)
-                print(f"  [OK] 演化轨迹图: {output_path}")
-            except Exception as e:
-                print(f"  [FAIL] 演化轨迹图生成失败: {e}")
+        timeline_report = render_agent_loop_artifacts(
+            csv_path=csv_path,
+            viz_dir=viz_dir,
+            plot_evolution_trace=plot_evolution_trace,
+        )
 
     # 2. 布局与热图（需要设计状态文件）
     import glob
@@ -2308,7 +2473,7 @@ def generate_visualizations(experiment_dir: str):
     layout_evolution_report: Dict[str, Any] = {}
     snapshot_records: List[Dict[str, Any]] = []
 
-    if optimization_mode == "pymoo_maas":
+    if is_mass_mode(optimization_mode):
         snapshot_records = _load_layout_snapshot_records(experiment_dir)
         if snapshot_records:
             try:
@@ -2321,7 +2486,7 @@ def generate_visualizations(experiment_dir: str):
                     **dict(final_snapshot.get("design_state", {}) or {})
                 )
             except Exception as e:
-                logger.warning("pymoo_maas snapshot state parse failed: %s", e)
+                logger.warning("mass snapshot state parse failed: %s", e)
                 initial_state = None
                 final_state = None
 
@@ -2351,7 +2516,7 @@ def generate_visualizations(experiment_dir: str):
 
             # 布局演化图
             output_path = os.path.join(viz_dir, 'layout_evolution.png')
-            if optimization_mode == "pymoo_maas":
+            if is_mass_mode(optimization_mode):
                 layout_evolution_report = plot_layout_evolution_from_snapshots(
                     experiment_dir,
                     output_path,
@@ -2376,10 +2541,10 @@ def generate_visualizations(experiment_dir: str):
 
     # 3. 可视化摘要文本
     try:
-        if optimization_mode == "pymoo_maas":
-            summary_text = _build_pymoo_maas_visualization_summary(maas_csv_path)
+        if is_mass_mode(optimization_mode):
+            summary_text = _build_mass_visualization_summary(mass_csv_path)
             if os.path.isdir(tables_dir):
-                summary_text = summary_text + "\n" + _build_pymoo_maas_tables_summary(tables_dir)
+                summary_text = summary_text + "\n" + _build_mass_tables_summary(tables_dir)
             if timeline_report:
                 summary_text = summary_text + "\n=== Layout Timeline Artifacts ==="
                 summary_text = summary_text + (
@@ -2388,9 +2553,13 @@ def generate_visualizations(experiment_dir: str):
                 frames_dir = str(timeline_report.get("frames_dir", "") or "")
                 gif_path = str(timeline_report.get("gif_path", "") or "")
                 if frames_dir:
-                    summary_text = summary_text + f"\n- Frames dir: {frames_dir}"
+                    summary_text = summary_text + (
+                        f"\n- Frames dir: {serialize_run_path(experiment_dir, frames_dir)}"
+                    )
                 if gif_path:
-                    summary_text = summary_text + f"\n- GIF: {gif_path}"
+                    summary_text = summary_text + (
+                        f"\n- GIF: {serialize_run_path(experiment_dir, gif_path)}"
+                    )
             if layout_evolution_report:
                 summary_text = summary_text + "\n=== Layout Evolution Truth-Source ==="
                 summary_text = summary_text + (

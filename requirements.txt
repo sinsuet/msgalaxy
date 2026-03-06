@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 # MsGalaxy v2.0.3 - 卫星设计优化系统依赖包
 # ============================================================================
 #
@@ -89,7 +89,8 @@ flake8>=7.0.0            # 代码检查
 #    python -c "import dashscope; print('✓ DashScope OK')"
 #
 # 4. 运行 L1 测试验证完整环境:
-#    PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python run/run_L1_simple.py
+#    PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python run/mass/run_L1.py
 #
 # ============================================================================
+
 

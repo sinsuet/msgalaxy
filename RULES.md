@@ -1,66 +1,231 @@
-1. **Path Verification (路径验证)**: 
-   - Never write to a file without explicitly defining the absolute or relative path.
-   - If writing to a new file in a subdirectory, you MUST use bash commands (e.g., `mkdir -p <dir_name>`) to ensure the parent directories exist BEFORE calling the Write tool.
+﻿## MsGalaxy Rules
 
-2. **Cross-Platform Pathing (跨平台路径规范)**:
-   - This project runs on Windows but often uses a Git Bash/Conda environment. 
-   - Always use standard forward slashes (`/`) for relative paths (e.g., `scripts/create_model.py`).
-   - Avoid mixing `E:\` and `/e/` in the same tool call. Stick to relative paths from the workspace root whenever possible.
+Scope: execution, documentation governance, repository hygiene, and scientific rigor.
 
-3. **File Lock & Permission Checks (文件占用检查)**:
-   - If a file is likely being used by another process (like COMSOL or a running Python script), warn the user to close it before attempting to write.
+### A. Execution and Editing Safety
 
-4. **Fallback Mechanism (失败降级方案)**:
-   - If the built-in `Write` tool fails, DO NOT just give up.
-   - Fallback 1: Use a bash command to write the file, e.g., `cat > filepath << 'EOF' ... EOF`.
-   - Fallback 2: Output the exact code block in the chat and ask the user to manually copy-paste it into the specific file.
+1. **Path + Cross-Platform Rule (路径与跨平台规则)**:
+   - Always use explicit paths.
+   - Prefer workspace-relative paths with forward slashes (`/`).
+   - Do not mix `E:\\` and `/e/` style in the same command flow.
 
-5. **Python Environment Execution (Python环境执行强制要求)**:
-   - You MUST ALWAYS use the `msgalaxy` conda environment when executing ANY Python scripts, running tests, or using tools.
-   - Do NOT use the default system `python` or `pytest` commands directly, as your background shell might not have the environment activated.
-   - You MUST use `conda run -n msgalaxy <command>` for all executions to guarantee the correct environment.
-   - Correct Example: `conda run -n msgalaxy python run_tests.py`
-   - Correct Example: `conda run -n msgalaxy pytest tests/`
-   - Incorrect Example: `python run_tests.py`
+2. **Safe Write Rule (安全写入规则)**:
+   - Before writing, ensure parent directories exist.
+   - If a target file is likely locked by COMSOL/Python, stop and notify before writing.
 
-6. **Strict Editing Protocol (严格的文件编辑协议以防止 Edit Failed)**:
-   The native `Edit` tool strictly requires an EXACT character-for-character match for the search block. To prevent "Edit failed" errors, you MUST follow this sequence when modifying existing files:
-   - **Step 1: ALWAYS READ FIRST**. You must use the read tool to fetch the exact target lines and surrounding context BEFORE attempting any edit. Do not rely on your memory of the file.
-   - **Step 2: EXACT WHITESPACE**. Copy the exact whitespace and indentation from the read output into your search block.
-   - **Step 3: SUFFICIENT CONTEXT**. Include at least 3 unique lines of unchanged code BEFORE and AFTER the target modification in your search block to ensure a unique match.
-   - **Step 4: IMMEDIATE FALLBACK**. If the native Edit tool fails despite these precautions, do not waste time retrying it. Immediately fallback to a bash script (e.g., Python script to read/replace/write, or `cat << 'EOF'`) to make the change.
+3. **Strict Edit + Fallback Rule (严格编辑与降级规则)**:
+   - Read exact source first, then edit with exact whitespace/context.
+   - If edit tooling fails, immediately fallback to script-based rewrite or full block replacement.
 
-7. **Strict UTF-8 Encoding Protocol (强制 UTF-8 编码防乱码)**:
-   - This project runs on Windows and heavily uses Chinese characters and emojis in logs/outputs.
-   - When executing ANY Python command in Bash, you MUST prepend `PYTHONIOENCODING=utf-8 PYTHONUTF8=1` to force Python to output UTF-8.
-   - Correct Execution Example: `PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy python scripts/tests/test_phase3_multiphysics.py`
-   - When creating or modifying ANY entry-point Python script (especially in `scripts/` or `tests/`), you MUST ensure the following Windows stdout reconfiguration block is at the very beginning of the executable code (as specified in `CLAUDE.md`):
-     ```python
-     import sys, io
-     if sys.platform == 'win32':
-         try:
-             sys.stdout.reconfigure(encoding='utf-8')
-             sys.stderr.reconfigure(encoding='utf-8')
-         except AttributeError:
-             sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-             sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
-     ```
+4. **Python Runtime Rule (Python运行规则)**:
+   - All Python/test commands MUST use:
+     - `PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy ...`
+   - Do not use system `python`/`pytest` directly.
+   - For Windows-facing entry scripts (`run/`, `tests/`), ensure UTF-8 stdout/stderr compatibility handling is present when needed.
 
-8. **LLM Configuration & API Key Protocol (大模型配置与密钥规范)**:
-   - The default and ONLY permitted LLM for this project is `qwen3-max`. Do not attempt to revert to or use OpenAI models (like `gpt-4`) in the configuration unless explicitly requested.
-   - The API key and Base URL are ALREADY securely set in the `.env` file.
-   - NEVER ask the user for the API key, and NEVER hardcode API keys into scripts. Always use `dotenv` to load environment variables or read them from `config/system.yaml`.
+5. **Model + Secret Rule (模型与密钥规则)**:
+   - Default model is `qwen3-max`; do not switch without explicit request.
+   - Never request or hardcode API keys; load via env/config.
 
-9. **Strict Scientific Rigor & Anti-Shortcut Policy (科研严谨性与反捷径协议)**:
-   - This is a rigorous scientific research project aiming for academic publication.
-   - When encountering complex bugs, mathematical divergences (e.g., COMSOL non-linear convergence failure), or integration challenges, you MUST NOT suggest "simplified versions," "temporary bypasses," "mocking data," or "skipping" the core problem.
-   - You are required to dig deep, debug thoroughly, and provide mathematically and architecturally sound solutions. Degraded physical fidelity or "hacking" a fix just to make a test pass is STRICTLY PROHIBITED. Thoroughly solve the root cause.
+6. **Root-Cause Rule (根因优先规则)**:
+   - No "temporary bypass/mocked pass" for core scientific issues.
+   - Fix root cause with physically and architecturally defensible changes.
 
-10. **Documentation & File Organization Protocol (文档与文件组织规范)**:
-   - **Documentation Location**: All summary documents, reports, analysis files, and documentation MUST be placed in the `docs/` directory. Do NOT create documentation files (e.g., `SUMMARY.md`, `ANALYSIS.md`, `REPORT.md`) in the project root or other directories.
-   - **Temporary Test Files Cleanup**: After debugging or testing is complete and the issue is resolved, you MUST delete temporary test files, test outputs, and workspace artifacts to maintain code cleanliness. Examples include:
-     - Temporary test scripts in `scripts/tests/` that were created for one-time debugging
-     - Test output files in `workspace/` or similar temporary directories
-     - Obsolete test data files that are no longer referenced
-   - **Archive Old Files**: If a file is deprecated but has historical value, move it to `docs/archive/` rather than deleting it outright.
-   - **Keep Repository Clean**: Regularly review and clean up unused files, outdated test artifacts, and redundant code to maintain a professional, publication-ready codebase. This includes removing unnecessary files, cleaning up old test scripts, and removing obsolete code. This is especially important for large projects with many contributors. 
+### B. State Sync and Documentation Governance
+
+7. **Major-Change Sync Gate (重大变更文档同步闸门)**:
+   - For major architecture/function changes, update in the same change set:
+     - `HANDOFF.md`
+     - `PROJECT_SUMMARY.md`
+     - `README*` (project entry README)
+     - `AGENTS.md` (if agent behavior/boundary changed)
+   - "Major change" includes: optimizer/control-flow changes, constraint semantics changes, new benchmark protocol, new runtime mode, or COMSOL evaluation contract changes.
+
+8. **Sync Order + Consistency Rule (同步顺序与一致性规则)**:
+   - Update order MUST be:
+     1. `HANDOFF.md`
+     2. `PROJECT_SUMMARY.md`
+     3. `README*`
+     4. `AGENTS.md` (when guidance changes)
+   - Do not leave cross-file contradictions (especially implemented vs planned status).
+
+9. **Stale-State Cleanup Rule (过时状态清理规则)**:
+   - "Current status" sections must only contain active truths.
+   - Superseded statements must be moved to history/archive sections with date and reason.
+   - Do not keep outdated roadmap/task-state text in active status sections.
+   - Deprecated but valuable docs should be moved to `docs/archive/` instead of silent deletion.
+
+10. **Important Doc Naming Rule (重要文档命名规则)**:
+   - New important governance/report docs MUST be placed under `docs/`.
+   - Naming format (new files): `docs/R<rule_id>_<topic>_<YYYYMMDD>.md`
+   - Example: `docs/R07_v3_hard_constraint_rollout_20260304.md`
+   - Existing historical files are not forced to rename.
+
+11. **Architecture Decision Record Rule (架构决策记录规则)**:
+   - Major architecture decisions MUST create/update ADR files under `docs/adr/`.
+   - ADR naming: `docs/adr/NNNN-<kebab-topic>.md` (zero-padded sequence).
+   - ADR must include: `status` (`proposed/accepted/superseded`), context, decision, consequences.
+
+12. **Version + Change Log Rule (版本与变更日志规则)**:
+   - `HANDOFF.md` version and timestamp must be updated on major changes.
+   - Release-level changes must include concise Added/Changed/Fixed summary in project docs.
+
+### C. Repository Hygiene and Artifact Lifecycle
+
+13. **Temporary File Cleanup Rule (临时文件清理规则)**:
+   - Temporary scripts, ad-hoc test files, and one-off intermediate outputs MUST be removed after validation.
+   - Do not leave debug-only files in source directories after task completion.
+
+14. **Generated Artifact Placement Rule (生成产物归位规则)**:
+   - Human-authored source/docs stay in source/docs paths.
+   - Machine-generated outputs must go to designated run/output locations (e.g., `experiments/`, benchmark output dirs), not mixed into source code folders.
+
+15. **`.gitignore` Hygiene Rule (`.gitignore`整洁规则)**:
+   - When new temporary/output classes appear, update `.gitignore` promptly.
+   - Large/binary/transient files must not be committed unless explicitly required as release artifacts.
+
+16. **Immutable Experiment Artifact Rule (实验产物不可篡改规则)**:
+   - Do not manually edit generated run artifacts (`summary.json`, event logs, tables) to "fix" conclusions.
+   - Corrections require a new run artifact with a clear delta note.
+
+### D. Scientific Rigor and Anti-Hallucination
+
+17. **Evidence + Provenance Rule (证据与溯源规则)**:
+   - Any claim must map to concrete artifacts with explicit `profile/algorithm/seed/backend`.
+   - If not yet validated, label as hypothesis; do not present as confirmed.
+
+18. **Reproducibility Bundle Rule (可复现包规则)**:
+   - Conclusions must include executable command, env prefix, config/BOM snapshot, seed list, and key runtime knobs.
+   - If COMSOL/license/hardware constraints exist, state them explicitly.
+
+19. **Statistical Gate Rule (统计闸门规则)**:
+   - No publication-level conclusion from a single-seed run.
+   - Comparative claims require `seed >= 3` plus distribution stats.
+   - Major claims require at least one independent rerun before final acceptance.
+
+20. **Fair Comparison Rule (公平对照规则)**:
+   - Improvement claims require baseline + ablation under matched budgets/constraints/fidelity.
+   - Baseline must stay "algorithm-only" when used as control.
+
+21. **MaaS Contract + Constraint Governance Rule (MaaS契约与约束治理规则)**:
+   - In `mass`, do not directly output final coordinates; solutions must come from executable pymoo search.
+   - Enforce `g(x) <= 0` semantics with explicit `xl/xu/F/G`.
+   - Benchmark/release runs are invalid if mandatory hard constraints are not active (`collision/clearance/boundary/thermal/cg_limit`).
+   - Unknown/unimplemented hard-constraint metric keys must fail-fast.
+
+22. **LLM/OP/COMSOL Validation Rule (LLM/算子/COMSOL验收规则)**:
+   - LLM intent/operator outputs are proposals; they must pass executable chain checks before use.
+   - OP claims must include action-level and action-family attribution; identity-heavy branches must be explicitly disclosed.
+   - "Real COMSOL validated" claims require audit status disclosure, valid `final_mph_path`, and efficiency metrics (`first_feasible_eval`, `comsol_calls_to_first_feasible`).
+   - Audit-off runs are diagnostic-only, not release-grade evidence.
+
+23. **Negative Result + Anomaly Governance Rule (负结果与异常治理规则)**:
+   - `no_feasible`, regressions, and failed attempts are first-class evidence and must be retained in analysis outputs.
+   - Outlier/anomaly filtering rules must be explicit, versioned, and reproducible.
+   - Reports must include dominant violation/failure-reason breakdown for infeasible outcomes.
+
+### E. Architecture Clarity and Test Folder Governance
+
+24. **Canonical Mode Naming Freeze Rule (模式命名冻结规则)**:
+   - Active runtime mode and stack names are strictly `agent_loop` and `mass`.
+   - Legacy names (`pymoo_maas`, `v2`, `maas_v2`, etc.) must not remain in active configs, run entrypoints, or runtime logs.
+   - Historical terms are allowed only in archived docs with explicit "historical" labeling.
+
+25. **No Compatibility Shadow Rule (禁兼容影子规则)**:
+   - After an approved mode/stack cutover, do not keep dual-path compatibility wrappers for old names.
+   - Remove superseded run scripts/templates/configs in the same change set.
+   - Prefer fail-fast contract errors over silent fallback or implicit aliasing.
+
+26. **Stack-Mode-Config Binding Rule (栈-模式-配置强绑定规则)**:
+   - L1-L4 run paths must keep strict stack binding: `agent_loop -> agent_loop`, `mass -> mass`.
+   - BOM and base-config must stay inside the same stack namespace (`config/bom/<stack>`, `config/system/<stack>`).
+   - Cross-stack wiring is invalid and must fail immediately.
+
+27. **Test Folder Unification Rule (测试目录统一规则)**:
+   - All maintained test code and manual test scripts must live under `tests/`.
+   - Root-level `scripts/` and `workspace/` must not be used as canonical test directories.
+   - Manual scripts under `tests/` must avoid `test_*.py` naming to prevent accidental pytest collection.
+
+28. **Runtime Artifact Placement Rule (运行产物归位规则)**:
+   - Default runtime-generated files must write to designated artifact paths (`experiments/` or `tests/manual/artifacts/` for manual scripts).
+   - Do not hardcode root `workspace/` as a default output directory in active runtime code.
+
+29. **Rename Completion Gate Rule (命名迁移完成闸门规则)**:
+   - Namespace refactors must include repository-wide token checks (`rg`) to ensure old tokens are cleared from active paths.
+   - Required check scope includes: `run/`, `workflow/`, `optimization/`, `config/`, `tests/`, and top-level docs.
+   - Any leftover old token in active code/config blocks completion.
+
+30. **Benchmark Artifact Naming Rule (Benchmark产物命名规则)**:
+   - Benchmark artifact directories under `benchmarks/` MUST use short fixed-slot names:
+     - `bm_<stack>_<scope>_<algo>_<intent>_<eval>[_sNN][_tag]`
+   - Token set is fixed:
+     - `stack`: `m` (`mass`) or `a` (`agent_loop`)
+     - `scope`: `l1`, `l2`, `l3`, `l4`, `l1-4`
+     - `algo`: `n2`, `n3`, `md`, `mix`
+     - `intent`: `det`, `llm`
+     - `eval`: `px`, `real`
+     - `sNN`: optional single-seed marker such as `s42`
+     - `tag`: optional short note, max 8 chars
+   - Do not use verbose filler tokens such as `benchmark`, `baseline`, `single`, `override`, `verify`, `postopt`, `forcecov`, `fixmap2` in directory names.
+   - Directory basename SHOULD stay within 32 characters after the `bm_` prefix chain; detailed rationale goes into `summary.json` / manifest metadata, not the folder name.
+
+31. **Run Entry + Runtime Artifact Naming Rule (Run入口与运行产物命名规则)**:
+   - User-facing run entrypoints are standardized as:
+     - `run/run_scenario.py`
+     - `run/<stack>/run_L1.py` to `run/<stack>/run_L4.py`
+   - Future stack-local helper scripts must use short type prefixes and must not repeat stack names in the basename:
+     - `bm_<scope>.py` for benchmark runners
+     - `tool_<topic>.py` for utilities
+     - `audit_<topic>.py` for validation/audit helpers
+   - Do not encode algorithm, backend, seed, date, or temporary fix labels into script filenames; those belong to CLI flags or runtime metadata.
+   - Runtime single-run directories under `experiments/` SHOULD use:
+     - `experiments/<YYYYMMDD>/<HHMM>_<stack>_<level>_<algo>_<intent>_<eval>[_tag]`
+   - Runtime artifact basenames SHOULD stay concise and sortable; uncontrolled suffix chains are forbidden.
+
+### F. New Mode Expansion Governance
+
+32. **Mode Lifecycle State Rule (模式生命周期状态规则)**:
+   - Every new mode (e.g., `vop_mass`) must declare lifecycle state: `proposed | experimental | stable | deprecated`.
+   - Only `stable` modes can be exposed in default L1-L4 stack registry.
+   - `experimental` modes must be opt-in and clearly marked in logs/reports.
+
+33. **Mode Namespace Isolation Rule (模式命名空间隔离规则)**:
+   - New mode code must be placed in isolated namespaces:
+     - `workflow/modes/<mode>/`
+     - `optimization/modes/<mode>/`
+     - `run/<mode>/`
+     - `config/system/<mode>/` and `config/bom/<mode>/` (when applicable)
+   - Do not implement new-mode business logic directly in shared monolith files (e.g., avoid re-bloating `workflow/orchestrator.py`).
+
+34. **Mode Entry Contract Rule (模式入口契约规则)**:
+   - New mode must register through a single stack/mode contract path (`run/stack_contract.py` + scenario registry).
+   - No ad-hoc entry scripts outside the contracted run routing.
+   - New stack must fail-fast on mismatched mode/BOM/base-config wiring.
+
+35. **Experimental Switch Guard Rule (实验开关防护规则)**:
+   - Experimental mode activation must require explicit flag/config opt-in.
+   - Default runtime behavior must remain unchanged when experimental mode is disabled.
+   - Add explicit runtime log banner for experimental mode activation.
+
+36. **Mode DoD Gate Rule (模式完成定义闸门规则)**:
+   - A new mode cannot be promoted beyond `experimental` unless all are satisfied:
+     - deterministic smoke run command exists and passes,
+     - mode-specific tests exist under `tests/` and pass,
+     - observability artifacts (`summary/events/tables`) are emitted with mode tag,
+     - docs are synchronized (`HANDOFF -> PROJECT_SUMMARY -> README -> AGENTS if needed`).
+
+37. **No Shared-File Ambiguity Rule (共享文件去歧义规则)**:
+   - Shared modules may expose contracts/facades only; mode-specific policy logic must live in mode folders.
+   - If a shared file grows due to mode-specific branches, split it before merge.
+   - PRs introducing `if mode == ...` chains in shared modules must include refactor rationale and extraction plan.
+
+38. **Mode Sunset Cleanup Rule (模式退役清理规则)**:
+   - When replacing or retiring a mode, remove obsolete run/config/templates/tests in the same change set.
+   - Keep only archived documentation for historical reference; no active runtime alias should point to retired mode names.
+
+### G. COMSOL Implementation and Debug Governance
+
+39. **COMSOL Official-Doc Search Rule (COMSOL官方文档检索规则)**:
+   - Any implementation change involving COMSOL operators, physics features, studies, solvers, material/BC setup, or multiphysics coupling MUST include online search against official COMSOL documentation before coding.
+   - Any COMSOL runtime error investigation MUST include online troubleshooting with official documentation (and official support/knowledge-base pages when relevant) before applying fixes.
+   - Change notes and validation summaries MUST record the consulted references (URLs), and clearly distinguish documented facts from local inferences.

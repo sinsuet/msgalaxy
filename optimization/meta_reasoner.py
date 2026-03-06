@@ -66,6 +66,28 @@ class MetaReasoner:
 
         # Few-shot示例
         self.few_shot_examples = self._load_few_shot_examples()
+        self._modeling_intent_autofill_used = False
+        self._reset_modeling_intent_diagnostics()
+
+    def _reset_modeling_intent_diagnostics(self) -> None:
+        """重置最近一次 ModelingIntent 调用诊断。"""
+        self._modeling_intent_diagnostics: Dict[str, Any] = {
+            "called": False,
+            "api_call_attempted": False,
+            "api_call_succeeded": False,
+            "response_status_code": None,
+            "used_fallback": False,
+            "fallback_reason": "",
+            "error": "",
+            "source": "not_called",
+            "autofill_used": False,
+            "model": str(self.model),
+            "timestamp": "",
+        }
+
+    def get_modeling_intent_diagnostics(self) -> Dict[str, Any]:
+        """获取最近一次 ModelingIntent 调用诊断快照。"""
+        return dict(self._modeling_intent_diagnostics or {})
 
     def _load_system_prompt(self) -> str:
         """加载系统提示词"""
@@ -484,6 +506,11 @@ JSON schema guideline:
         注意：该方法只输出结构化建模 JSON，不生成求解代码。
         """
         runtime_constraints = runtime_constraints or {}
+        self._modeling_intent_autofill_used = False
+        self._reset_modeling_intent_diagnostics()
+        self._modeling_intent_diagnostics["called"] = True
+        self._modeling_intent_diagnostics["timestamp"] = datetime.now().isoformat()
+        self._modeling_intent_diagnostics["source"] = "pre_call"
 
         try:
             user_prompt = (
@@ -508,6 +535,7 @@ JSON schema guideline:
                     response=None,
                 )
 
+            self._modeling_intent_diagnostics["api_call_attempted"] = True
             response = dashscope.Generation.call(
                 model=self.model,
                 messages=messages,
@@ -515,10 +543,21 @@ JSON schema guideline:
                 temperature=min(self.temperature, 0.5),
                 response_format={"type": "json_object"},
             )
+            status_code = getattr(response, "status_code", None)
+            if status_code is not None:
+                try:
+                    self._modeling_intent_diagnostics["response_status_code"] = int(status_code)
+                except Exception:
+                    self._modeling_intent_diagnostics["response_status_code"] = status_code
 
             if response.status_code != HTTPStatus.OK:
+                self._modeling_intent_diagnostics["source"] = "llm_api_error"
+                self._modeling_intent_diagnostics["error"] = (
+                    f"{getattr(response, 'code', '')} - {getattr(response, 'message', '')}"
+                )
                 raise LLMError(f"DashScope API 调用失败: {response.code} - {response.message}")
 
+            self._modeling_intent_diagnostics["api_call_succeeded"] = True
             payload = json.loads(response.output.choices[0].message.content)
             payload = self._sanitize_modeling_intent_payload(
                 payload=payload,
@@ -526,6 +565,17 @@ JSON schema guideline:
                 runtime_constraints=runtime_constraints,
             )
             intent = ModelingIntent(**payload)
+            self._modeling_intent_diagnostics["source"] = (
+                "llm_api_autofill"
+                if bool(self._modeling_intent_autofill_used)
+                else "llm_api"
+            )
+            self._modeling_intent_diagnostics["autofill_used"] = bool(
+                self._modeling_intent_autofill_used
+            )
+            self._modeling_intent_diagnostics["used_fallback"] = False
+            self._modeling_intent_diagnostics["fallback_reason"] = ""
+            self._modeling_intent_diagnostics["error"] = ""
 
             if self.logger:
                 self.logger.log_llm_interaction(
@@ -538,6 +588,13 @@ JSON schema guideline:
             return intent
 
         except Exception as exc:
+            self._modeling_intent_diagnostics["used_fallback"] = True
+            self._modeling_intent_diagnostics["fallback_reason"] = str(exc)
+            self._modeling_intent_diagnostics["error"] = str(exc)
+            self._modeling_intent_diagnostics["source"] = "fallback_modeling_intent"
+            self._modeling_intent_diagnostics["autofill_used"] = bool(
+                self._modeling_intent_autofill_used
+            )
             if self.logger:
                 self.logger.logger.warning(f"Modeling intent generation failed, fallback enabled: {exc}")
 
@@ -624,6 +681,7 @@ JSON schema guideline:
 
         # 最低保障：缺失关键字段时补齐基础模板
         if not clean["variables"] or not clean["objectives"] or not clean["hard_constraints"]:
+            self._modeling_intent_autofill_used = True
             fallback = self._build_fallback_modeling_intent_payload(
                 context=context,
                 runtime_constraints=runtime_constraints,
@@ -688,6 +746,106 @@ JSON schema guideline:
         max_temp = float(runtime_constraints.get("max_temp_c", 60.0))
         min_clearance = float(runtime_constraints.get("min_clearance_mm", 3.0))
         max_cg = float(runtime_constraints.get("max_cg_offset_mm", 20.0))
+        min_safety_factor = float(runtime_constraints.get("min_safety_factor", 2.0))
+        min_modal_freq_hz = float(runtime_constraints.get("min_modal_freq_hz", 55.0))
+        max_voltage_drop_v = float(runtime_constraints.get("max_voltage_drop_v", 0.5))
+        min_power_margin_pct = float(runtime_constraints.get("min_power_margin_pct", 10.0))
+        max_power_w = float(runtime_constraints.get("max_power_w", 500.0))
+        enforce_power_budget = bool(runtime_constraints.get("enforce_power_budget", False))
+
+        hard_constraints = [
+            {
+                "name": "g_clearance",
+                "metric_key": "min_clearance",
+                "category": "geometry",
+                "relation": ">=",
+                "target_value": min_clearance,
+                "unit": "mm",
+                "expression": f"min_clearance >= {min_clearance}",
+                "latex": f"g_1={min_clearance}-min\\_clearance\\le 0",
+                "physical_meaning": "minimum mechanical clearance",
+            },
+            {
+                "name": "g_temp",
+                "metric_key": "max_temp",
+                "category": "thermal",
+                "relation": "<=",
+                "target_value": max_temp,
+                "unit": "C",
+                "expression": f"max_temp <= {max_temp}",
+                "latex": f"g_2=max\\_temp-{max_temp}\\le 0",
+                "physical_meaning": "thermal safety limit",
+            },
+            {
+                "name": "g_cg",
+                "metric_key": "cg_offset",
+                "category": "geometry",
+                "relation": "<=",
+                "target_value": max_cg,
+                "unit": "mm",
+                "expression": f"cg_offset <= {max_cg}",
+                "latex": f"g_3=cg\\_offset-{max_cg}\\le 0",
+                "physical_meaning": "attitude controllability bound",
+            },
+            {
+                "name": "g_struct_sf",
+                "metric_key": "safety_factor",
+                "category": "structural",
+                "relation": ">=",
+                "target_value": min_safety_factor,
+                "unit": "dimensionless",
+                "expression": f"safety_factor >= {min_safety_factor}",
+                "latex": f"g_4={min_safety_factor}-safety\\_factor\\le 0",
+                "physical_meaning": "structural integrity margin",
+            },
+            {
+                "name": "g_struct_modal",
+                "metric_key": "first_modal_freq",
+                "category": "structural",
+                "relation": ">=",
+                "target_value": min_modal_freq_hz,
+                "unit": "Hz",
+                "expression": f"first_modal_freq >= {min_modal_freq_hz}",
+                "latex": f"g_5={min_modal_freq_hz}-f_1\\le 0",
+                "physical_meaning": "launch vibration survivability",
+            },
+            {
+                "name": "g_power_vdrop",
+                "metric_key": "voltage_drop",
+                "category": "power",
+                "relation": "<=",
+                "target_value": max_voltage_drop_v,
+                "unit": "V",
+                "expression": f"voltage_drop <= {max_voltage_drop_v}",
+                "latex": f"g_6=voltage\\_drop-{max_voltage_drop_v}\\le 0",
+                "physical_meaning": "bus quality constraint",
+            },
+            {
+                "name": "g_power_margin",
+                "metric_key": "power_margin",
+                "category": "power",
+                "relation": ">=",
+                "target_value": min_power_margin_pct,
+                "unit": "%",
+                "expression": f"power_margin >= {min_power_margin_pct}",
+                "latex": f"g_7={min_power_margin_pct}-power\\_margin\\le 0",
+                "physical_meaning": "power reserve constraint",
+            },
+        ]
+        if enforce_power_budget:
+            hard_constraints.append(
+                {
+                    "name": "g_power_peak",
+                    "metric_key": "peak_power",
+                    "category": "power",
+                    "relation": "<=",
+                    "target_value": max_power_w,
+                    "unit": "W",
+                    "expression": f"peak_power <= {max_power_w}",
+                    "latex": f"g_8=peak\\_power-{max_power_w}\\le 0",
+                    "physical_meaning": "peak power budget cap",
+                }
+            )
 
         return {
             "intent_id": f"INTENT_FALLBACK_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
@@ -738,41 +896,7 @@ JSON schema guideline:
                     "description": "minimize peak temperature",
                 },
             ],
-            "hard_constraints": [
-                {
-                    "name": "g_clearance",
-                    "metric_key": "min_clearance",
-                    "category": "geometry",
-                    "relation": ">=",
-                    "target_value": min_clearance,
-                    "unit": "mm",
-                    "expression": f"min_clearance >= {min_clearance}",
-                    "latex": f"g_1={min_clearance}-min\\_clearance\\le 0",
-                    "physical_meaning": "minimum mechanical clearance",
-                },
-                {
-                    "name": "g_temp",
-                    "metric_key": "max_temp",
-                    "category": "thermal",
-                    "relation": "<=",
-                    "target_value": max_temp,
-                    "unit": "C",
-                    "expression": f"max_temp <= {max_temp}",
-                    "latex": f"g_2=max\\_temp-{max_temp}\\le 0",
-                    "physical_meaning": "thermal safety limit",
-                },
-                {
-                    "name": "g_cg",
-                    "metric_key": "cg_offset",
-                    "category": "geometry",
-                    "relation": "<=",
-                    "target_value": max_cg,
-                    "unit": "mm",
-                    "expression": f"cg_offset <= {max_cg}",
-                    "latex": f"g_3=cg\\_offset-{max_cg}\\le 0",
-                    "physical_meaning": "attitude controllability bound",
-                },
-            ],
+            "hard_constraints": hard_constraints,
             "soft_constraints": [
                 {
                     "name": "soft_moi_balance",

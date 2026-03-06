@@ -463,7 +463,7 @@ if __name__ == "__main__":
     )
 
     # 导出 STEP
-    output_path = "workspace/test_dv2_geometry.step"
+    output_path = "tests/manual/artifacts/test_dv2_geometry.step"
     try:
         export_design_occ(design_state, output_path)
         print("\n" + "=" * 60)

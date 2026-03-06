@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+﻿#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
 API客户端
@@ -36,7 +36,7 @@ class APIClient:
         bom_file: str,
         max_iterations: int = 20,
         convergence_threshold: float = 0.01,
-        config_path: str = "config/system.yaml"
+        config_path: str = "config/system/mass/base.yaml"
     ) -> Dict[str, Any]:
         """
         创建优化任务
@@ -195,7 +195,7 @@ class APIClient:
         bom_file: str,
         max_iterations: int = 20,
         convergence_threshold: float = 0.01,
-        config_path: str = "config/system.yaml",
+        config_path: str = "config/system/mass/base.yaml",
         wait: bool = True,
         poll_interval: float = 2.0,
         timeout: Optional[float] = None

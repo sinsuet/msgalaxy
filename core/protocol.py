@@ -13,22 +13,25 @@ import numpy as np
 # ============ 枚举定义 ============
 
 class OperatorType(str, Enum):
-    """拓扑算子类型 (DV2.0: 10类算子)"""
-    # === 基础几何算子 ===
-    MOVE = "MOVE"                    # 移动组件
-    SWAP = "SWAP"                    # 交换组件
-    ROTATE = "ROTATE"                # 旋转组件
-    DEFORM = "DEFORM"                # FFD变形
-    ALIGN = "ALIGN"                  # 对齐组件（沿指定轴对齐多个组件）
+    """MASS 当前可执行算子类型 (OP-MaaS DSL v3, 10 类)"""
 
-    # === 包络与结构算子 ===
-    CHANGE_ENVELOPE = "CHANGE_ENVELOPE"  # 包络切换（Box→Cylinder等）
-    ADD_BRACKET = "ADD_BRACKET"          # 添加结构支架（垫高组件、改变质心）
+    # Geometry family
+    GROUP_MOVE = "group_move"
+    CG_RECENTER = "cg_recenter"
+    HOT_SPREAD = "hot_spread"
+    SWAP = "swap"
 
-    # === 热学算子 ===
-    ADD_HEATSINK = "ADD_HEATSINK"        # 添加散热窗/板（高导热附加几何体）
-    MODIFY_COATING = "MODIFY_COATING"    # 修改涂层（表面发射率/吸收率）
-    SET_THERMAL_CONTACT = "SET_THERMAL_CONTACT"  # 设置接触热阻（热隔离/热桥）
+    # Thermal family
+    ADD_HEATSTRAP = "add_heatstrap"
+    SET_THERMAL_CONTACT = "set_thermal_contact"
+
+    # Structural family
+    ADD_BRACKET = "add_bracket"
+    STIFFENER_INSERT = "stiffener_insert"
+
+    # Power / mission family
+    BUS_PROXIMITY_OPT = "bus_proximity_opt"
+    FOV_KEEPOUT_PUSH = "fov_keepout_push"
 
 
 class ViolationType(str, Enum):
@@ -91,12 +94,6 @@ class ComponentGeometry(BaseModel):
     # === DV2.0: 附加结构 ===
     heatsink: Optional[Dict[str, Any]] = None   # 散热器参数 {"face": "+Y", "thickness": 2.0, "conductivity": 400}
     bracket: Optional[Dict[str, Any]] = None    # 支架参数 {"height": 20.0, "material": "aluminum"}
-
-    class Config:
-        json_encoders = {
-            Vector3D: lambda v: {"x": v.x, "y": v.y, "z": v.z}
-        }
-
 
 class Envelope(BaseModel):
     """舱体包络信息"""
@@ -169,20 +166,7 @@ class EvaluationResult(BaseModel):
 # ============ 优化协议 ============
 
 class SearchAction(BaseModel):
-    """优化动作 (DV2.0: 支持10类算子)
-
-    参数说明 (parameters 字段):
-    - MOVE: {"axis": "X/Y/Z", "delta": float} 或 {"target_position": [x,y,z]}
-    - ROTATE: {"axis": "X/Y/Z", "angle": float}
-    - SWAP: {"target_component": str}
-    - DEFORM: {"control_points": [...], "displacements": [...]}
-    - ALIGN: {"axis": "X/Y/Z", "reference_component": str, "components": [str]}
-    - CHANGE_ENVELOPE: {"shape": "box/cylinder", "dimensions": {...}}
-    - ADD_BRACKET: {"height": float, "material": str, "attach_face": "-Z"}
-    - ADD_HEATSINK: {"face": "+Y/-Y/+X/-X/+Z/-Z", "thickness": float, "conductivity": float}
-    - MODIFY_COATING: {"emissivity": float, "absorptivity": float, "coating_type": str}
-    - SET_THERMAL_CONTACT: {"contact_component": str, "conductance": float, "gap": float}
-    """
+    """优化动作（与 MASS DSL v3 算子集合保持一致）"""
     op_id: OperatorType
     target_component: str
     parameters: Dict[str, Any]      # 灵活的参数字典（见上方说明）
@@ -289,7 +273,7 @@ class SimulationConfig(BaseModel):
 
 class OptimizationConfig(BaseModel):
     """优化配置"""
-    mode: str = "agent_loop"  # agent_loop | pymoo_maas
+    mode: str = "agent_loop"  # agent_loop | mass
     max_iterations: int = 20
     convergence_threshold: float = 0.01
     pymoo_pop_size: int = 96
@@ -297,25 +281,38 @@ class OptimizationConfig(BaseModel):
     pymoo_seed: int = 42
     pymoo_verbose: bool = False
     pymoo_return_least_infeasible: bool = True
-    pymoo_maas_max_attempts: int = 3
-    pymoo_maas_relax_ratio: float = 0.08
-    pymoo_maas_auto_relax: bool = True
-    pymoo_maas_retry_on_stall: bool = True
-    pymoo_maas_thermal_evaluator_mode: str = "proxy"  # proxy | online_comsol
-    pymoo_maas_online_comsol_eval_budget: int = 24
-    pymoo_maas_enable_physics_audit: bool = True
-    pymoo_maas_audit_top_k: int = 3
-    pymoo_maas_enforce_audit_feasible: bool = True
-    pymoo_maas_audit_allow_infeasible_fallback: bool = False
-    pymoo_maas_enable_mcts: bool = True
-    pymoo_maas_mcts_budget: int = 4
-    pymoo_maas_mcts_max_depth: int = 2
-    pymoo_maas_mcts_c_uct: float = 1.2
-    pymoo_maas_mcts_stagnation_rounds: int = 2
-    pymoo_maas_mcts_min_score_improvement: float = 1.0
-    pymoo_maas_mcts_min_cv_improvement: float = 0.1
-    pymoo_maas_mcts_prune_margin: float = 100.0
-    allowed_operators: List[str] = Field(default_factory=lambda: ["MOVE"])
+    mass_max_attempts: int = 3
+    mass_relax_ratio: float = 0.08
+    mass_auto_relax: bool = True
+    mass_retry_on_stall: bool = True
+    mass_thermal_evaluator_mode: str = "proxy"  # proxy | online_comsol
+    mass_online_comsol_eval_budget: int = 24
+    mass_enable_physics_audit: bool = True
+    mass_audit_top_k: int = 3
+    mass_enforce_audit_feasible: bool = True
+    mass_audit_allow_infeasible_fallback: bool = False
+    mass_enable_mcts: bool = True
+    mass_mcts_budget: int = 4
+    mass_mcts_max_depth: int = 2
+    mass_mcts_c_uct: float = 1.2
+    mass_mcts_stagnation_rounds: int = 2
+    mass_mcts_min_score_improvement: float = 1.0
+    mass_mcts_min_cv_improvement: float = 0.1
+    mass_mcts_prune_margin: float = 100.0
+    allowed_operators: List[str] = Field(
+        default_factory=lambda: [
+            "group_move",
+            "cg_recenter",
+            "hot_spread",
+            "swap",
+            "add_heatstrap",
+            "set_thermal_contact",
+            "add_bracket",
+            "stiffener_insert",
+            "bus_proximity_opt",
+            "fov_keepout_push",
+        ]
+    )
     solver_method: str = "bounded"
     solver_tolerance: float = 1e-6
 

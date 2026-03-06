@@ -1,4 +1,4 @@
-"""
+﻿"""
 Command Line Interface
 
 提供命令行接口用于：
@@ -94,11 +94,12 @@ def cmd_show_experiment(args):
 
 def cmd_add_knowledge(args):
     """添加知识到知识库"""
-    from optimization.knowledge.rag_system import RAGSystem
+    from optimization.knowledge.mass import MassRAGSystem
 
-    rag = RAGSystem(
-        api_key=args.api_key,
-        knowledge_base_path=args.kb_path
+    rag = MassRAGSystem(
+        api_key=args.api_key or "",
+        knowledge_base_path=args.kb_path,
+        enable_semantic=False,
     )
 
     item = rag.add_knowledge(
@@ -128,7 +129,7 @@ Examples:
   python -m api.cli list
 
   # Show experiment details
-  python -m api.cli show run_20260215_143022
+  python -m api.cli show run_0305_184221_mass
 
   # Add knowledge to knowledge base
   python -m api.cli add-knowledge --title "My Rule" --content "..." --category heuristic
@@ -141,8 +142,8 @@ Examples:
     parser_opt = subparsers.add_parser("optimize", help="Run optimization")
     parser_opt.add_argument(
         "--config",
-        default="config/system.yaml",
-        help="Config file path (default: config/system.yaml)"
+        default="config/system/mass/base.yaml",
+        help="Config file path (default: config/system/mass/base.yaml)"
     )
     parser_opt.add_argument(
         "--bom",
@@ -181,7 +182,7 @@ Examples:
     parser_show = subparsers.add_parser("show", help="Show experiment details")
     parser_show.add_argument(
         "exp_name",
-        help="Experiment name (e.g., run_20260215_143022)"
+        help="Experiment name (e.g., run_0305_184221_mass)"
     )
     parser_show.add_argument(
         "--exp-dir",
@@ -200,7 +201,11 @@ Examples:
         required=True,
         help="Knowledge category"
     )
-    parser_kb.add_argument("--api-key", required=True, help="OpenAI API key")
+    parser_kb.add_argument(
+        "--api-key",
+        default="",
+        help="Optional API key (not required by mass RAG backend)",
+    )
     parser_kb.add_argument(
         "--kb-path",
         default="data/knowledge_base",

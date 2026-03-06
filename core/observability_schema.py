@@ -41,6 +41,16 @@ class RunManifestEvent(BaseModel):
 
     run_id: str = ""
     run_dir: str = ""
+    run_mode: str = ""
+    run_mode_bucket: str = ""
+    run_label: str = ""
+    run_algorithm: str = ""
+    run_naming_strategy: str = ""
+    run_date: str = ""
+    run_time: str = ""
+    run_timestamp: str = ""
+    run_started_at: str = ""
+    run_sequence: Optional[int] = None
     created_at: str = Field(default_factory=_now_iso)
     updated_at: str = Field(default_factory=_now_iso)
     optimization_mode: str = ""
@@ -84,6 +94,9 @@ class AttemptEvent(_BaseEvent):
     best_candidate_metrics: Dict[str, float] = Field(default_factory=dict)
     operator_program_id: str = ""
     operator_actions: List[str] = Field(default_factory=list)
+    operator_attribution_inferred: bool = False
+    operator_mutation_detected_without_actions: bool = False
+    operator_inference: Dict[str, Any] = Field(default_factory=dict)
     operator_bias_strategy: str = ""
     mcts_enabled: bool = False
     has_candidate_state: bool = False

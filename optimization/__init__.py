@@ -1,4 +1,4 @@
-"""
+﻿"""
 优化引擎模块
 
 实现基于LLM的三层神经符号协同优化架构：
@@ -44,15 +44,25 @@ from .protocol import (
     ToolCall,
     ToolResult,
 )
-from .modeling_validator import validate_modeling_intent
-from .maas_compiler import compile_intent_to_problem_spec, formulate_modeling_intent
-from .maas_reflection import diagnose_solver_outcome, suggest_constraint_relaxation
-from .maas_audit import select_top_pareto_indices
-from .maas_mcts import MaaSMCTSPlanner, MCTSSearchResult, MCTSNode, MCTSVariant, MCTSEvaluation
-from .trace_features import extract_maas_trace_features
-from .meta_policy import propose_meta_policy_actions
-from .operator_program import OperatorAction, OperatorProgram, validate_operator_program
-from .operator_actions import apply_operator_program_to_intent, build_operator_program_from_context
+from .modes.agent_loop import AgentCoordinator, GeometryAgent, PowerAgent, StructuralAgent, ThermalAgent
+from .modes.mass.maas_audit import select_top_pareto_indices
+from .modes.mass.maas_compiler import compile_intent_to_problem_spec, formulate_modeling_intent
+from .modes.mass.maas_mcts import (
+    MCTSEvaluation,
+    MCTSNode,
+    MCTSSearchResult,
+    MCTSVariant,
+    MaaSMCTSPlanner,
+)
+from .modes.mass.maas_reflection import diagnose_solver_outcome, suggest_constraint_relaxation
+from .modes.mass.meta_policy import propose_meta_policy_actions
+from .modes.mass.modeling_validator import validate_modeling_intent
+from .modes.mass.operator_actions import (
+    apply_operator_program_to_intent,
+    build_operator_program_from_context,
+)
+from .modes.mass.operator_program import OperatorAction, OperatorProgram, validate_operator_program
+from .modes.mass.trace_features import extract_maas_trace_features
 
 __all__ = [
     # 基础
@@ -90,6 +100,11 @@ __all__ = [
     "ExecutionResult",
     "ToolCall",
     "ToolResult",
+    "AgentCoordinator",
+    "GeometryAgent",
+    "ThermalAgent",
+    "StructuralAgent",
+    "PowerAgent",
     "validate_modeling_intent",
     "compile_intent_to_problem_spec",
     "formulate_modeling_intent",

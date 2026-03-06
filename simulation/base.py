@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 from core.protocol import SimulationRequest, SimulationResult, DesignState
 from core.logger import get_logger
+from simulation.contracts import build_simulation_constraint_rows
 
 logger = get_logger(__name__)
 
@@ -79,70 +80,11 @@ class SimulationDriver(ABC):
         Returns:
             违规列表
         """
-        violations = []
-        constraints = self.config.get('constraints', {})
-
-        # 检查温度约束
-        if 'max_temp_c' in constraints:
-            max_temp = metrics.get('max_temp', 0)
-            limit = constraints['max_temp_c']
-            if max_temp > limit:
-                # 限制severity在0-1范围内
-                severity = min(1.0, (max_temp - limit) / limit)
-                violations.append({
-                    'id': f'TEMP_VIOLATION',
-                    'type': 'THERMAL_OVERHEAT',
-                    'description': f'Temperature {max_temp:.1f}°C > {limit}°C',
-                    'involved_components': ['system'],
-                    'severity': severity
-                })
-
-        # 检查间隙约束
-        if 'min_clearance_mm' in constraints:
-            min_clearance = metrics.get('min_clearance', float('inf'))
-            limit = constraints['min_clearance_mm']
-            if min_clearance < limit:
-                # 限制severity在0-1范围内
-                severity = min(1.0, (limit - min_clearance) / limit)
-                violations.append({
-                    'id': f'CLEARANCE_VIOLATION',
-                    'type': 'GEOMETRY_CLASH',
-                    'description': f'Clearance {min_clearance:.1f}mm < {limit}mm',
-                    'involved_components': ['system'],
-                    'severity': severity
-                })
-
-        # 检查质量约束
-        if 'max_mass_kg' in constraints:
-            total_mass = metrics.get('total_mass', 0)
-            limit = constraints['max_mass_kg']
-            if total_mass > limit:
-                # 限制severity在0-1范围内
-                severity = min(1.0, (total_mass - limit) / limit)
-                violations.append({
-                    'id': f'MASS_VIOLATION',
-                    'type': 'MASS_LIMIT',
-                    'description': f'Mass {total_mass:.1f}kg > {limit}kg',
-                    'involved_components': ['system'],
-                    'severity': severity
-                })
-
-        # 检查功率约束
-        if 'max_power_w' in constraints:
-            total_power = metrics.get('total_power', 0)
-            limit = constraints['max_power_w']
-            if total_power > limit:
-                # 限制severity在0-1范围内
-                severity = min(1.0, (total_power - limit) / limit)
-                violations.append({
-                    'id': f'POWER_VIOLATION',
-                    'type': 'POWER_LIMIT',
-                    'description': f'Power {total_power:.1f}W > {limit}W',
-                    'involved_components': ['system'],
-                    'severity': severity
-                })
-
-        return violations
+        constraints = self.config.get("constraints", {})
+        return build_simulation_constraint_rows(
+            scalar_metrics=dict(metrics or {}),
+            runtime_constraints=dict(constraints or {}),
+        )
 
     def __enter__(self):
         """上下文管理器入口"""

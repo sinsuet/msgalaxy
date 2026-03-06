@@ -31,6 +31,9 @@ benchmarks/
 # Temporary files
 *.tmp
 *.bak
+tmp_*
+t1.*
+t2.*
 workspace/
 
 # Research papers and references
@@ -51,10 +54,26 @@ Thumbs.db
 archive/
 docs/
 memory/
+# allow selected governance docs to be versioned
+!docs/
+docs/*
+!docs/R07_mode_runtime_split_refactor_20260304.md
+!docs/R11_stack_split_run_unification_20260305.md
+!docs/R21_l1_l4_algo_llm_campaign_20260306.md
+!docs/adr/
+docs/adr/*
+!docs/adr/0001-mode-runtime-decoupling.md
+!docs/adr/0002-vop-maas-reserved-mode.md
+!docs/adr/0003-stack-config-run-separation.md
 # Runtime logs
 logs/
 
 # Local-only runtime/developer assets (not distributed by default)
-scripts/
-tests/
 ylq.md
+tests/manual/artifacts/
+tex/
+
+# local-only working trees excluded from git
+docs/
+latex/
+tests/

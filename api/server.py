@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+﻿#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
 REST API服务器
@@ -79,8 +79,12 @@ def run_optimization_task(task_id: str, config: Dict[str, Any]):
     try:
         # 更新任务状态
         with tasks_lock:
-            tasks[task_id]["status"] = TaskStatus.RUNNING
-            tasks[task_id]["started_at"] = datetime.now().isoformat()
+            task_ref = tasks.get(task_id)
+            if task_ref is None:
+                logger.warning(f"Task {task_id} not found when marking RUNNING; abort worker")
+                return
+            task_ref["status"] = TaskStatus.RUNNING
+            task_ref["started_at"] = datetime.now().isoformat()
 
         logger.info(f"Starting optimization task: {task_id}")
 
@@ -92,7 +96,7 @@ def run_optimization_task(task_id: str, config: Dict[str, Any]):
 
         # 创建编排器
         orchestrator = WorkflowOrchestrator(
-            config_path=config.get("config_path", "config/system.yaml")
+            config_path=config.get("config_path", "config/system/mass/base.yaml")
         )
 
         # 运行优化
@@ -121,14 +125,17 @@ def run_optimization_task(task_id: str, config: Dict[str, Any]):
         generate_visualizations(orchestrator.logger.run_dir)
 
         # 更新任务状态
+        result_payload = {
+            "experiment_dir": orchestrator.logger.run_dir,
+            "final_iteration": final_state.iteration,
+            "num_components": len(final_state.components)
+        }
         with tasks_lock:
-            tasks[task_id]["status"] = TaskStatus.COMPLETED
-            tasks[task_id]["completed_at"] = datetime.now().isoformat()
-            tasks[task_id]["result"] = {
-                "experiment_dir": orchestrator.logger.run_dir,
-                "final_iteration": final_state.iteration,
-                "num_components": len(final_state.components)
-            }
+            task_ref = tasks.get(task_id)
+            if task_ref is not None:
+                task_ref["status"] = TaskStatus.COMPLETED
+                task_ref["completed_at"] = datetime.now().isoformat()
+                task_ref["result"] = dict(result_payload)
 
         logger.info(f"Optimization task completed: {task_id}")
 
@@ -136,16 +143,18 @@ def run_optimization_task(task_id: str, config: Dict[str, Any]):
         emit_task_update(task_id, 'status_change', {
             'status': TaskStatus.COMPLETED,
             'message': 'Optimization completed successfully',
-            'result': tasks[task_id]["result"]
+            'result': result_payload
         })
 
     except Exception as e:
         logger.error(f"Optimization task failed: {task_id}", exc_info=True)
 
         with tasks_lock:
-            tasks[task_id]["status"] = TaskStatus.FAILED
-            tasks[task_id]["error"] = str(e)
-            tasks[task_id]["completed_at"] = datetime.now().isoformat()
+            task_ref = tasks.get(task_id)
+            if task_ref is not None:
+                task_ref["status"] = TaskStatus.FAILED
+                task_ref["error"] = str(e)
+                task_ref["completed_at"] = datetime.now().isoformat()
 
         # 发送错误通知
         emit_task_update(task_id, 'error', {
@@ -201,7 +210,7 @@ def create_task():
         "bom_file": "config/bom_example.json",
         "max_iterations": 20,
         "convergence_threshold": 0.01,
-        "config_path": "config/system.yaml"
+        "config_path": "config/system/mass/base.yaml"
     }
     """
     try:
