@@ -222,6 +222,18 @@ def evaluate_constraint_records(
                 threshold=min_margin,
             )
 
+        mission_keepout = _to_float(metrics.get("mission_keepout_violation", 0.0), 0.0)
+        if "mission_keepout_violation" in available and mission_keepout > 0.0:
+            _append_record(
+                records,
+                code="mission_keepout",
+                violation_type="mission",
+                severity="critical",
+                description="任务视场/禁区约束违反",
+                metric_value=mission_keepout,
+                threshold=0.0,
+            )
+
     max_power = _to_float(limits.get("max_power_w", 500.0), 500.0)
     budget_metric_name = str(power_budget_metric or "peak_power")
     budget_metric_value = _to_float(metrics.get(budget_metric_name, 0.0), 0.0)
@@ -265,6 +277,7 @@ def build_runtime_violations(
     thermal_metrics: "ThermalMetrics",
     structural_metrics: "StructuralMetrics",
     power_metrics: "PowerMetrics",
+    mission_metrics: Optional[Mapping[str, Any]] = None,
     runtime_constraints: Optional[Mapping[str, Any]] = None,
 ) -> List["ViolationItem"]:
     from optimization.protocol import ViolationItem
@@ -279,6 +292,11 @@ def build_runtime_violations(
         "power_margin": float(power_metrics.power_margin),
         "peak_power": float(power_metrics.peak_power),
     }
+    mission_payload = dict(mission_metrics or {})
+    if "mission_keepout_violation" in mission_payload:
+        scalar_metrics["mission_keepout_violation"] = float(
+            mission_payload.get("mission_keepout_violation", 0.0) or 0.0
+        )
     records = evaluate_constraint_records(
         scalar_metrics=scalar_metrics,
         runtime_constraints=runtime_constraints,

@@ -18,9 +18,13 @@ Scope: execution, documentation governance, repository hygiene, and scientific r
    - If edit tooling fails, immediately fallback to script-based rewrite or full block replacement.
 
 4. **Python Runtime Rule (Python运行规则)**:
-   - All Python/test commands MUST use:
-     - `PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy ...`
-   - Do not use system `python`/`pytest` directly.
+   - Manual local Python/test commands MUST be run inside the repository VS Code integrated terminal.
+   - `.vscode/settings.json` is the canonical workspace contract and must keep:
+     - default terminal profile bound to the `msgalaxy` conda environment
+     - `PYTHONIOENCODING=utf-8`
+     - `PYTHONUTF8=1`
+   - User-facing docs/examples may therefore use direct `python ...` / `pytest ...` forms inside the VS Code workspace terminal.
+   - Do not use system `python`/`pytest` outside the workspace terminal.
    - For Windows-facing entry scripts (`run/`, `tests/`), ensure UTF-8 stdout/stderr compatibility handling is present when needed.
 
 5. **Model + Secret Rule (模型与密钥规则)**:
@@ -250,7 +254,9 @@ Scope: execution, documentation governance, repository hygiene, and scientific r
 ### I. Windows Conda Python Invocation
 
 41. **Windows Conda Inline Python Rule (Windows 下 conda 内联 Python 调用规则)**:
-   - Keep the mandatory runtime prefix from Rule 4: `PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy ...`.
+   - For Codex/CI/non-interactive automation outside the VS Code integrated terminal, use the explicit fallback:
+     - `PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy ...`
+   - This explicit form is the automation fallback, not the preferred user-facing documentation style.
    - On Windows PowerShell, do **not** rely on piping a here-string or other stdin content into `conda run -n msgalaxy python -` for multi-line scripts; this path is not reliable for Codex/terminal automation and may drop stdin or fall into interactive REPL behavior.
    - Preferred order for Python snippets under Windows:
      - short one-liners / compact probes: `conda run -n msgalaxy python -c "..."`

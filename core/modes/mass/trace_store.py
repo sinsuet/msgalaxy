@@ -43,6 +43,10 @@ MASS_TRACE_HEADERS: List[str] = [
     "best_candidate_voltage_drop",
     "best_candidate_power_margin",
     "best_candidate_peak_power",
+    "seed_population_total_count",
+    "layout_seed_generated_count",
+    "layout_seed_unique_count",
+    "seed_population_source_keys",
 ]
 
 
@@ -90,6 +94,7 @@ def materialize_trace_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     best_candidate_metrics = dict(payload.get("best_candidate_metrics") or {})
     operator_actions = list(payload.get("operator_actions", []) or [])
     operator_bias = dict(payload.get("operator_bias", {}) or {})
+    seed_population_report = dict(payload.get("seed_population_report", {}) or {})
     is_best_attempt = bool(payload.get("is_best_attempt", False))
 
     row: List[Any] = [
@@ -126,6 +131,16 @@ def materialize_trace_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         _safe_float(best_candidate_metrics.get("voltage_drop"), digits=6),
         _safe_float(best_candidate_metrics.get("power_margin"), digits=6),
         _safe_float(best_candidate_metrics.get("peak_power"), digits=6),
+        int(seed_population_report.get("total_seed_count_post_dedup", 0) or 0),
+        int(seed_population_report.get("layout_seed_generated_count", 0) or 0),
+        int(seed_population_report.get("layout_seed_unique_count", 0) or 0),
+        ",".join(
+            sorted(
+                str(key)
+                for key in dict(seed_population_report.get("source_counts_post_dedup", {}) or {}).keys()
+                if str(key).strip()
+            )
+        ),
     ]
 
     attempt_event_payload: Dict[str, Any] = {
@@ -147,6 +162,16 @@ def materialize_trace_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         "dominant_violation": dominant_violation,
         "constraint_violation_breakdown": violation_breakdown,
         "best_candidate_metrics": best_candidate_metrics,
+        "seed_population_report": seed_population_report,
+        "seed_population_total_count": int(
+            seed_population_report.get("total_seed_count_post_dedup", 0) or 0
+        ),
+        "layout_seed_generated_count": int(
+            seed_population_report.get("layout_seed_generated_count", 0) or 0
+        ),
+        "layout_seed_unique_count": int(
+            seed_population_report.get("layout_seed_unique_count", 0) or 0
+        ),
         "operator_program_id": str(payload.get("operator_program_id", "")),
         "operator_actions": operator_actions,
         "operator_attribution_inferred": bool(payload.get("operator_attribution_inferred", False)),
@@ -181,4 +206,3 @@ def materialize_trace_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         "candidate_event_payload": candidate_event_payload,
         "is_best_attempt": is_best_attempt,
     }
-

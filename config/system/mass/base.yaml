@@ -121,7 +121,13 @@ optimization:
   mass_mcts_cv_penalty_weight: 0.2
   mass_search_space: coordinate
   mass_enable_operator_program: true
+  mass_enable_seed_population: true
+  mass_enable_layout_seed_population: true
   mass_enable_operator_seed_population: true
+  mass_seed_population_max: 8
+  mass_layout_seed_count: 3
+  mass_layout_seed_base_seed: 43
+  mass_layout_seed_attempts_multiplier: 4
   mass_enable_operator_credit_bias: true
   mass_operator_program_max_components: 6
   mass_operator_program_action_slots: 10

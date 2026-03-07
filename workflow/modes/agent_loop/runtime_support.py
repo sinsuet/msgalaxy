@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 class AgentLoopRuntimeSupport:
     """Behavior mixin extracted from orchestrator for runtime decoupling."""
     def _is_cg_violation(self, violation: Any) -> bool:
-        """判断违规项是否属于质心偏移违规?"""
+        """判断违规项是否属于质心偏移违规。"""
         violation_id = str(getattr(violation, "violation_id", ""))
         description = str(getattr(violation, "description", ""))
         return (
@@ -29,7 +29,7 @@ class AgentLoopRuntimeSupport:
         )
 
     def _is_cg_only_violation(self, violations: list[ViolationItem]) -> bool:
-        """是否仅剩质心违规（可触发平台期定向策略）?"""
+        """是否仅剩质心违规（可触发平台期定向策略）。"""
         return bool(violations) and all(self._is_cg_violation(v) for v in violations)
 
     def _is_cg_plateau(
@@ -40,11 +40,11 @@ class AgentLoopRuntimeSupport:
         window: int = 4
     ) -> bool:
         """
-        检测是否进入“单违规 + 小改进平台期”?
+        检测是否进入“单违规 + 小改进平台期”。
 
-        判据?
+        判据：
         - 仅剩 CG 违规
-        - 最?`window` 轮违规数量不?
+        - 最近 `window` 轮违规数量不变
         - 惩罚分单步改变量整体很小
         - CG 总改善有限（说明陷入局部平台）
         """
@@ -76,11 +76,11 @@ class AgentLoopRuntimeSupport:
         iteration: int
     ) -> Optional[tuple[DesignState, Dict[str, Any], list[ViolationItem], Dict[str, float]]]:
         """
-        CG 平台期的确定性局部搜索?
+        CG 平台期的确定性局部搜索。
 
-        思路?
-        - ?CG 主导方向上对重型组件做小步坐标搜索（带几何可行性预检?
-        - 先用几何评估挑选最优候选，再做一次真实仿真验?
+        思路：
+        - 沿 CG 主导方向对重型组件做小步坐标搜索（带几何可行性预检）。
+        - 先用几何评估挑选最优候选，再做一次真实仿真验证。
         """
         if not self._is_cg_only_violation(violations):
             return None
@@ -108,13 +108,13 @@ class AgentLoopRuntimeSupport:
         min_cg_improvement = 0.2
 
         self.logger.logger.info(
-            f"?触发 CG 平台期救? cg={current_cg:.2f}mm, COM=({com_offset[0]:.2f},{com_offset[1]:.2f},{com_offset[2]:.2f})"
+            f"触发 CG 平台期救援: cg={current_cg:.2f}mm, COM=({com_offset[0]:.2f},{com_offset[1]:.2f},{com_offset[2]:.2f})"
         )
 
         for axis, axis_value in axes:
             if abs(axis_value) < 1e-6:
                 continue
-            # ?COM ?+axis 方向时，?-axis 方向移动组件可降低该分量，反之亦然?
+            # 若 COM 在 +axis 方向时，沿 -axis 方向移动组件可降低该分量，反之亦然
             direction = -1.0 if axis_value > 0 else 1.0
 
             for comp in heavy_components:
@@ -188,7 +188,7 @@ class AgentLoopRuntimeSupport:
 
         if not accepted:
             self.logger.logger.warning(
-                "?CG 平台期救援候选被拒绝: "
+                "CG 平台期救援候选被拒绝: "
                 f"penalty {old_penalty:.2f} -> {new_penalty:.2f}, "
                 f"viol {len(violations)} -> {len(new_violations)}"
             )
@@ -202,7 +202,8 @@ class AgentLoopRuntimeSupport:
         geometry_metrics: GeometryMetrics,
         thermal_metrics: ThermalMetrics,
         structural_metrics: StructuralMetrics,
-        power_metrics: PowerMetrics
+        power_metrics: PowerMetrics,
+        mission_metrics: Optional[Dict[str, Any]] = None,
     ) -> list[ViolationItem]:
         """检查约束违反（统一契约实现）。"""
         return build_runtime_violations(
@@ -210,6 +211,7 @@ class AgentLoopRuntimeSupport:
             thermal_metrics=thermal_metrics,
             structural_metrics=structural_metrics,
             power_metrics=power_metrics,
+            mission_metrics=mission_metrics,
             runtime_constraints=dict(self.runtime_constraints or {}),
         )
 
@@ -221,13 +223,13 @@ class AgentLoopRuntimeSupport:
         violations: list[ViolationItem],
         phase: str = "A",
     ) -> GlobalContextPack:
-        """构建全局上下?"""
+        """构建全局上下文。"""
         # Phase 4: 构建历史摘要和回退警告
         history_summary = f"第{iteration}次迭代"
         if self.rollback_count > 0:
             history_summary += f"（已回退{self.rollback_count}次）"
 
-        # RAG检索相关知?
+        # RAG 检索相关知识
         context_pack = GlobalContextPack(
             iteration=iteration,
             design_state_summary=(
@@ -254,12 +256,12 @@ class AgentLoopRuntimeSupport:
         if self.rollback_count > 0 and self.recent_failures:
             rollback_warning = (
                 f"系统已回退{self.rollback_count}次！"
-                f"最近失? {self.recent_failures[-1]}"
+                f"最近失败: {self.recent_failures[-1]}"
             )
             if hasattr(context_pack, 'rollback_warning'):
                 context_pack.rollback_warning = rollback_warning
 
-        # 检索知?
+        # 检索知识
         phase_norm = str(phase or "A").strip().upper()
         retrieved_knowledge = self.rag_system.retrieve(
             context_pack,
@@ -272,7 +274,7 @@ class AgentLoopRuntimeSupport:
 
     def _inject_runtime_constraints_to_plan(self, strategic_plan) -> None:
         """
-        将运行时硬约束注入到 StrategicPlan 的任务中，避?Agent 使用过期阈值?
+        将运行时硬约束注入到 StrategicPlan 的任务中，避免 Agent 使用过期阈值。
         """
         if not strategic_plan or not getattr(strategic_plan, "tasks", None):
             return
@@ -296,7 +298,7 @@ class AgentLoopRuntimeSupport:
         if limits["enforce_power_budget"]:
             optional_budget_text = f", peak_power<= {limits['max_power_w']:.2f}W"
         hard_constraint_text = (
-            "硬约?必须满足): "
+            "硬约束（必须满足）: "
             f"max_temp<= {limits['max_temp_c']:.2f}°C, "
             f"min_clearance>= {limits['min_clearance_mm']:.2f}mm, "
             f"cg_offset<= {limits['max_cg_offset_mm']:.2f}mm, "
@@ -338,21 +340,21 @@ class AgentLoopRuntimeSupport:
 
         Args:
             execution_plan: 执行计划（包含多个Agent的提案）
-            current_state: 当前设计状?
+            current_state: 当前设计状态
 
         Returns:
-            新的设计状?
+            新的设计状态
         """
         import copy
 
-        # 深拷贝当前状?
+        # 深拷贝当前状态
         new_state = copy.deepcopy(current_state)
         start_fingerprint = self._state_fingerprint(current_state)
         requested_targets = 0
         executed_actions = 0
         effective_actions = 0
 
-        # 如果execution_plan为空，直接返?
+        # 如果 execution_plan 为空，直接返回
         if not execution_plan:
             self.logger.logger.warning("执行计划为空")
             new_state.metadata = dict(new_state.metadata or {})
@@ -365,7 +367,7 @@ class AgentLoopRuntimeSupport:
             }
             return new_state
 
-        # 收集所有需要执行的操作（来?geometry_proposal ?thermal_proposal?
+        # 收集所有需要执行的操作（来自 geometry_proposal 和 thermal_proposal）
         all_actions = []
 
         # 提取几何操作
@@ -400,11 +402,11 @@ class AgentLoopRuntimeSupport:
                 op_type = action.op_type
                 parameters = getattr(action, 'parameters', {}) or {}
 
-                # 获取目标组件（支?component_id ?target_components?
+                # 获取目标组件（支持 component_id 和 target_components）
                 component_id = getattr(action, 'component_id', None)
                 target_components = getattr(action, 'target_components', None)
 
-                # 如果是批量操作（target_components），对每个组件执?
+                # 如果是批量操作（target_components），对每个组件执行
                 if target_components and isinstance(target_components, list):
                     self.logger.logger.info(f"  执行批量操作: {op_type} on {len(target_components)} 个组件")
                     requested_targets += len(target_components)
@@ -461,7 +463,7 @@ class AgentLoopRuntimeSupport:
         执行单个操作（内部方法）
 
         Args:
-            new_state: 设计状态（会被修改?
+            new_state: 设计状态（会被修改）
             op_type: 操作类型
             component_id: 目标组件ID
             parameters: 操作参数
@@ -480,7 +482,7 @@ class AgentLoopRuntimeSupport:
             self.logger.logger.warning(f"    组件 {component_id} 未找到，跳过")
             return False
 
-        # 记录操作前的状态（强力日志追踪?
+        # 记录操作前的状态（强力日志追踪）
         old_pos = [
             new_state.components[comp_idx].position.x,
             new_state.components[comp_idx].position.y,
@@ -531,7 +533,7 @@ class AgentLoopRuntimeSupport:
 
         old_comp_fp = _component_fp(new_state.components[comp_idx])
 
-        # 执行不同类型的操?
+        # 执行不同类型的操作
         if op_type == "MOVE":
             # 移动组件
             axis = str(parameters.get("axis", "X")).upper()
@@ -552,7 +554,7 @@ class AgentLoopRuntimeSupport:
                 return False
 
             # 自适应缩放：优先尝试全步长，不可行时逐级回退
-            # 目标：避免大步长 MOVE 把候选态直接推入碰?间隙违规区?
+            # 目标：避免大步长 MOVE 把候选态直接推入碰撞/间隙违规区
             scales = [1.0, 0.5, 0.25, 0.1, 0.05]
             clearance_limit = float(self.runtime_constraints.get("min_clearance_mm", 3.0))
             comp_ref = new_state.components[comp_idx]
@@ -589,7 +591,7 @@ class AgentLoopRuntimeSupport:
                     break
 
             if accepted_scale is None:
-                # 全部步长不可行，回滚位置并标?no-op
+                # 全部步长不可行，回滚位置并标记 no-op
                 if axis == "X":
                     comp_ref.position.x = original_value
                 elif axis == "Y":
@@ -600,8 +602,8 @@ class AgentLoopRuntimeSupport:
                 if last_probe:
                     _, _, probe_clearance, probe_collisions = last_probe
                     self.logger.logger.warning(
-                        "    ?MOVE 被几何门控拒? 所有缩放步长均不可?"
-                        f"(最后探?min_clearance={probe_clearance:.2f}mm, "
+                        "    MOVE 被几何门控拒绝: 所有缩放步长均不可行 "
+                        f"(最后探测 min_clearance={probe_clearance:.2f}mm, "
                         f"collisions={probe_collisions})"
                     )
                 else:
@@ -609,7 +611,7 @@ class AgentLoopRuntimeSupport:
                 return False
 
             self.logger.logger.info(
-                f"    MOVE 自适应应用: {axis} ?{accepted_delta:.2f} mm "
+                f"    MOVE 自适应应用: {axis} 轴 {accepted_delta:.2f} mm "
                 f"(原始 {delta:.2f} mm, scale={accepted_scale:.2f})"
             )
 
@@ -629,7 +631,7 @@ class AgentLoopRuntimeSupport:
             self.logger.logger.info(f"    旋转 {axis} 轴 {angle:.2f}°")
 
         elif op_type == "SWAP":
-            # 交换两个组件的位?
+            # 交换两个组件的位置
             component_b = parameters.get("component_b")
             comp_b_idx = None
             for idx, comp in enumerate(new_state.components):
@@ -659,7 +661,7 @@ class AgentLoopRuntimeSupport:
             pos = comp.position
             dim = comp.dimensions
 
-            # 计算包围?
+            # 计算包围盒
             bbox_min = np.array([
                 pos.x - dim.x / 2,
                 pos.y - dim.y / 2,
@@ -671,15 +673,15 @@ class AgentLoopRuntimeSupport:
                 pos.z + dim.z / 2
             ])
 
-            # 创建FFD变形?
+            # 创建 FFD 变形器
             ffd = FFDDeformer(nx=3, ny=3, nz=3)
             lattice = ffd.create_lattice(bbox_min, bbox_max, margin=0.1)
 
-            # 根据变形类型设置控制点位?
+            # 根据变形类型设置控制点位移
             displacements = {}
 
             if deform_type == "stretch_x":
-                # 沿X轴拉伸：移动右侧控制?
+                # 沿 X 轴拉伸：移动右侧控制点
                 for j in range(3):
                     for k in range(3):
                         displacements[(2, j, k)] = np.array([magnitude, 0, 0])
@@ -687,14 +689,14 @@ class AgentLoopRuntimeSupport:
                 new_state.components[comp_idx].dimensions.x += magnitude
 
             elif deform_type == "stretch_y":
-                # 沿Y轴拉?
+                # 沿 Y 轴拉伸
                 for i in range(3):
                     for k in range(3):
                         displacements[(i, 2, k)] = np.array([0, magnitude, 0])
                 new_state.components[comp_idx].dimensions.y += magnitude
 
             elif deform_type == "stretch_z":
-                # 沿Z轴拉?
+                # 沿 Z 轴拉伸
                 for i in range(3):
                     for j in range(3):
                         displacements[(i, j, 2)] = np.array([0, 0, magnitude])
@@ -707,19 +709,19 @@ class AgentLoopRuntimeSupport:
                     for j in range(3):
                         for k in range(3):
                             if i == 0 or i == 2 or j == 0 or j == 2 or k == 0 or k == 2:
-                                # 外侧控制?
+                                # 外侧控制点
                                 direction = np.array([
                                     (i - 1) * scale,
                                     (j - 1) * scale,
                                     (k - 1) * scale
                                 ])
                                 displacements[(i, j, k)] = direction
-                # 膨胀会增加所有维?
+                # 膨胀会增加所有维度
                 new_state.components[comp_idx].dimensions.x += magnitude * 0.5
                 new_state.components[comp_idx].dimensions.y += magnitude * 0.5
                 new_state.components[comp_idx].dimensions.z += magnitude * 0.5
 
-            self.logger.logger.info(f"    ?FFD变形完成，新尺寸: {new_state.components[comp_idx].dimensions}")
+            self.logger.logger.info(f"    FFD 变形完成，新尺寸: {new_state.components[comp_idx].dimensions}")
 
         elif op_type == "REPACK":
             # 重新装箱
@@ -732,7 +734,7 @@ class AgentLoopRuntimeSupport:
             self.logger.logger.info(f"    重新装箱: strategy={strategy}, clearance={clearance}")
 
             # 调用layout_engine重新布局
-            # 注意：这会重置所有组件位?
+            # 注意：这会重置所有组件位置
             packing_result = self.layout_engine.generate_layout()
 
             # 更新组件位置
@@ -749,7 +751,7 @@ class AgentLoopRuntimeSupport:
                         )
                         break
 
-            self.logger.logger.info(f"    ?重新装箱完成")
+            self.logger.logger.info("    重新装箱完成")
 
         # === 热学算子 ===
         elif op_type == "MODIFY_COATING":
@@ -773,7 +775,7 @@ class AgentLoopRuntimeSupport:
             gap = parameters.get("gap", 0.0)  # mm
 
             if contact_component:
-                # 初始?thermal_contacts 字典（如果不存在?
+                # 初始化 thermal_contacts 字典（如果不存在）
                 if not hasattr(new_state.components[comp_idx], 'thermal_contacts') or \
                    new_state.components[comp_idx].thermal_contacts is None:
                     new_state.components[comp_idx].thermal_contacts = {}
@@ -781,17 +783,17 @@ class AgentLoopRuntimeSupport:
                 new_state.components[comp_idx].thermal_contacts[contact_component] = conductance
 
                 self.logger.logger.info(
-                    f"    🔗 接触热阻: {component_id} ?{contact_component}, "
+                    f"    🔗 接触热阻: {component_id} -> {contact_component}, "
                     f"h={conductance} W/m²·K, gap={gap}mm"
                 )
             else:
                 self.logger.logger.warning(f"    SET_THERMAL_CONTACT 缺少 contact_component 参数")
 
         elif op_type == "ADD_HEATSINK":
-            # 添加散热器（记录到组件属性，实际几何?CAD 导出时生成）
+            # 添加散热器（记录到组件属性，实际几何在 CAD 导出时生成）
             face = parameters.get("face", "+Y")
             thickness = parameters.get("thickness", 2.0)  # mm
-            conductivity = parameters.get("conductivity", 400.0)  # W/m·K (?
+            conductivity = parameters.get("conductivity", 400.0)  # W/m·K（默认高导热材料）
 
             new_state.components[comp_idx].heatsink = {
                 "face": face,
@@ -800,11 +802,11 @@ class AgentLoopRuntimeSupport:
             }
 
             self.logger.logger.info(
-                f"    🧊 散热器添? {component_id} face={face}, thickness={thickness}mm, k={conductivity} W/m·K"
+                f"    🧊 散热器添加: {component_id} face={face}, thickness={thickness}mm, k={conductivity} W/m·K"
             )
 
         elif op_type == "ADD_BRACKET":
-            # 添加结构支架（记录到组件属性，实际几何?CAD 导出时生成）
+            # 添加结构支架（记录到组件属性，实际几何在 CAD 导出时生成）
             height = parameters.get("height", 20.0)  # mm
             material = parameters.get("material", "aluminum")
             attach_face = parameters.get("attach_face", "-Z")
@@ -815,7 +817,7 @@ class AgentLoopRuntimeSupport:
                 "attach_face": attach_face
             }
 
-            # 支架会改变组件的有效Z位置（如果是底部支架?
+            # 支架会改变组件的有效 Z 位置（如果是底部支架）
             if attach_face == "-Z":
                 new_state.components[comp_idx].position.z += height / 2.0
                 self.logger.logger.info(
@@ -832,7 +834,7 @@ class AgentLoopRuntimeSupport:
             reference_component = parameters.get("reference_component")
 
             if reference_component:
-                # 查找参考组?
+                # 查找参考组件
                 ref_idx = None
                 for idx, comp in enumerate(new_state.components):
                     if comp.id == reference_component:
@@ -849,7 +851,7 @@ class AgentLoopRuntimeSupport:
                         new_state.components[comp_idx].position.z = ref_pos.z
 
                     self.logger.logger.info(
-                        f"    📐 对齐: {component_id} ?{axis} 轴对齐到 {reference_component}"
+                        f"    📐 对齐: {component_id} -> {axis} 轴对齐到 {reference_component}"
                     )
                 else:
                     self.logger.logger.warning(f"    参考组件 {reference_component} 未找到")
@@ -857,15 +859,15 @@ class AgentLoopRuntimeSupport:
                 self.logger.logger.warning(f"    ALIGN 缺少 reference_component 参数")
 
         elif op_type == "CHANGE_ENVELOPE":
-            # 包络切换（Box ?Cylinder 等）
+            # 包络切换（Box / Cylinder 等）
             # 这个操作修改组件的包络类型，CAD 导出时会生成对应几何
             shape = parameters.get("shape", "box")
             dimensions = parameters.get("dimensions", {})
 
-            # 更新组件的包络类?
+            # 更新组件的包络类型
             new_state.components[comp_idx].envelope_type = shape
 
-            # 如果提供了新尺寸，更新组件尺?
+            # 如果提供了新尺寸，更新组件尺寸
             if dimensions:
                 if "x" in dimensions:
                     new_state.components[comp_idx].dimensions.x = dimensions["x"]
@@ -873,7 +875,7 @@ class AgentLoopRuntimeSupport:
                     new_state.components[comp_idx].dimensions.y = dimensions["y"]
                 if "z" in dimensions:
                     new_state.components[comp_idx].dimensions.z = dimensions["z"]
-                # 圆柱体特殊参?
+                # 圆柱体特殊参数
                 if "radius" in dimensions:
                     # 圆柱体：X/Y 设为直径
                     diameter = dimensions["radius"] * 2
@@ -883,13 +885,13 @@ class AgentLoopRuntimeSupport:
                     new_state.components[comp_idx].dimensions.z = dimensions["height"]
 
             self.logger.logger.info(
-                f"    📦 包络切换: {component_id} ?{shape}"
+                f"    📦 包络切换: {component_id} -> {shape}"
             )
 
         else:
             self.logger.logger.warning(f"    未知操作类型: {op_type}")
 
-        # 记录操作后的状态（强力日志追踪?
+        # 记录操作后的状态（强力日志追踪）
         new_pos = [
             new_state.components[comp_idx].position.x,
             new_state.components[comp_idx].position.y,
@@ -908,19 +910,19 @@ class AgentLoopRuntimeSupport:
         if old_pos != new_pos:
             self.logger.logger.info(
                 f"    📍 {component_id} 坐标变化: "
-                f"[{old_pos[0]:.2f}, {old_pos[1]:.2f}, {old_pos[2]:.2f}] ?"
+                f"[{old_pos[0]:.2f}, {old_pos[1]:.2f}, {old_pos[2]:.2f}] ->"
                 f"[{new_pos[0]:.2f}, {new_pos[1]:.2f}, {new_pos[2]:.2f}]"
             )
         if old_dims != new_dims:
             self.logger.logger.info(
                 f"    📐 {component_id} 尺寸变化: "
-                f"[{old_dims[0]:.2f}, {old_dims[1]:.2f}, {old_dims[2]:.2f}] ?"
+                f"[{old_dims[0]:.2f}, {old_dims[1]:.2f}, {old_dims[2]:.2f}] ->"
                 f"[{new_dims[0]:.2f}, {new_dims[1]:.2f}, {new_dims[2]:.2f}]"
             )
         if old_rot != new_rot:
             self.logger.logger.info(
                 f"    🔄 {component_id} 旋转变化: "
-                f"[{old_rot[0]:.2f}, {old_rot[1]:.2f}, {old_rot[2]:.2f}] ?"
+                f"[{old_rot[0]:.2f}, {old_rot[1]:.2f}, {old_rot[2]:.2f}] ->"
                 f"[{new_rot[0]:.2f}, {new_rot[1]:.2f}, {new_rot[2]:.2f}]"
             )
 
@@ -937,17 +939,17 @@ class AgentLoopRuntimeSupport:
         require_cg_improve_on_regression: bool = False
     ) -> bool:
         """
-        判断是否接受新状态（违规数量 + 惩罚分双判据）?
+        判断是否接受新状态（违规数量 + 惩罚分双判据）。
 
         allow_penalty_regression:
-            允许在平台期接受“小幅惩罚上升”的候选，用于穿越局部最优?
+            允许在平台期接受“小幅惩罚上升”的候选，用于穿越局部最优。
         require_cg_improve_on_regression:
-            当发生惩罚上升时，要?CG 必须实质改善，避免无效放宽?
+            当发生惩罚上升时，要求 CG 必须实质改善，避免无效放宽。
         """
         old_count = len(old_violations)
         new_count = len(new_violations)
 
-        # 一级判据：违规数量必须不增?
+        # 一级判据：违规数量必须不增加
         if new_count < old_count:
             return True
         if new_count > old_count:
@@ -958,7 +960,7 @@ class AgentLoopRuntimeSupport:
         new_penalty = self._calculate_penalty_score(new_metrics, new_violations)
         tolerance = max(float(allow_penalty_regression), 0.0)
         if new_penalty <= old_penalty + max(1e-6, tolerance):
-            # 平台期放宽仅在“确实换?CG 改善”时才生?
+            # 平台期放宽仅在“确实换来 CG 改善”时才生效
             if (
                 tolerance > 1e-9 and
                 new_penalty > old_penalty + 1e-6 and
@@ -968,20 +970,20 @@ class AgentLoopRuntimeSupport:
                 new_cg = float(new_metrics["geometry"].cg_offset_magnitude)
                 if new_cg >= old_cg - 0.5:
                     self.logger.logger.info(
-                        "  拒绝新状? 虽在放宽窗口内，?CG 改善不足 "
+                        "  拒绝新状态: 虽在放宽窗口内，但 CG 改善不足 "
                         f"({old_cg:.2f} -> {new_cg:.2f})"
                     )
                     return False
 
                 self.logger.logger.info(
-                    "  平台期受控接? 允许小幅惩罚上升以换?CG 改善 "
+                    "  平台期受控接受: 允许小幅惩罚上升以换取 CG 改善 "
                     f"(penalty {old_penalty:.2f} -> {new_penalty:.2f}, "
                     f"cg {old_cg:.2f} -> {new_cg:.2f})"
                 )
             return True
 
         self.logger.logger.info(
-            "  拒绝新状? 违规数未减少且惩罚分恶化 "
+            "  拒绝新状态: 违规数未减少且惩罚分恶化 "
             f"({old_penalty:.2f} -> {new_penalty:.2f}, "
             f"tolerance={tolerance:.2f})"
         )
@@ -1014,7 +1016,7 @@ class AgentLoopRuntimeSupport:
         )
 
     def _generate_final_report(self, final_state: DesignState, iterations: int):
-        """生成最终报?"""
+        """生成最终报告。"""
         self.logger.logger.info(f"\n{'='*60}")
         self.logger.logger.info("Optimization Complete")
         self.logger.logger.info(f"{'='*60}")
@@ -1022,12 +1024,12 @@ class AgentLoopRuntimeSupport:
         self.logger.logger.info(f"Final design: {len(final_state.components)} components")
         self.logger.logger.info(f"Total rollbacks: {self.rollback_count}")  # Phase 4: 记录回退次数
 
-        # 生成可视?
+        # 生成可视化
         if self.config.get('logging', {}).get('save_visualizations', True):
             try:
                 from core.visualization import generate_visualizations
                 generate_visualizations(self.logger.run_dir)
-                self.logger.logger.info("?Visualizations generated")
+                self.logger.logger.info("Visualizations generated")
             except Exception as e:
                 self.logger.logger.warning(f"Visualization generation failed: {e}")
 
@@ -1039,7 +1041,7 @@ class AgentLoopRuntimeSupport:
         violations: list[ViolationItem]
     ) -> Dict[str, float]:
         """
-        计算惩罚分分项（越低越好?
+        计算惩罚分分项（越低越好）。
 
         Args:
             metrics: 性能指标
@@ -1057,7 +1059,7 @@ class AgentLoopRuntimeSupport:
         min_clearance_limit = self.runtime_constraints.get("min_clearance_mm", 3.0)
         max_cg_offset_limit = self.runtime_constraints.get("max_cg_offset_mm", 20.0)
 
-        # 违规惩罚（每个违?+100?
+        # 违规惩罚（每个违规 +100）
         penalty_violation += len(violations) * 100.0
 
         # 温度惩罚
@@ -1104,9 +1106,9 @@ class AgentLoopRuntimeSupport:
         current: Dict[str, float]
     ) -> float:
         """
-        计算单轮迭代有效性分数（-100 ~ 100，越高越好）?
+        计算单轮迭代有效性分数（-100 ~ 100，越高越好）。
 
-        分数由惩罚分改善、违规数量改善、以及关键连续指标改善共同决定?
+        分数由惩罚分改善、违规数量改善，以及关键连续指标改善共同决定。
         """
         if not previous:
             return 0.0
@@ -1130,7 +1132,7 @@ class AgentLoopRuntimeSupport:
         min_clearance_limit = max(float(self.runtime_constraints.get("min_clearance_mm", 3.0)), 1.0)
         max_cg_offset_limit = max(float(self.runtime_constraints.get("max_cg_offset_mm", 20.0)), 1.0)
 
-        # 归一化增益（>0 代表改善?
+        # 归一化增益（>0 代表改善）
         penalty_gain = (prev_penalty - curr_penalty) / max(prev_penalty, 1.0)
         cg_gain = (prev_cg - curr_cg) / max_cg_offset_limit
         temp_gain = (prev_temp - curr_temp) / max_temp_limit
@@ -1161,11 +1163,11 @@ class AgentLoopRuntimeSupport:
         Returns:
             (是否回退, 回退原因)
         """
-        # 条件1: 仿真失败（如COMSOL网格崩溃?
+        # 条件1: 仿真失败（如 COMSOL 网格崩溃）
         if not current_eval.success and current_eval.error_message:
             return True, f"仿真失败: {current_eval.error_message}"
 
-        # 条件2: 惩罚分异常高?1000，说明严重恶化）
+        # 条件2: 惩罚分异常高（>1000，说明严重恶化）
         # 但是：如果状态池里只有一个状态（或者最优状态就是当前状态），则不回退
         # 否则会导致无限循环！
         if current_eval.penalty_score > 1000.0:
@@ -1176,7 +1178,7 @@ class AgentLoopRuntimeSupport:
                 )
                 # 只有当存在明显更好的历史状态时才回退
                 if best_penalty < current_eval.penalty_score * 0.8:
-                    return True, f"惩罚分过?({current_eval.penalty_score:.1f}), 设计严重恶化"
+                    return True, f"惩罚分过高({current_eval.penalty_score:.1f}), 设计严重恶化"
             # 否则不回退，让 LLM 尝试优化
 
         # 条件3: 连续3次迭代惩罚分持续上升
@@ -1188,7 +1190,7 @@ class AgentLoopRuntimeSupport:
             if len(recent_states) >= 3:
                 penalties = [ev.penalty_score for _, ev in recent_states[-3:]]
                 if penalties[0] < penalties[1] < penalties[2]:
-                    return True, f"连续3次迭代惩罚分上升: {penalties[0]:.1f} ?{penalties[1]:.1f} ?{penalties[2]:.1f}"
+                    return True, f"连续3次迭代惩罚分上升: {penalties[0]:.1f} -> {penalties[1]:.1f} -> {penalties[2]:.1f}"
 
         return False, ""
 

@@ -1579,7 +1579,8 @@ class MaaSPipelineService:
             )
 
         final_state = candidate_state or current_state
-        if candidate_state is not None:
+        final_state_selected_from_candidate = candidate_state is not None
+        if final_state_selected_from_candidate:
             try:
                 final_metrics, final_violations = runtime.evaluate_design(final_state, iteration + 1)
             except Exception as exc:
@@ -1589,6 +1590,17 @@ class MaaSPipelineService:
                 final_metrics, final_violations = current_metrics, violations
         else:
             final_metrics, final_violations = current_metrics, violations
+
+        if (
+            final_state_selected_from_candidate
+            and len(final_violations) == 0
+            and str(last_diagnosis.get("status", "")) not in {"feasible", "feasible_but_stalled"}
+        ):
+            last_diagnosis = dict(last_diagnosis or {})
+            last_diagnosis["status"] = "feasible"
+            last_diagnosis["reason"] = "final_state_recheck_feasible"
+            last_diagnosis["best_cv"] = 0.0
+            last_diagnosis["aocc_cv"] = 0.0
 
         phase_d_retrieval: List[Dict[str, Any]] = []
         try:
@@ -1712,6 +1724,11 @@ class MaaSPipelineService:
             else:
                 best_cv_min_source = "missing"
 
+        if final_state_selected_from_candidate and len(final_violations) == 0:
+            resolved_best_cv_min = 0.0
+            best_cv_min_source = "final_state_feasible"
+            maas_trace_features["best_cv_min"] = 0.0
+
         maas_trace_features["best_cv_min_source"] = str(best_cv_min_source)
         maas_trace_features = _inject_policy_context(maas_trace_features)
         if enable_meta_policy:
@@ -1750,6 +1767,47 @@ class MaaSPipelineService:
         final_state.metadata["maas_attempt_budget"] = int(maas_max_attempts)
         final_state.metadata["maas_attempt_budget_base"] = int(maas_base_attempts)
         final_state.metadata["maas_attempt_budget_report"] = dict(dynamic_attempt_report)
+        seed_population_reports = [
+            dict(item.get("seed_population_report", {}) or {})
+            for item in maas_attempts
+            if isinstance(item.get("seed_population_report", {}), dict)
+            and dict(item.get("seed_population_report", {}) or {})
+        ]
+        seed_population_source_counts_total: Dict[str, int] = {}
+        for report in seed_population_reports:
+            for key, value in dict(report.get("source_counts_post_dedup", {}) or {}).items():
+                source_key = str(key or "").strip()
+                if not source_key:
+                    continue
+                try:
+                    seed_population_source_counts_total[source_key] = (
+                        int(seed_population_source_counts_total.get(source_key, 0))
+                        + int(value or 0)
+                    )
+                except Exception:
+                    continue
+        seed_population_aggregate = {
+            "attempts_logged": int(len(seed_population_reports)),
+            "attempts_with_layout_seed": int(
+                sum(
+                    1
+                    for report in seed_population_reports
+                    if int(report.get("layout_seed_generated_count", 0) or 0) > 0
+                )
+            ),
+            "total_seed_count_post_dedup_sum": int(
+                sum(int(report.get("total_seed_count_post_dedup", 0) or 0) for report in seed_population_reports)
+            ),
+            "layout_seed_generated_total": int(
+                sum(int(report.get("layout_seed_generated_count", 0) or 0) for report in seed_population_reports)
+            ),
+            "layout_seed_unique_total": int(
+                sum(int(report.get("layout_seed_unique_count", 0) or 0) for report in seed_population_reports)
+            ),
+            "source_counts_post_dedup_total": dict(seed_population_source_counts_total),
+        }
+        final_state.metadata["seed_population_reports"] = list(seed_population_reports)
+        final_state.metadata["seed_population_aggregate"] = dict(seed_population_aggregate)
         final_state.metadata["layout_unique_state_count"] = int(
             len(
                 {
@@ -2834,6 +2892,33 @@ class MaaSPipelineService:
             summary_attempt_payload = dict(best_attempt_payload)
         elif maas_attempts:
             summary_attempt_payload = dict(maas_attempts[-1] or {})
+
+        final_diagnostics = dict(final_metrics.get("diagnostics", {}) or {})
+        final_mission_metrics = dict(final_diagnostics.get("mission_metrics", {}) or {})
+        summary_attempt_payload["best_candidate_metrics"] = {
+            "cg_offset": float(final_metrics["geometry"].cg_offset_magnitude),
+            "max_temp": float(final_metrics["thermal"].max_temp),
+            "min_clearance": float(final_metrics["geometry"].min_clearance),
+            "num_collisions": float(final_metrics["geometry"].num_collisions),
+            "boundary_violation": float(final_diagnostics.get("boundary_violation", 0.0) or 0.0),
+            "mission_keepout_violation": float(
+                final_mission_metrics.get("mission_keepout_violation", 0.0) or 0.0
+            ),
+            "max_stress": float(final_metrics["structural"].max_stress),
+            "max_displacement": float(final_metrics["structural"].max_displacement),
+            "first_modal_freq": float(final_metrics["structural"].first_modal_freq),
+            "safety_factor": float(final_metrics["structural"].safety_factor),
+            "total_power": float(final_metrics["power"].total_power),
+            "peak_power": float(final_metrics["power"].peak_power),
+            "power_margin": float(final_metrics["power"].power_margin),
+            "voltage_drop": float(final_metrics["power"].voltage_drop),
+            "fov_occlusion_proxy": float(final_mission_metrics.get("fov_occlusion_proxy", 0.0) or 0.0),
+            "emc_separation_proxy": float(final_mission_metrics.get("emc_separation_proxy", 0.0) or 0.0),
+        }
+        if final_state_selected_from_candidate and len(final_violations) == 0:
+            summary_attempt_payload["dominant_violation"] = ""
+            summary_attempt_payload["constraint_violation_breakdown"] = {}
+
         summary_search_space = str(
             summary_attempt_payload.get(
                 "search_space_mode",
@@ -2855,6 +2940,7 @@ class MaaSPipelineService:
                 if bool(item.get("layout_duplicate_with_previous", False))
             )
         )
+        summary_seed_report = dict(summary_attempt_payload.get("seed_population_report", {}) or {})
         compile_report_for_summary = dict(last_compile_report or {})
         llm_compile_warnings = list(compile_report_for_summary.get("warnings", []) or [])
         llm_dropped_constraints = list(
@@ -2920,6 +3006,20 @@ class MaaSPipelineService:
                 "dominant_violation": summary_attempt_payload.get("dominant_violation"),
                 "constraint_violation_breakdown": summary_attempt_payload.get("constraint_violation_breakdown"),
                 "best_candidate_metrics": summary_attempt_payload.get("best_candidate_metrics"),
+                "seed_population_report": dict(summary_seed_report),
+                "seed_population_aggregate": dict(seed_population_aggregate),
+                "seed_population_total_count": int(
+                    summary_seed_report.get("total_seed_count_post_dedup", 0) or 0
+                ),
+                "layout_seed_generated_count": int(
+                    summary_seed_report.get("layout_seed_generated_count", 0) or 0
+                ),
+                "layout_seed_unique_count": int(
+                    summary_seed_report.get("layout_seed_unique_count", 0) or 0
+                ),
+                "layout_seed_attempts_used": int(
+                    seed_population_aggregate.get("attempts_with_layout_seed", 0) or 0
+                ),
                 "operator_bias": summary_attempt_payload.get("operator_bias"),
                 "operator_credit_snapshot": summary_attempt_payload.get("operator_credit_snapshot"),
                 "modeling_intent_source": str(modeling_intent_diagnostics.get("source", "")),
@@ -3159,6 +3259,18 @@ class MaaSPipelineService:
                     "diagnosis_status": str(last_diagnosis.get("status", "")),
                     "diagnosis_reason": str(last_diagnosis.get("reason", "")),
                     "attempt_count": int(len(maas_attempts)),
+                    "seed_population_total_count": int(
+                        summary_seed_report.get("total_seed_count_post_dedup", 0) or 0
+                    ),
+                    "layout_seed_generated_count": int(
+                        summary_seed_report.get("layout_seed_generated_count", 0) or 0
+                    ),
+                    "layout_seed_unique_count": int(
+                        summary_seed_report.get("layout_seed_unique_count", 0) or 0
+                    ),
+                    "layout_seed_attempts_used": int(
+                        seed_population_aggregate.get("attempts_with_layout_seed", 0) or 0
+                    ),
                     "final_mph_path": persisted_final_mph_path,
                     "source_gate_mode": str(source_gate_report.get("mode", "")),
                     "source_gate_passed": bool(source_gate_report.get("passed", True)),

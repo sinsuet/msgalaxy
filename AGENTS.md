@@ -7,6 +7,21 @@ If any statement here conflicts with runtime code or project policies, follow th
 3. `config/system/<stack>/base.yaml` + `config/scenarios/registry.yaml` (runtime defaults)
 4. This file
 
+## Session Startup Contract
+
+For every new conversation/task in this repository:
+- read `HANDOFF.md` and `RULES.md` before analysis or edits unless their effective contents are already present in the injected context;
+- enforce the priority order `HANDOFF.md > RULES.md > config/system/<stack>/base.yaml + config/scenarios/registry.yaml > AGENTS.md`;
+- do not repeat or explain rule text unless the user explicitly asks for it;
+- for substantive repo work, keep the response sections limited to:
+  - `任务理解`
+  - `执行计划`
+  - `改动文件`
+  - `执行命令`
+  - `验证结果`
+  - `未完成项/风险`
+  - `深度分析后的下一步方案`
+
 ## Strict Rules
 
 ### Project mission and architecture
@@ -153,7 +168,8 @@ Primary stack in active flow:
 - Geometry/layout: internal layout engine + AABB checks + CAD export path
 - Physics backend: COMSOL integration (with proxy/online evaluator bridge in MaaS)
 
-Always use UTF-8-safe prefix and conda env for Python commands:
+For human/manual local runs, the repository expects VS Code workspace terminal settings from `.vscode/settings.json`.
+For agent/automation Python commands, continue using the explicit UTF-8-safe conda form:
 - `PYTHONIOENCODING=utf-8 PYTHONUTF8=1 conda run -n msgalaxy ...`
 
 Recommended v3 smoke harness (NSGA-II, L1-L4):

@@ -191,6 +191,7 @@ def _flatten_attempt_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         payload = dict(row or {})
         violations = dict(payload.pop("constraint_violation_breakdown", {}) or {})
         metrics = dict(payload.pop("best_candidate_metrics", {}) or {})
+        seed_population = dict(payload.pop("seed_population_report", {}) or {})
         payload["violation_keys"] = ",".join(sorted(str(k) for k in violations.keys()))
         payload["violation_total"] = float(sum(float(v) for v in violations.values())) if violations else 0.0
         payload["metric_cg_offset"] = metrics.get("cg_offset")
@@ -201,6 +202,22 @@ def _flatten_attempt_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         payload["metric_voltage_drop"] = metrics.get("voltage_drop")
         payload["metric_power_margin"] = metrics.get("power_margin")
         payload["metric_peak_power"] = metrics.get("peak_power")
+        payload["seed_population_total_count"] = seed_population.get("total_seed_count_post_dedup")
+        payload["layout_seed_generated_count"] = seed_population.get("layout_seed_generated_count")
+        payload["layout_seed_unique_count"] = seed_population.get("layout_seed_unique_count")
+        payload["layout_seed_requested_count"] = seed_population.get("layout_seed_requested_count")
+        payload["seed_population_source_keys"] = ",".join(
+            sorted(
+                str(key)
+                for key in dict(seed_population.get("source_counts_post_dedup", {}) or {}).keys()
+                if str(key).strip()
+            )
+        )
+        payload["layout_seed_state_ids"] = ",".join(
+            str(item)
+            for item in list(seed_population.get("layout_seed_state_ids", []) or [])
+            if str(item).strip()
+        )
         out.append(payload)
     return out
 

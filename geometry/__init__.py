@@ -32,6 +32,20 @@ from .layout_engine import (
     generate_synthetic_bom,
 )
 
+from .layout_seed_service import (
+    LayoutSeedService,
+    apply_packing_result_to_reference_state,
+    packing_result_to_design_state,
+)
+
+from .metrics import (
+    calculate_boundary_violation,
+    calculate_component_volume_sum,
+    calculate_packing_efficiency,
+    calculate_pairwise_clearance,
+    summarize_geometry_state,
+)
+
 __all__ = [
     # Schema
     "AABB",
@@ -53,4 +67,14 @@ __all__ = [
     "LayoutEngine",
     "generate_bom_from_config",
     "generate_synthetic_bom",
+    # Layout seed service
+    "LayoutSeedService",
+    "apply_packing_result_to_reference_state",
+    "packing_result_to_design_state",
+    # Metrics
+    "calculate_boundary_violation",
+    "calculate_component_volume_sum",
+    "calculate_packing_efficiency",
+    "calculate_pairwise_clearance",
+    "summarize_geometry_state",
 ]

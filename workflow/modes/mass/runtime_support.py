@@ -13,6 +13,7 @@ import numpy as np
 
 from core.exceptions import SatelliteDesignError
 from core.protocol import DesignState
+from geometry.layout_seed_service import LayoutSeedService
 from optimization.modes.mass.maas_audit import select_top_pareto_indices
 from optimization.modes.mass.maas_compiler import (
     compile_intent_to_problem_spec,
@@ -2556,30 +2557,166 @@ class MassRuntimeSupport:
         opt_cfg = self.config.get("optimization", {})
         if not bool(opt_cfg.get("mass_enable_seed_population", True)):
             seed = problem_generator.codec.clip(problem_generator.codec.encode(current_state))
+            self._last_maas_seed_population_report = {
+                "enabled": False,
+                "mode": "coordinate",
+                "reason": "seed_population_disabled",
+                "reference_state_id": str(getattr(current_state, "state_id", "") or ""),
+                "requested_max_count": 1,
+                "total_seed_count_pre_dedup": 0,
+                "total_seed_count_post_dedup": 0,
+                "layout_seed_enabled": False,
+                "layout_seed_requested_count": 0,
+                "layout_seed_generated_count": 0,
+                "layout_seed_unique_count": 0,
+                "layout_seed_state_ids": [],
+                "cg_shift_seed_count": 0,
+                "heavy_component_seed_count": 0,
+                "source_counts_pre_dedup": {},
+                "source_counts_post_dedup": {},
+                "seed_sources_post_dedup": [],
+                "generation_error": "",
+            }
             return np.asarray([seed], dtype=float)
 
         codec = problem_generator.codec
         base_state = current_state.model_copy(deep=True)
         base_vector = codec.clip(codec.encode(base_state))
-        seeds: List[np.ndarray] = [base_vector]
 
         seed_population_max = max(
             1,
             int(opt_cfg.get("mass_seed_population_max", 8)),
         )
+        layout_seed_enabled = bool(opt_cfg.get("mass_enable_layout_seed_population", True))
+        layout_seed_count = max(
+            0,
+            min(
+                int(opt_cfg.get("mass_layout_seed_count", 3)),
+                max(seed_population_max - 1, 0),
+            ),
+        )
         component_threshold = max(
             2,
             int(opt_cfg.get("mass_cg_seed_component_threshold", 12)),
         )
+        seed_records: List[Dict[str, Any]] = [
+            {
+                "vector": np.asarray(base_vector, dtype=float),
+                "source": "warm_start",
+                "state_id": str(getattr(base_state, "state_id", "") or ""),
+            }
+        ]
+        report: Dict[str, Any] = {
+            "enabled": True,
+            "mode": "coordinate",
+            "reason": "ok",
+            "reference_state_id": str(getattr(base_state, "state_id", "") or ""),
+            "requested_max_count": int(seed_population_max),
+            "warm_start_included": True,
+            "layout_seed_enabled": bool(layout_seed_enabled),
+            "layout_seed_requested_count": int(layout_seed_count),
+            "layout_seed_generated_count": 0,
+            "layout_seed_unique_count": 0,
+            "layout_seed_state_ids": [],
+            "cg_shift_seed_count": 0,
+            "heavy_component_seed_count": 0,
+            "source_counts_pre_dedup": {},
+            "source_counts_post_dedup": {},
+            "total_seed_count_pre_dedup": 0,
+            "total_seed_count_post_dedup": 0,
+            "seed_sources_post_dedup": [],
+            "generation_error": "",
+        }
+
+        def _finalize_seed_records(records: List[Dict[str, Any]]) -> np.ndarray:
+            source_counts_pre: Dict[str, int] = {}
+            for item in records:
+                source_key = str(item.get("source", "") or "unknown")
+                source_counts_pre[source_key] = int(source_counts_pre.get(source_key, 0)) + 1
+
+            unique_records: List[Dict[str, Any]] = []
+            seen: set[tuple[float, ...]] = set()
+            for item in records:
+                vec = np.asarray(item.get("vector", np.empty((0,), dtype=float)), dtype=float)
+                key = tuple(np.round(vec, 6).tolist())
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique_records.append(
+                    {
+                        "vector": vec,
+                        "source": str(item.get("source", "") or "unknown"),
+                        "state_id": str(item.get("state_id", "") or ""),
+                    }
+                )
+                if len(unique_records) >= seed_population_max:
+                    break
+
+            source_counts_post: Dict[str, int] = {}
+            for item in unique_records:
+                source_key = str(item.get("source", "") or "unknown")
+                source_counts_post[source_key] = int(source_counts_post.get(source_key, 0)) + 1
+
+            layout_seed_state_ids = [
+                str(item.get("state_id", "") or "")
+                for item in unique_records
+                if str(item.get("source", "") or "") == "layout_seed" and str(item.get("state_id", "") or "")
+            ]
+
+            report["source_counts_pre_dedup"] = dict(source_counts_pre)
+            report["source_counts_post_dedup"] = dict(source_counts_post)
+            report["total_seed_count_pre_dedup"] = int(len(records))
+            report["total_seed_count_post_dedup"] = int(len(unique_records))
+            report["layout_seed_unique_count"] = int(source_counts_post.get("layout_seed", 0))
+            report["layout_seed_state_ids"] = list(layout_seed_state_ids)
+            report["seed_sources_post_dedup"] = [
+                str(item.get("source", "") or "unknown")
+                for item in unique_records
+            ]
+            self._last_maas_seed_population_report = dict(report)
+
+            return np.asarray(
+                [np.asarray(item.get("vector", np.empty((0,), dtype=float)), dtype=float) for item in unique_records],
+                dtype=float,
+            )
 
         try:
+            if (
+                layout_seed_enabled and
+                layout_seed_count > 0 and
+                getattr(self, "layout_engine", None) is not None
+            ):
+                seed_service = LayoutSeedService(layout_engine=self.layout_engine)
+                layout_seed_states = seed_service.generate_seed_states(
+                    reference_state=base_state,
+                    max_count=layout_seed_count,
+                    seed_start=int(opt_cfg.get("mass_layout_seed_base_seed", 43)),
+                    attempts_multiplier=int(
+                        opt_cfg.get("mass_layout_seed_attempts_multiplier", 4)
+                    ),
+                    recenter_fn=getattr(self, "_recenter_initial_layout_to_cg", None),
+                    state_id_prefix="maas_layout_seed",
+                )
+                for candidate_state in list(layout_seed_states or []):
+                    seed_records.append(
+                        {
+                            "vector": codec.clip(codec.encode(candidate_state)),
+                            "source": "layout_seed",
+                            "state_id": str(getattr(candidate_state, "state_id", "") or ""),
+                        }
+                    )
+                    report["layout_seed_generated_count"] = int(
+                        report.get("layout_seed_generated_count", 0)
+                    ) + 1
+
             centers, half_sizes = codec.geometry_arrays_from_state(base_state)
             masses = np.asarray(
                 [max(float(comp.mass), 1e-9) for comp in base_state.components],
                 dtype=float,
             )
             if centers.shape[0] == 0:
-                return np.asarray([base_vector], dtype=float)
+                report["reason"] = "empty_component_set"
+                return _finalize_seed_records(seed_records)
 
             env_min, env_max = codec.envelope_bounds
             lower_centers = env_min.reshape(1, 3) + half_sizes
@@ -2607,7 +2744,8 @@ class MassRuntimeSupport:
 
             total_mass = float(np.sum(masses))
             if total_mass <= 1e-9:
-                return np.asarray([base_vector], dtype=float)
+                report["reason"] = "non_positive_total_mass"
+                return _finalize_seed_records(seed_records)
 
             if base_state.envelope.origin == "center":
                 target_center = np.zeros(3, dtype=float)
@@ -2636,7 +2774,14 @@ class MassRuntimeSupport:
                         comp.position.x = float(shifted_centers[idx, 0])
                         comp.position.y = float(shifted_centers[idx, 1])
                         comp.position.z = float(shifted_centers[idx, 2])
-                    seeds.append(codec.clip(codec.encode(state_shifted)))
+                    seed_records.append(
+                        {
+                            "vector": codec.clip(codec.encode(state_shifted)),
+                            "source": "cg_shift",
+                            "state_id": "",
+                        }
+                    )
+                    report["cg_shift_seed_count"] = int(report.get("cg_shift_seed_count", 0)) + 1
 
             # B) 重组件定向种子：在高组件数场景提升 CG 收敛概率。
             if (
@@ -2660,23 +2805,29 @@ class MassRuntimeSupport:
                             comp.position.x = float(candidate_centers[idx, 0])
                             comp.position.y = float(candidate_centers[idx, 1])
                             comp.position.z = float(candidate_centers[idx, 2])
-                        seeds.append(codec.clip(codec.encode(state_shifted)))
+                        seed_records.append(
+                            {
+                                "vector": codec.clip(codec.encode(state_shifted)),
+                                "source": "heavy_component",
+                                "state_id": "",
+                            }
+                        )
+                        report["heavy_component_seed_count"] = int(
+                            report.get("heavy_component_seed_count", 0)
+                        ) + 1
         except Exception as exc:
             self.logger.logger.warning("MaaS seed population generation failed, fallback warm-start: %s", exc)
-            seeds = [base_vector]
+            report["reason"] = "generation_error"
+            report["generation_error"] = str(exc)
+            seed_records = [
+                {
+                    "vector": np.asarray(base_vector, dtype=float),
+                    "source": "warm_start",
+                    "state_id": str(getattr(base_state, "state_id", "") or ""),
+                }
+            ]
 
-        unique_seeds: List[np.ndarray] = []
-        seen: set[tuple[float, ...]] = set()
-        for vec in seeds:
-            key = tuple(np.round(np.asarray(vec, dtype=float), 6).tolist())
-            if key in seen:
-                continue
-            seen.add(key)
-            unique_seeds.append(np.asarray(vec, dtype=float))
-            if len(unique_seeds) >= seed_population_max:
-                break
-
-        return np.asarray(unique_seeds, dtype=float)
+        return _finalize_seed_records(seed_records)
 
     def _extract_maas_candidate_diagnostics(
         self,
@@ -2884,6 +3035,27 @@ class MassRuntimeSupport:
         solver_cost = 0.0
         problem_generator = None
         search_space_mode = self._resolve_maas_search_space_mode()
+        seed_population_report: Dict[str, Any] = {
+            "enabled": False,
+            "mode": str(search_space_mode),
+            "reason": "not_built",
+            "reference_state_id": str(getattr(current_state, "state_id", "") or ""),
+            "requested_max_count": 0,
+            "warm_start_included": False,
+            "layout_seed_enabled": False,
+            "layout_seed_requested_count": 0,
+            "layout_seed_generated_count": 0,
+            "layout_seed_unique_count": 0,
+            "layout_seed_state_ids": [],
+            "cg_shift_seed_count": 0,
+            "heavy_component_seed_count": 0,
+            "source_counts_pre_dedup": {},
+            "source_counts_post_dedup": {},
+            "total_seed_count_pre_dedup": 0,
+            "total_seed_count_post_dedup": 0,
+            "seed_sources_post_dedup": [],
+            "generation_error": "",
+        }
         if mission_precheck_blocked:
             diagnosis = {
                 "status": "precheck_mission_infeasible",
@@ -2892,6 +3064,7 @@ class MassRuntimeSupport:
                 "mission_precheck": dict(mission_precheck),
                 "mission_precheck_repair": dict(mission_precheck_repair),
             }
+            seed_population_report["reason"] = "mission_precheck_blocked"
             relaxation_suggestions = []
         else:
             try:
@@ -2917,6 +3090,9 @@ class MassRuntimeSupport:
                         seed_population = self._build_maas_seed_population(
                             problem_generator=problem_generator,
                             current_state=current_state,
+                        )
+                        seed_population_report = dict(
+                            getattr(self, "_last_maas_seed_population_report", {}) or {}
                         )
                     else:
                         codec = problem_generator.codec
@@ -2944,6 +3120,27 @@ class MassRuntimeSupport:
                                     ],
                                     dtype=float,
                                 )
+                            seed_population_report = {
+                                "enabled": True,
+                                "mode": str(search_space_mode),
+                                "reason": "operator_codec_seed_population",
+                                "reference_state_id": str(getattr(current_state, "state_id", "") or ""),
+                                "requested_max_count": int(opt_cfg.get("mass_seed_population_max", 8)),
+                                "warm_start_included": False,
+                                "layout_seed_enabled": False,
+                                "layout_seed_requested_count": 0,
+                                "layout_seed_generated_count": 0,
+                                "layout_seed_unique_count": 0,
+                                "layout_seed_state_ids": [],
+                                "cg_shift_seed_count": 0,
+                                "heavy_component_seed_count": 0,
+                                "source_counts_pre_dedup": {"operator_codec": int(seed_population.shape[0])},
+                                "source_counts_post_dedup": {"operator_codec": int(seed_population.shape[0])},
+                                "total_seed_count_pre_dedup": int(seed_population.shape[0]),
+                                "total_seed_count_post_dedup": int(seed_population.shape[0]),
+                                "seed_sources_post_dedup": ["operator_codec"] * int(seed_population.shape[0]),
+                                "generation_error": "",
+                            }
                         else:
                             seed_population = np.asarray(
                                 [
@@ -2953,8 +3150,50 @@ class MassRuntimeSupport:
                                 ],
                                 dtype=float,
                             )
+                            seed_population_report = {
+                                "enabled": True,
+                                "mode": str(search_space_mode),
+                                "reason": "warm_start_only",
+                                "reference_state_id": str(getattr(current_state, "state_id", "") or ""),
+                                "requested_max_count": 1,
+                                "warm_start_included": True,
+                                "layout_seed_enabled": False,
+                                "layout_seed_requested_count": 0,
+                                "layout_seed_generated_count": 0,
+                                "layout_seed_unique_count": 0,
+                                "layout_seed_state_ids": [],
+                                "cg_shift_seed_count": 0,
+                                "heavy_component_seed_count": 0,
+                                "source_counts_pre_dedup": {"warm_start": 1},
+                                "source_counts_post_dedup": {"warm_start": 1},
+                                "total_seed_count_pre_dedup": 1,
+                                "total_seed_count_post_dedup": 1,
+                                "seed_sources_post_dedup": ["warm_start"],
+                                "generation_error": "",
+                            }
                 else:
                     seed_population = None
+                    seed_population_report = {
+                        "enabled": False,
+                        "mode": str(search_space_mode),
+                        "reason": "seed_population_disabled",
+                        "reference_state_id": str(getattr(current_state, "state_id", "") or ""),
+                        "requested_max_count": 0,
+                        "warm_start_included": False,
+                        "layout_seed_enabled": False,
+                        "layout_seed_requested_count": 0,
+                        "layout_seed_generated_count": 0,
+                        "layout_seed_unique_count": 0,
+                        "layout_seed_state_ids": [],
+                        "cg_shift_seed_count": 0,
+                        "heavy_component_seed_count": 0,
+                        "source_counts_pre_dedup": {},
+                        "source_counts_post_dedup": {},
+                        "total_seed_count_pre_dedup": 0,
+                        "total_seed_count_post_dedup": 0,
+                        "seed_sources_post_dedup": [],
+                        "generation_error": "",
+                    }
                 runner = self._create_pymoo_runner(
                     pop_size=pop_size,
                     n_generations=n_generations,
@@ -3061,6 +3300,7 @@ class MassRuntimeSupport:
             "best_candidate_metrics": dict(
                 candidate_diagnostics.get("best_candidate_metrics", {}) or {}
             ),
+            "seed_population_report": dict(seed_population_report or {}),
         }
 
         generation_records: List[Dict[str, Any]] = []

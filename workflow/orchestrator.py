@@ -22,11 +22,17 @@ from dotenv import load_dotenv
 # 加载.env文件
 load_dotenv()
 
-from core.protocol import DesignState, ComponentGeometry, Vector3D, EvaluationResult
+from core.protocol import DesignState, EvaluationResult
 from core.logger import ExperimentLogger
 from core.exceptions import SatelliteDesignError
 
 from geometry.layout_engine import LayoutEngine
+from geometry.layout_seed_service import packing_result_to_design_state
+from geometry.metrics import (
+    calculate_boundary_violation as calculate_geometry_boundary_violation,
+    calculate_packing_efficiency,
+    calculate_pairwise_clearance as calculate_geometry_pairwise_clearance,
+)
 from simulation.base import SimulationDriver
 from simulation.comsol_driver import ComsolDriver
 from simulation.contracts import merge_metric_sources, normalize_runtime_constraints
@@ -95,7 +101,7 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
                 "Use 'agent_loop', 'mass', or 'vop_maas'."
             )
 
-        # 初始化日?
+        # 初始化日志
         self.logger = ExperimentLogger(
             base_dir=self.config.get("logging", {}).get("base_dir", "experiments"),
             run_mode=self.optimization_mode,
@@ -119,7 +125,7 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
         self._mission_fov_evaluator_error: str = ""
 
     def _load_config(self, config_path: str) -> Dict[str, Any]:
-        """加载配置文件并替换环境变?"""
+        """加载配置文件并替换环境变量"""
         config_file = Path(config_path)
         if not config_file.exists():
             raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -132,7 +138,7 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
         return config
 
     def _replace_env_vars(self, obj):
-        """递归替换配置中的环境变量占位?${VAR_NAME}"""
+        """递归替换配置中的环境变量占位符 ${VAR_NAME}"""
         if isinstance(obj, dict):
             return {k: self._replace_env_vars(v) for k, v in obj.items()}
         elif isinstance(obj, list):
@@ -224,7 +230,7 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
 
     def _extract_bom_overrides(self, bom_file: str) -> tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
         """
-        ?BOM 文件中提取约束覆盖与组件扩展热学属性?
+        从 BOM 文件中提取约束覆盖与组件扩展热学属性。
 
         Returns:
             (constraints_override, component_props_by_id)
@@ -470,10 +476,113 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
         )
         return recentered_state
 
+    def _sync_layout_clearance_constraint(
+        self,
+        geom_config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        synced = dict(geom_config or {})
+        required_clearance = float(self.runtime_constraints.get("min_clearance_mm", 5.0) or 5.0)
+        current_clearance = float(synced.get("clearance_mm", 5.0) or 5.0)
+        synced["clearance_mm"] = max(current_clearance, required_clearance)
+        return synced
+
+    def _repair_initial_mission_keepout(self, design_state: DesignState) -> DesignState:
+        opt_cfg = dict(self.config.get("optimization", {}) or {})
+        mission_evaluator_ref = str(opt_cfg.get("mass_mission_fov_evaluator", "") or "").strip()
+        require_mission_real = bool(
+            opt_cfg.get("mass_source_gate_require_mission_real", False)
+            or opt_cfg.get("mass_physics_real_only", False)
+        )
+        if not mission_evaluator_ref and not require_mission_real:
+            return design_state
+
+        axis = str(opt_cfg.get("mission_keepout_axis", "z") or "z").strip().lower()
+        if axis not in {"x", "y", "z"}:
+            axis = "z"
+        axis_idx = self._mission_axis_index(axis)
+        keepout_center = float(opt_cfg.get("mission_keepout_center_mm", 0.0) or 0.0)
+        min_sep = max(float(opt_cfg.get("mission_min_separation_mm", 0.0) or 0.0), 0.0)
+
+        critical_components = [
+            comp for comp in list(getattr(design_state, "components", []) or [])
+            if self._is_mission_critical_component(comp)
+        ]
+        if not critical_components:
+            return design_state
+
+        repaired_state = design_state.model_copy(deep=True)
+        env_min, env_max = self._envelope_bounds_for_state(repaired_state)
+        moved_components: List[str] = []
+
+        for comp in list(repaired_state.components or []):
+            if not self._is_mission_critical_component(comp):
+                continue
+
+            half = np.asarray(
+                [
+                    float(comp.dimensions.x) / 2.0,
+                    float(comp.dimensions.y) / 2.0,
+                    float(comp.dimensions.z) / 2.0,
+                ],
+                dtype=float,
+            )
+            pos = np.asarray(
+                [float(comp.position.x), float(comp.position.y), float(comp.position.z)],
+                dtype=float,
+            )
+            current_sep = abs(float(pos[axis_idx]) - keepout_center) - float(half[axis_idx])
+            if current_sep >= min_sep - 1e-9:
+                continue
+
+            lower = float(env_min[axis_idx] + half[axis_idx])
+            upper = float(env_max[axis_idx] - half[axis_idx])
+            if lower > upper:
+                continue
+
+            required_center_offset = float(min_sep + max(float(half[axis_idx]), 0.0))
+            positive_target = float(keepout_center + required_center_offset)
+            negative_target = float(keepout_center - required_center_offset)
+            positive_feasible = bool(positive_target <= upper + 1e-9)
+            negative_feasible = bool(negative_target >= lower - 1e-9)
+
+            if positive_feasible and negative_feasible:
+                target = positive_target if float(pos[axis_idx]) >= keepout_center else negative_target
+            elif positive_feasible:
+                target = positive_target
+            elif negative_feasible:
+                target = negative_target
+            else:
+                positive_sep = abs(upper - keepout_center) - float(half[axis_idx])
+                negative_sep = abs(lower - keepout_center) - float(half[axis_idx])
+                target = upper if positive_sep >= negative_sep else lower
+
+            clipped = float(np.clip(target, lower, upper))
+            if abs(clipped - float(pos[axis_idx])) <= 1e-9:
+                continue
+            if axis_idx == 0:
+                comp.position.x = clipped
+            elif axis_idx == 1:
+                comp.position.y = clipped
+            else:
+                comp.position.z = clipped
+            moved_components.append(str(getattr(comp, "id", "") or ""))
+
+        if moved_components:
+            self.logger.logger.info(
+                "Initial mission keepout repair applied: axis=%s, center=%.2f, min_sep=%.2f, moved=%s",
+                axis,
+                keepout_center,
+                min_sep,
+                moved_components,
+            )
+        return repaired_state
+
     def _initialize_modules(self):
-        """初始化所有模?"""
+        """初始化所有模块。"""
         # 1. 几何模块
-        geom_config = self.config.get("geometry", {})
+        geom_config = self._sync_layout_clearance_constraint(
+            dict(self.config.get("geometry", {}) or {})
+        )
         self.layout_engine = LayoutEngine(config=geom_config)
 
         # 2. 仿真模块
@@ -574,15 +683,15 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
         self.state_history = {}  # {state_id: (DesignState, EvaluationResult)}
         self.recent_failures = []  # 最近失败的操作描述
         self.rollback_count = 0  # 回退次数统计
-        self._snapshot_history: List[Dict[str, float]] = []  # 用于平台期检?
-        self._cg_rescue_last_iter: int = -999  # 防止每轮都触发救?
+        self._snapshot_history: List[Dict[str, float]] = []  # 用于平台期检测
+        self._cg_rescue_last_iter: int = -999  # 防止每轮都触发救援
 
         self.logger.logger.info(
             f"All modules initialized successfully (optimization_mode={self.optimization_mode})"
         )
 
     def _initialize_llm_controllers(self) -> None:
-        """初始化按职责分拆?LLM 控制器层?"""
+        """初始化按职责分拆的 LLM 控制器层。"""
         self.intent_modeler = IntentModeler(delegate=self.meta_reasoner)
         self.strategic_planner = StrategicPlanner(delegate=self.meta_reasoner)
         self.policy_programmer = PolicyProgrammer(delegate=self.meta_reasoner)
@@ -594,15 +703,15 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
         convergence_threshold: float = 0.01
     ) -> DesignState:
         """
-        运行完整的优化流?
+        运行完整的优化流程。
 
         Args:
             bom_file: BOM文件路径（可选）
-            max_iterations: 最大迭代次?
-            convergence_threshold: 收敛阈?
+            max_iterations: 最大迭代次数
+            convergence_threshold: 收敛阈值
 
         Returns:
-            最终设计状?
+            最终设计状态
         """
         self.logger.logger.info(f"Starting optimization (max_iter={max_iterations})")
         self.logger.logger.info(f"Optimization mode: {self.optimization_mode}")
@@ -667,14 +776,14 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
                         lines.append(
                             f"BOM约束: {json.dumps(constraints, ensure_ascii=False)}"
                         )
-                        lines.append(f"BOM组件? {len(components) if isinstance(components, list) else 0}")
+                        lines.append(f"BOM组件数: {len(components) if isinstance(components, list) else 0}")
                 except Exception as exc:
                     lines.append(f"BOM解析失败: {exc}")
 
         return "\n".join(lines)
 
     def _initialize_design_state(self, bom_file: Optional[str]) -> DesignState:
-        """初始化设计状?"""
+        """初始化设计状态。"""
         component_props_by_id: Dict[str, Dict[str, Any]] = {}
         if bom_file:
             # 从BOM文件加载
@@ -704,9 +813,11 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
 
             self.logger.logger.info(f"BOM loaded: {len(bom_components)} components")
 
-            # 更新layout_engine的配?
+            # 更新 layout_engine 的配置
             # 将BOM组件转换为layout_engine需要的格式
-            geom_config = dict(self.config.get('geometry', {}) or {})
+            geom_config = self._sync_layout_clearance_constraint(
+                dict(self.config.get('geometry', {}) or {})
+            )
             envelope_cfg = dict(geom_config.get('envelope', {}) or {})
             prefer_bom_envelope = self._to_bool(
                 envelope_cfg.get("prefer_bom_envelope"),
@@ -745,7 +856,7 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
             from geometry.layout_engine import LayoutEngine
             self.layout_engine = LayoutEngine(config=geom_config)
 
-        # 设置随机种子以确保布局可重?
+        # 设置随机种子以确保布局可重现
         import random
         import numpy as np
         random.seed(42)
@@ -754,91 +865,38 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
         # 使用默认布局
         packing_result = self.layout_engine.generate_layout()
 
-        # 转换为DesignState
-        components = []
-        for part in packing_result.placed:
-            pos_min = part.get_actual_position()
-            dims = np.array([float(part.dims[0]), float(part.dims[1]), float(part.dims[2])], dtype=float)
-            # LayoutEngine 输出的是最小角坐标；系统其他模块统一使用中心点坐标?
-            center_pos = pos_min + dims / 2.0
-            comp_props = component_props_by_id.get(part.id, {})
-            comp_geom = ComponentGeometry(
-                id=part.id,
-                position=Vector3D(
-                    x=float(center_pos[0]),
-                    y=float(center_pos[1]),
-                    z=float(center_pos[2])
-                ),
-                dimensions=Vector3D(x=float(part.dims[0]), y=float(part.dims[1]), z=float(part.dims[2])),
-                rotation=Vector3D(x=0, y=0, z=0),
-                mass=part.mass,
-                power=part.power,
-                category=part.category if hasattr(part, 'category') else 'unknown',
-                thermal_contacts=comp_props.get("thermal_contacts", {}) or {},
-                emissivity=(
-                    float(comp_props.get("emissivity"))
-                    if comp_props.get("emissivity") is not None
-                    else 0.8
-                ),
-                absorptivity=(
-                    float(comp_props.get("absorptivity"))
-                    if comp_props.get("absorptivity") is not None
-                    else 0.3
-                ),
-                coating_type=comp_props.get("coating_type") or "default",
-            )
-            components.append(comp_geom)
-
-        # 创建envelope信息
-        from core.protocol import Envelope
-        envelope_geom = self.layout_engine.envelope
-        outer_size = envelope_geom.outer_size()
-        inner_size = envelope_geom.inner_size()
-        envelope = Envelope(
-            outer_size=Vector3D(
-                x=float(outer_size[0]),
-                y=float(outer_size[1]),
-                z=float(outer_size[2])
-            ),
-            inner_size=Vector3D(
-                x=float(inner_size[0]),
-                y=float(inner_size[1]),
-                z=float(inner_size[2])
-            ),
-            thickness=float(envelope_geom.thickness_mm),
-            fill_ratio=envelope_geom.fill_ratio,
-            origin="center"
-        )
-
-        design_state = DesignState(
+        design_state = packing_result_to_design_state(
+            packing_result=packing_result,
+            envelope_geom=self.layout_engine.envelope,
+            clearance_mm=float(self.runtime_constraints.get("min_clearance_mm", 5.0) or 5.0),
+            component_props_by_id=component_props_by_id,
             iteration=0,
-            components=components,
-            envelope=envelope,
-            state_id="state_iter_00_init",  # Phase 4: 初始状态ID
-            parent_id=None
+            state_id="state_iter_00_init",
+            parent_id=None,
         )
 
-        return self._recenter_initial_layout_to_cg(design_state)
+        design_state = self._recenter_initial_layout_to_cg(design_state)
+        return self._repair_initial_mission_keepout(design_state)
 
     def _evaluate_design(
         self,
         design_state: DesignState,
         iteration: int
     ) -> tuple[Dict[str, Any], list[ViolationItem]]:
-        """评估设计状?"""
+        """评估设计状态。"""
         # 1. 几何评估
         geometry_metrics = self._evaluate_geometry(design_state)
 
         # 2. 仿真评估
         from core.protocol import SimulationRequest, SimulationType
 
-        # 2.1 COMSOL 后端统一使用动态导入模式，先导?STEP 文件
+        # 2.1 COMSOL 后端统一使用动态导入模式，先导出 STEP 文件
         sim_params = {}
         sim_config = self.config.get("simulation", {})
         if sim_config.get("backend") == "comsol":
             step_file = self._export_design_to_step(design_state, iteration)
             sim_params["step_file"] = str(step_file)
-            self.logger.logger.info(f"  导出STEP文件用于动态仿? {step_file}")
+            self.logger.logger.info(f"  导出 STEP 文件用于动态仿真: {step_file}")
 
         # 传递实验目录，用于保存 .mph 模型文件
         sim_params["experiment_dir"] = str(self.logger.run_dir)
@@ -953,7 +1011,8 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
             geometry_metrics,
             thermal_metrics,
             structural_metrics,
-            power_metrics
+            power_metrics,
+            mission_metrics=dict(mission_payload or {}),
         )
 
         metrics = {
@@ -997,11 +1056,11 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
 
     def _export_design_to_step(self, design_state: DesignState, iteration: int) -> Path:
         """
-        导出设计状态为STEP文件（用于动态COMSOL仿真?
-        使用 OpenCASCADE 生成真实?BREP 实体
+        导出设计状态为 STEP 文件（用于动态 COMSOL 仿真）。
+        使用 OpenCASCADE 生成真实 BREP 实体。
 
         Args:
-            design_state: 设计状?
+            design_state: 设计状态
             iteration: 当前迭代次数
 
         Returns:
@@ -1046,111 +1105,31 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
             com_offset=com_offset_vector,
             cg_offset_magnitude=cg_offset,
             moment_of_inertia=list(moi),
-            packing_efficiency=75.0,  # TODO: 实现真实的装填率计算
+            packing_efficiency=calculate_packing_efficiency(design_state),
             num_collisions=num_collisions
         )
 
     def _calculate_pairwise_clearance(self, design_state: DesignState) -> tuple[float, int]:
         """
-        计算组件两两间最小净间隙与碰撞对数（基于中心点坐?+ 轴对齐包围盒）?
+        计算组件两两间最小净间隙与碰撞对数（基于中心点坐标 + 轴对齐包围盒）。
 
         Returns:
             (min_clearance_mm, num_collisions)
         """
-        if len(design_state.components) < 2:
-            return float("inf"), 0
-
-        min_signed_clearance = float("inf")
-        collision_pairs = 0
-
-        comps = design_state.components
-        for i in range(len(comps)):
-            a = comps[i]
-            ax, ay, az = a.position.x, a.position.y, a.position.z
-            ahx, ahy, ahz = a.dimensions.x / 2.0, a.dimensions.y / 2.0, a.dimensions.z / 2.0
-
-            for j in range(i + 1, len(comps)):
-                b = comps[j]
-                bx, by, bz = b.position.x, b.position.y, b.position.z
-                bhx, bhy, bhz = b.dimensions.x / 2.0, b.dimensions.y / 2.0, b.dimensions.z / 2.0
-
-                sep_x = abs(ax - bx) - (ahx + bhx)
-                sep_y = abs(ay - by) - (ahy + bhy)
-                sep_z = abs(az - bz) - (ahz + bhz)
-
-                if sep_x <= 0 and sep_y <= 0 and sep_z <= 0:
-                    # 重叠：将“最小间隙”记为负值，幅度为最浅穿透深度?
-                    penetration = min(-sep_x, -sep_y, -sep_z)
-                    signed_clearance = -penetration
-                    collision_pairs += 1
-                else:
-                    gap_x = max(sep_x, 0.0)
-                    gap_y = max(sep_y, 0.0)
-                    gap_z = max(sep_z, 0.0)
-                    signed_clearance = float((gap_x ** 2 + gap_y ** 2 + gap_z ** 2) ** 0.5)
-
-                min_signed_clearance = min(min_signed_clearance, signed_clearance)
-
-        return min_signed_clearance, collision_pairs
+        return calculate_geometry_pairwise_clearance(design_state)
 
     def _calculate_boundary_violation(self, design_state: DesignState) -> float:
-        """
-        计算设计在包络约束下的最大越界量（mm）?        """
-        envelope = design_state.envelope
-        if envelope.origin == "center":
-            env_min = np.array(
-                [
-                    -float(envelope.outer_size.x) * 0.5,
-                    -float(envelope.outer_size.y) * 0.5,
-                    -float(envelope.outer_size.z) * 0.5,
-                ],
-                dtype=float,
-            )
-            env_max = -env_min
-        else:
-            env_min = np.zeros(3, dtype=float)
-            env_max = np.array(
-                [
-                    float(envelope.outer_size.x),
-                    float(envelope.outer_size.y),
-                    float(envelope.outer_size.z),
-                ],
-                dtype=float,
-            )
+        """计算设计在包络约束下的最大越界量（mm）。"""
 
-        overflow_max = 0.0
-        for comp in design_state.components:
-            center = np.array(
-                [
-                    float(comp.position.x),
-                    float(comp.position.y),
-                    float(comp.position.z),
-                ],
-                dtype=float,
-            )
-            half = np.array(
-                [
-                    max(float(comp.dimensions.x), 0.0) * 0.5,
-                    max(float(comp.dimensions.y), 0.0) * 0.5,
-                    max(float(comp.dimensions.z), 0.0) * 0.5,
-                ],
-                dtype=float,
-            )
-            lower_excess = (env_min + half) - center
-            upper_excess = center - (env_max - half)
-            overflow = np.maximum(np.maximum(lower_excess, upper_excess), 0.0)
-            if overflow.size > 0:
-                overflow_max = max(overflow_max, float(np.max(overflow)))
-
-        return float(max(overflow_max, 0.0))
+        return calculate_geometry_boundary_violation(design_state)
 
     def _is_geometry_feasible(self, design_state: DesignState) -> tuple[bool, float, int]:
         """
-        几何可行性快速判定（用于仿真前门控与动作缩放）?
+        几何可行性快速判定（用于仿真前门控与动作缩放）。
 
-        判据?
-        - 无碰撞对（num_collisions == 0?
-        - 最小净间隙不低于运行时阈?
+        判据：
+        - 无碰撞对（num_collisions == 0）
+        - 最小净间隙不低于运行时阈值
         """
         min_clearance, num_collisions = self._calculate_pairwise_clearance(design_state)
         min_clearance_limit = float(self.runtime_constraints.get("min_clearance_mm", 3.0))
