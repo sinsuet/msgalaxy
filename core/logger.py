@@ -1,7 +1,7 @@
 ﻿"""
-瀹為獙鏃ュ織绯荤粺
+实验日志系统
 
-鎻愪緵瀹屾暣鐨勫彲杩芥函鎬ф敮鎸侊紝璁板綍姣忔杩唬鐨勮緭鍏ヨ緭鍑恒€佹寚鏍囧彉鍖栧拰LLM浜や簰銆?
+提供完整的可追溯性支持，记录每次迭代的输入输出、指标变化和 LLM 交互。
 """
 
 import os
@@ -240,11 +240,15 @@ class ExperimentLogger:
         run_naming_strategy: Optional[str] = None,
     ):
         """
-        鍒濆鍖栨棩蹇楃鐞嗗櫒
+        初始化日志管理器
 
         Args:
-            base_dir: 瀹為獙杈撳嚭鏍圭洰褰?            run_mode: 杩愯妯″紡鏍囩锛坅gent_loop/mass锛?            run_label: 杩愯鏍囩锛堥€氬父鏉ヨ嚜 BOM/娴嬭瘯鍚嶏級
-            run_algorithm: 绠楁硶鏍囩锛堝 NSGA-II/MOEAD锛?            run_naming_strategy: 鍛藉悕绛栫暐锛坈ompact/verbose锛?        """
+            base_dir: 实验输出根目录
+            run_mode: 运行模式标签（agent_loop/mass）
+            run_label: 运行标签（通常来自 BOM 或测试名）
+            run_algorithm: 算法标签（如 NSGA-II/MOEAD）
+            run_naming_strategy: 命名策略（compact/verbose）
+        """
         self.base_dir = base_dir
         self.base_dir_path = Path(self.base_dir).resolve()
         resolved_mode = str(run_mode or "").strip().lower()
@@ -293,7 +297,7 @@ class ExperimentLogger:
             run_stem = f"{run_prefix}_{self.run_sequence:02d}"
             run_dir = date_root / run_stem
         self.run_dir = str(run_dir)
-        self.exp_dir = self.run_dir  # 娣诲姞exp_dir鍒悕
+        self.exp_dir = self.run_dir  # 添加 exp_dir 别名
         self.run_id = f"run_{self.run_date}_{run_stem}"
         self.latest_index_path = str(self.base_dir_path / "_latest.json")
         os.makedirs(self.run_dir, exist_ok=True)
@@ -317,26 +321,26 @@ class ExperimentLogger:
             }
         )
 
-        # 鍒涘缓瀛愭枃浠跺す
+        # 创建子文件夹
         self.llm_store = LLMInteractionStore(self.run_dir)
         self.llm_log_dir = self.llm_store.root_dir
 
         self.viz_dir = os.path.join(self.run_dir, "visualizations")
         os.makedirs(self.viz_dir, exist_ok=True)
 
-        # 鍒濆鍖朇SV缁熻鏂囦欢
+        # 初始化 CSV 统计文件
         self.csv_path = os.path.join(self.run_dir, "evolution_trace.csv")
         self._init_csv()
         self.mass_csv_path = os.path.join(self.run_dir, "mass_trace.csv")
         self._init_mass_csv()
 
-        # 鍘嗗彶璁板綍
+        # 历史记录
         self.history: List[str] = []
 
-        # 鍒涘缓Python logger
+        # 创建 Python logger
         self.logger = get_logger(f"experiment_{self.run_id}", persist_global=False)
 
-        # 娣诲姞鏂囦欢澶勭悊鍣紝灏嗘棩蹇楄緭鍑哄埌瀹為獙鐩綍鐨?run_log.txt
+        # 添加文件处理器，将日志输出到实验目录的 run_log.txt
         self._add_run_log_handler(self.run_timestamp)
 
         print(f"Experiment logs: {self.run_dir}")
@@ -349,26 +353,30 @@ class ExperimentLogger:
 
     def _add_run_log_handler(self, timestamp: str):
         """
-        娣诲姞鏂囦欢澶勭悊鍣紝灏嗘棩蹇楄緭鍑哄埌瀹為獙鐩綍鐨?run_log.txt
+        添加文件处理器，将日志输出到实验目录的 run_log.txt
 
         Args:
-            timestamp: 鏃堕棿鎴冲瓧绗︿覆
+            timestamp: 时间戳字符串
         """
-        # 鍒涘缓 run_log.txt 鏂囦欢璺緞
+        # 创建 run_log.txt 文件路径
         run_log_path = os.path.join(self.run_dir, "run_log.txt")
         run_debug_path = os.path.join(self.run_dir, "run_log_debug.txt")
 
         class _RunLogCompactFilter(logging.Filter):
             """
-            绮剧畝 run_log.txt 鐨勯珮閲嶅浣庝俊鎭瘑搴︽棩蹇椼€?
-            璁捐鍘熷垯锛?            - WARNING/ERROR 涓€寰嬩繚鐣欙紱
-            - 楂橀閲嶅鐨勭粨鏋勬寚鏍囨槑缁嗚浆绉诲埌 debug 鏃ュ織锛?            - 鍏抽敭娴佺▼纰戯紙COMSOL 璋冪敤銆侀绠楄€楀敖銆佸璁＄粨璁猴級淇濈暀銆?            """
+            精简 run_log.txt 中高重复、低信息密度的日志。
+
+            设计原则：
+            - WARNING/ERROR 一律保留；
+            - 高频重复的结构指标明细转移到 debug 日志；
+            - 关键流程锚点（COMSOL 调用、预算耗尽、审计结论）保留。
+            """
 
             _structural_prefixes = (
-                "璐ㄥ績:",
-                "鍑犱綍涓績:",
-                "璐ㄥ績鍋忕Щ閲?",
-                "杞姩鎯噺:",
+                "质心:",
+                "几何中心:",
+                "质心偏移量:",
+                "转动惯量:",
             )
 
             def filter(self, record: logging.LogRecord) -> bool:
@@ -389,7 +397,7 @@ class ExperimentLogger:
         )
         root_logger = logging.getLogger()
 
-        # 閬垮厤鍚岃繘绋嬪娆″垵濮嬪寲鏃堕噸澶嶆寕杞芥湰绯荤粺 handler 瀵艰嚧鏃ュ織鍊嶅
+        # 避免同进程多次初始化时重复挂载本系统 handler 导致日志倍增
         stale_handlers = [
             h for h in list(root_logger.handlers)
             if bool(getattr(h, "_msgalaxy_run_handler", False))
@@ -409,14 +417,14 @@ class ExperimentLogger:
         compact_handler._msgalaxy_run_handler = True  # type: ignore[attr-defined]
         root_logger.addHandler(compact_handler)
 
-        # run_log_debug.txt: 瀹屾暣鐗堬紝淇濈暀鍏ㄩ儴 INFO 缁嗚妭鐢ㄤ簬娣辨寲
+        # run_log_debug.txt: 完整版，保留全部 INFO 细节用于深挖
         debug_handler = logging.FileHandler(run_debug_path, encoding='utf-8')
         debug_handler.setLevel(logging.INFO)
         debug_handler.setFormatter(formatter)
         debug_handler._msgalaxy_run_handler = True  # type: ignore[attr-defined]
         root_logger.addHandler(debug_handler)
 
-        # 纭繚鏍?logger 鐨勭骇鍒笉浼氳繃婊ゆ帀 INFO 绾у埆鏃ュ織
+        # 确保根 logger 的级别不会过滤掉 INFO 级别日志
         if root_logger.level > logging.INFO:
             root_logger.setLevel(logging.INFO)
 
@@ -438,26 +446,29 @@ class ExperimentLogger:
                            response: Dict[str, Any] = None, context_dict: Dict[str, Any] = None,
                            response_dict: Dict[str, Any] = None, mode: Optional[str] = None):
         """
-        璁板綍LLM浜や簰
+        记录 LLM 交互
 
-        鏀寔涓ょ璋冪敤鏂瑰紡锛?
-        1. 鏂版柟寮? log_llm_interaction(iteration, role, request, response)
-        2. 鏃ф柟寮? log_llm_interaction(iteration, context_dict, response_dict)
+        支持两种调用方式：
+        1. 新方式: log_llm_interaction(iteration, role, request, response)
+        2. 旧方式: log_llm_interaction(iteration, context_dict, response_dict)
 
         Args:
-            iteration: 杩唬娆℃暟
-            role: 瑙掕壊鍚嶇О锛坢eta_reasoner, thermal_agent绛夛級
-            request: 璇锋眰鏁版嵁
-            response: 鍝嶅簲鏁版嵁
-            context_dict: 杈撳叆涓婁笅鏂囷紙鏃ф柟寮忥級
-            response_dict: LLM鍝嶅簲锛堟棫鏂瑰紡锛?            mode: 鍙€夋ā寮忔爣绛撅紙agent_loop/mass锛?        """
-        # 鍏煎鏃ф柟寮?
+            iteration: 迭代次数
+            role: 角色名称（meta_reasoner, thermal_agent 等）
+            request: 请求数据
+            response: 响应数据
+            context_dict: 输入上下文（旧方式）
+            response_dict: LLM 响应（旧方式）
+            mode: 可选模式标签（agent_loop/mass）
+        """
+        # 兼容旧方式
         if context_dict is not None:
             request = context_dict
         if response_dict is not None:
             response = response_dict
 
-        # 濡傛灉娌℃湁鏁版嵁锛岃烦杩?        if request is None and response is None:
+        # 如果没有数据，跳过
+        if request is None and response is None:
             return
 
         prefix = self.llm_store.write(
@@ -469,45 +480,46 @@ class ExperimentLogger:
         )
 
         if request is not None or response is not None:
-            print(f"  馃捑 LLM interaction saved: {prefix}")
+            print(f"  已保存 LLM 交互: {prefix}")
 
     def log_metrics(self, data: Dict[str, Any]):
         """
-        璁板綍杩唬鎸囨爣
+        记录迭代指标
 
         Args:
-            data: 鎸囨爣鏁版嵁瀛楀吀
+            data: 指标数据字典
         """
         row = materialize_metrics_payload(data)
         append_agent_loop_trace_row(self.csv_path, row)
 
     def add_history(self, message: str):
         """
-        娣诲姞鍘嗗彶璁板綍
+        添加历史记录
 
         Args:
-            message: 鍘嗗彶娑堟伅
+            message: 历史消息
         """
         self.history.append(message)
 
     def get_recent_history(self, n: int = 3) -> List[str]:
         """
-        鑾峰彇鏈€杩戠殑鍘嗗彶璁板綍
+        获取最近的历史记录
 
         Args:
-            n: 杩斿洖鏈€杩憂鏉¤褰?
+            n: 返回最近 n 条记录
 
         Returns:
-            鍘嗗彶璁板綍鍒楄〃
+            历史记录列表
         """
         return self.history[-n:] if len(self.history) >= n else self.history
 
     def save_design_state(self, iteration: int, design_state: Dict[str, Any]):
         """
-        淇濆瓨璁捐鐘舵€?
+        保存设计状态
+
         Args:
-            iteration: 杩唬娆℃暟
-            design_state: 璁捐鐘舵€佸瓧鍏?
+            iteration: 迭代次数
+            design_state: 设计状态字典
         """
         state_path = os.path.join(self.run_dir, f"design_state_iter_{iteration:02d}.json")
         with open(state_path, 'w', encoding='utf-8') as f:
@@ -688,7 +700,7 @@ class ExperimentLogger:
         """Persist a generated visualization figure."""
         viz_path = os.path.join(self.viz_dir, f"iter_{iteration:02d}_{fig_name}.png")
         fig.savefig(viz_path, dpi=150, bbox_inches='tight')
-        print(f"  馃搳 Visualization saved: {fig_name}")
+        print(f"  已保存可视化: {fig_name}")
 
     def save_summary(
         self,
@@ -722,10 +734,10 @@ class ExperimentLogger:
         with open(summary_path, 'w', encoding='utf-8') as f:
             _json_dump_safe(summary, f)
 
-        # 鐢熸垚Markdown鎶ュ憡
+        # 生成 Markdown 报告
         self._generate_markdown_report(summary)
 
-        # 鍚屾鏇存柊浜嬩欢灞?run manifest
+        # 同步更新 run manifest
         self.save_run_manifest(
             {
                 "status": str(status),
@@ -916,9 +928,9 @@ class ExperimentLogger:
                 f.write("- mode buckets: (none)\n")
             f.write(f"- Visualizations: `visualizations/`\n")
 
-        print(f"  馃摑 Report generated: report.md")
+        print("  已生成报告: report.md")
 
-    # ============ Phase 4: Trace 瀹¤鏃ュ織 ============
+    # ============ Phase 4: Trace 审计日志 ============
 
     def save_trace_data(
         self,
@@ -928,39 +940,39 @@ class ExperimentLogger:
         eval_result: Optional[Dict[str, Any]] = None
     ):
         """
-        淇濆瓨瀹屾暣鐨?Trace 瀹¤鏁版嵁锛圥hase 4锛?
+        保存完整的 Trace 审计数据（Phase 4）
 
         Args:
-            iteration: 杩唬娆℃暟
-            context_pack: 杈撳叆缁?LLM 鐨勪笂涓嬫枃鍖?
-            strategic_plan: LLM 鐨勬垬鐣ヨ鍒掕緭鍑?
-            eval_result: 鐗╃悊浠跨湡鐨勮瘎浼扮粨鏋?
+            iteration: 迭代次数
+            context_pack: 输入给 LLM 的上下文包
+            strategic_plan: LLM 的战略计划输出
+            eval_result: 物理仿真的评估结果
         """
-        # 鍒涘缓 trace 瀛愮洰褰?
+        # 创建 trace 子目录
         trace_dir = os.path.join(self.run_dir, "trace")
         os.makedirs(trace_dir, exist_ok=True)
 
         prefix = f"iter_{iteration:02d}"
 
-        # 淇濆瓨 ContextPack
+        # 保存 ContextPack
         if context_pack is not None:
             context_path = os.path.join(trace_dir, f"{prefix}_context.json")
             with open(context_path, 'w', encoding='utf-8') as f:
                 _json_dump_safe(context_pack, f)
 
-        # 淇濆瓨 StrategicPlan
+        # 保存 StrategicPlan
         if strategic_plan is not None:
             plan_path = os.path.join(trace_dir, f"{prefix}_plan.json")
             with open(plan_path, 'w', encoding='utf-8') as f:
                 _json_dump_safe(strategic_plan, f)
 
-        # 淇濆瓨 EvalResult
+        # 保存 EvalResult
         if eval_result is not None:
             eval_path = os.path.join(trace_dir, f"{prefix}_eval.json")
             with open(eval_path, 'w', encoding='utf-8') as f:
                 _json_dump_safe(eval_result, f)
 
-        self.logger.info(f"  馃捑 Trace data saved: {prefix}")
+        self.logger.info(f"  已保存 Trace 数据: {prefix}")
 
     def save_maas_diagnostic_event(
         self,
@@ -969,11 +981,12 @@ class ExperimentLogger:
         payload: Dict[str, Any],
     ) -> None:
         """
-        璁板綍 MaaS 闂幆姣忔姹傝В灏濊瘯鐨勮瘖鏂簨浠讹紙JSONL锛夈€?
+        记录 MaaS 闭环每次求解尝试的诊断事件（JSONL）。
+
         Args:
-            iteration: 澶栧眰浼樺寲杩唬缂栧彿
-            attempt: MaaS 鍐呴儴绗嚑娆″缓妯?姹傝В灏濊瘯锛堜粠1寮€濮嬶級
-            payload: 浠绘剰鍙簭鍒楀寲璇婃柇淇℃伅
+            iteration: 外层优化迭代编号
+            attempt: MaaS 内部第几次建模/求解尝试（从 1 开始）
+            payload: 任意可序列化诊断信息
         """
         log_path = os.path.join(self.run_dir, "maas_diagnostics.jsonl")
         event = {
@@ -984,7 +997,7 @@ class ExperimentLogger:
         }
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(_json_dumps_safe(event) + "\n")
-        self.logger.info(f"  馃捑 MaaS diagnostics saved: iter={iteration}, attempt={attempt}")
+        self.logger.info(f"  已保存 MaaS 诊断: iter={iteration}, attempt={attempt}")
 
     def save_rollback_event(
         self,
@@ -996,15 +1009,15 @@ class ExperimentLogger:
         penalty_after: float
     ):
         """
-        璁板綍鍥為€€浜嬩欢锛圥hase 4锛?
+        记录回退事件（Phase 4）
 
         Args:
-            iteration: 瑙﹀彂鍥為€€鐨勮凯浠ｆ鏁?
-            rollback_reason: 鍥為€€鍘熷洜
-            from_state_id: 鍥為€€鍓嶇殑鐘舵€両D
-            to_state_id: 鍥為€€鍚庣殑鐘舵€両D
-            penalty_before: 鍥為€€鍓嶇殑鎯╃綒鍒?
-            penalty_after: 鍥為€€鍚庣殑鎯╃綒鍒?
+            iteration: 触发回退的迭代次数
+            rollback_reason: 回退原因
+            from_state_id: 回退前的状态 ID
+            to_state_id: 回退后的状态 ID
+            penalty_before: 回退前的惩罚值
+            penalty_after: 回退后的惩罚值
         """
         rollback_log_path = os.path.join(self.run_dir, "rollback_events.jsonl")
 
@@ -1018,11 +1031,11 @@ class ExperimentLogger:
             "penalty_after": penalty_after
         }
 
-        # 杩藉姞鍒?JSONL 鏂囦欢
+        # 追加到 JSONL 文件
         with open(rollback_log_path, 'a', encoding='utf-8') as f:
             f.write(_json_dumps_safe(event) + '\n')
 
-        self.logger.warning(f"  鈿狅笍 Rollback event logged: {from_state_id} 鈫?{to_state_id}")
+        self.logger.warning(f"  已记录回退事件: {from_state_id} -> {to_state_id}")
 
 
 def get_logger(name: str, *, persist_global: Optional[bool] = None) -> Any:
@@ -1091,12 +1104,12 @@ def get_logger(name: str, *, persist_global: Optional[bool] = None) -> Any:
 
 def log_exception(logger, exception: Exception, context: str = ""):
     """
-    璁板綍寮傚父璇︽儏
+    记录异常详情
 
     Args:
-        logger: 鏃ュ織璁板綍鍣?
-        exception: 寮傚父瀵硅薄
-        context: 涓婁笅鏂囦俊鎭?
+        logger: 日志记录器
+        exception: 异常对象
+        context: 上下文信息
     """
     import traceback
 
