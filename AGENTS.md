@@ -17,7 +17,6 @@ For every new conversation/task in this repository:
   - `任务理解`
   - `执行计划`
   - `改动文件`
-  - `执行命令`
   - `验证结果`
   - `未完成项/风险`
   - `深度分析后的下一步方案`
