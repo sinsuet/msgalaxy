@@ -3,7 +3,7 @@
 **Role**: Single Source of Truth (SSOT)  
 **Last Updated**: 2026-03-09 00:45 +08:00 (Asia/Shanghai)
 **State Tag**: `mp-op-maas-v3-transition`  
-**Current Focus**: 继续沿 `vop_maas` 主链收口 real-LLM primary round、`PolicyPack -> mass` 注入、feedback-aware second-pass 与 `L1-L4` targeted regression；`Mode Scoped Experiment Observability v2` 本轮已进一步补完 `run naming + single run log + VOP controller-first summary/report/visualization + runtime fingerprint -> bundle/brief/release-audit`，下一步转向 `mass` run 的传统优化过程中文总结。
+**Current Focus**: 继续沿 `vop_maas` 主链收口 real-LLM primary round、`PolicyPack -> mass` 注入、feedback-aware second-pass 与 `L1-L4` targeted regression；`Mode Scoped Experiment Observability v2` 已补齐 `run naming + single run log + VOP controller-first summary/report/visualization + runtime fingerprint -> bundle/brief/release-audit`，并新增 `mass` run 的传统优化过程中文总结（template-only、mode-scoped）。
 
 ---
 
@@ -36,6 +36,11 @@
 - `policy_tuning.csv` / `phases.csv` / `vop_rounds.csv` 现共享固定前置 join-key（`run_id,timestamp,iteration,attempt,vop_round_key,round_index,policy_id,previous_policy_id`），便于轻量联查与下游读取
 - `vop_rounds.csv` 已补 controller-level round 审计字段：`decision_rationale / change_summary / expected_effects / observed_effects / effectiveness_summary`，并可回填 `summary/report/visualization`
 - `summary.json` / manifest extra 现固定补齐 `vop_decision_summary` 与 `vop_delegated_effect_summary`，使 `vop_maas` 的主消费面从“mass 结果附带 VOP”升级为 “VOP controller-first + delegated mass summary”
+- `mass` run 现新增独立中文总结主链：
+  - 顶层产物：`mass_final_summary_zh.md`
+  - 摘要索引：`events/mass_final_summary_digest.json`
+  - `summary.json` / `events/run_manifest.json` 追加 `mass_final_summary_*` 字段
+  - `report.md` 新增 `## 中文优化过程总结` 入口块，主线围绕 `NSGA-II / NSGA-III / MOEA/D`、attempts/generations、CV/feasibility 与 release audit，而非 LLM/controller 叙事
 - release-grade audit 字段 `final_audit_status / first_feasible_eval / comsol_calls_to_first_feasible` 已统一写入 `summary.json`、`events/run_manifest.json`、`report.md`、visualization summary 与 `tables/release_audit.csv`
 - 结果系统现开始切入 `Mode Scoped Experiment Observability v2`：`summary.json / run_manifest.json` 追加 `execution_mode / lifecycle_state / artifact_layout_version / artifact_index_path`；raw artifacts 不再以根目录混放为主，而是迁入 `artifacts/<mode>/...`
 - `vop_maas` run 目录现显式保持 `run_mode=vop_maas`，委托 `mass` 的原始执行证据进入 `artifacts/vop_maas/delegated_mass/*`；历史 reader 仍保留 fallback

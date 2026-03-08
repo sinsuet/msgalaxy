@@ -85,6 +85,8 @@ class RenderArtifactLinks(BaseModel):
     release_audit_path: str = ""
     layout_events_path: str = ""
     runtime_feature_fingerprint_path: str = ""
+    mass_final_summary_zh_path: str = ""
+    mass_final_summary_digest_path: str = ""
     llm_final_summary_zh_path: str = ""
     llm_final_summary_digest_path: str = ""
     attempts_table_path: str = ""

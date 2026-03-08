@@ -297,6 +297,12 @@ def build_review_package_artifact_links(
     runtime_feature_fingerprint_path = str(
         summary.get("runtime_feature_fingerprint_path", "") or ""
     ).strip()
+    mass_final_summary_zh_path = str(
+        summary.get("mass_final_summary_zh_path", "") or ""
+    ).strip()
+    mass_final_summary_digest_path = str(
+        summary.get("mass_final_summary_digest_path", "") or ""
+    ).strip()
     llm_final_summary_zh_path = str(
         summary.get("llm_final_summary_zh_path", "") or ""
     ).strip()
@@ -314,6 +320,18 @@ def build_review_package_artifact_links(
         )
         if runtime_feature_fingerprint_path
         else _path_if_exists(run_dir, run_dir / "events" / "runtime_feature_fingerprint.json"),
+        "mass_final_summary_zh_path": _path_if_exists(
+            run_dir,
+            run_dir / mass_final_summary_zh_path,
+        )
+        if mass_final_summary_zh_path
+        else _path_if_exists(run_dir, run_dir / "mass_final_summary_zh.md"),
+        "mass_final_summary_digest_path": _path_if_exists(
+            run_dir,
+            run_dir / mass_final_summary_digest_path,
+        )
+        if mass_final_summary_digest_path
+        else _path_if_exists(run_dir, run_dir / "events" / "mass_final_summary_digest.json"),
         "llm_final_summary_zh_path": _path_if_exists(run_dir, run_dir / llm_final_summary_zh_path)
         if llm_final_summary_zh_path
         else _path_if_exists(run_dir, run_dir / "llm_final_summary_zh.md"),

@@ -73,6 +73,14 @@ def build_render_brief(
         lines.append(
             f"- Runtime feature fingerprint: `{artifact_links.get('runtime_feature_fingerprint_path', '')}`"
         )
+    if str(artifact_links.get("mass_final_summary_zh_path", "") or "").strip():
+        lines.append(
+            f"- MASS 中文总结: `{artifact_links.get('mass_final_summary_zh_path', '')}`"
+        )
+    if str(artifact_links.get("mass_final_summary_digest_path", "") or "").strip():
+        lines.append(
+            f"- MASS 中文总结 digest: `{artifact_links.get('mass_final_summary_digest_path', '')}`"
+        )
     if str(artifact_links.get("llm_final_summary_zh_path", "") or "").strip():
         lines.append(
             f"- 中文最终总结: `{artifact_links.get('llm_final_summary_zh_path', '')}`"

@@ -346,6 +346,12 @@ def build_render_bundle_from_run(
             "runtime_feature_fingerprint_path": str(
                 artifact_links.get("runtime_feature_fingerprint_path", "") or ""
             ),
+            "mass_final_summary_zh_path": str(
+                artifact_links.get("mass_final_summary_zh_path", "") or ""
+            ),
+            "mass_final_summary_digest_path": str(
+                artifact_links.get("mass_final_summary_digest_path", "") or ""
+            ),
             "llm_final_summary_zh_path": str(
                 artifact_links.get("llm_final_summary_zh_path", "") or ""
             ),
@@ -398,6 +404,12 @@ def build_render_bundle_from_run(
             "execution_mode": str(summary.get("execution_mode", "") or ""),
             "runtime_feature_fingerprint_path": str(
                 artifact_links.get("runtime_feature_fingerprint_path", "") or ""
+            ),
+            "mass_final_summary_zh_path": str(
+                artifact_links.get("mass_final_summary_zh_path", "") or ""
+            ),
+            "mass_final_summary_digest_path": str(
+                artifact_links.get("mass_final_summary_digest_path", "") or ""
             ),
             "llm_final_summary_zh_path": str(
                 artifact_links.get("llm_final_summary_zh_path", "") or ""

@@ -392,6 +392,11 @@ python -m optimization.knowledge.mass.ingest_from_runs --runs-root experiments -
 - `snapshots/*.json`
 - `visualizations/*`
 
+mode-scoped 中文总结补充：
+- `mass`：`mass_final_summary_zh.md` + `events/mass_final_summary_digest.json`
+- `vop_maas`：`llm_final_summary_zh.md` + `events/llm_final_summary_digest.json`
+- `report.md` 只保留中文总结入口块，不镜像全文
+
 说明：实验级日志统一写入对应 `experiments/<run>/` 目录；根路径 `logs/` 仅保留 `api_server` 等长期服务日志，不再复制实验运行日志。
 
 `benchmarks/` 当前刻意保持为空；后续重建时统一使用：`bm_<stack>_<scope>_<algo>_<intent>_<eval>[_sNN][_tag]`

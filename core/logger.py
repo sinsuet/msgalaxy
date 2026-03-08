@@ -1263,6 +1263,16 @@ class ExperimentLogger:
             return
 
         extra = dict(manifest_payload.get("extra", {}) or {})
+
+        def _latest_artifact_path(raw_value: Any) -> str:
+            text = str(raw_value or "").strip()
+            if not text:
+                return ""
+            candidate = Path(text)
+            if not candidate.is_absolute():
+                candidate = Path(self.run_dir) / candidate
+            return self.serialize_artifact_path(candidate)
+
         latest_payload = {
             "run_id": self.run_id,
             "run_dir": self.serialize_artifact_path(self.run_dir),
@@ -1296,6 +1306,22 @@ class ExperimentLogger:
             "summary_path": self.serialize_artifact_path(Path(self.run_dir) / "summary.json"),
             "manifest_path": self.serialize_artifact_path(
                 Path(self.run_dir) / "events" / "run_manifest.json"
+            ),
+            "mass_final_summary_zh_path": _latest_artifact_path(
+                extra.get("mass_final_summary_zh_path")
+                or manifest_payload.get("mass_final_summary_zh_path")
+            ),
+            "mass_final_summary_digest_path": _latest_artifact_path(
+                extra.get("mass_final_summary_digest_path")
+                or manifest_payload.get("mass_final_summary_digest_path")
+            ),
+            "llm_final_summary_zh_path": _latest_artifact_path(
+                extra.get("llm_final_summary_zh_path")
+                or manifest_payload.get("llm_final_summary_zh_path")
+            ),
+            "llm_final_summary_digest_path": _latest_artifact_path(
+                extra.get("llm_final_summary_digest_path")
+                or manifest_payload.get("llm_final_summary_digest_path")
             ),
             "updated_at": datetime.now().isoformat(),
         }

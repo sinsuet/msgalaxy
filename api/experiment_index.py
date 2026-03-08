@@ -75,7 +75,14 @@ def load_latest_index(experiments_root: str | Path) -> Dict[str, Any]:
     result = dict(payload)
     if result.get("run_dir"):
         result["run_dir"] = serialize_experiment_dir(root, str(result.get("run_dir", "") or ""))
-    for key in ("summary_path", "manifest_path"):
+    for key in (
+        "summary_path",
+        "manifest_path",
+        "mass_final_summary_zh_path",
+        "mass_final_summary_digest_path",
+        "llm_final_summary_zh_path",
+        "llm_final_summary_digest_path",
+    ):
         if result.get(key):
             result[key] = serialize_experiment_dir(root, str(result.get(key, "") or ""))
     return result
