@@ -1,18 +1,23 @@
 """
-LLM interaction artifact writer with active-mode partitioning.
+LLM interaction artifact writer for mode-scoped raw artifact layout.
 """
 
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any, Dict, Optional
 
-from core.mode_contract import normalize_observability_mode
+from core.artifact_index import (
+    default_raw_scope_for_run_mode,
+    normalize_artifact_scope,
+    scope_relative_root,
+)
+from core.mode_contract import normalize_observability_mode, normalize_runtime_mode
 
 
 def _sanitize_json_value(value: Any) -> Any:
     if isinstance(value, float):
-        # Keep finite floats; non-finite values are converted to null-like None.
         return value if value == value and value not in (float("inf"), float("-inf")) else None
     if isinstance(value, dict):
         return {str(k): _sanitize_json_value(v) for k, v in value.items()}
@@ -34,36 +39,37 @@ def _sanitize_json_value(value: Any) -> Any:
 
 
 class LLMInteractionStore:
-    """Persist request/response artifacts under mode-partitioned directories."""
+    """Persist request/response artifacts under mode-scoped directories."""
 
-    _ACTIVE_DIRS = ("agent_loop", "mass", "shared")
+    _ACTIVE_DIRS = ("agent_loop", "mass", "vop_maas", "delegated_mass", "legacy")
 
-    def __init__(self, run_dir: str):
-        self.root_dir = os.path.join(str(run_dir), "llm_interactions")
-        os.makedirs(self.root_dir, exist_ok=True)
+    def __init__(self, run_dir: str, *, run_mode: str):
+        self.run_dir = str(run_dir)
+        self.run_mode = normalize_runtime_mode(run_mode, default="mass")
+        self.default_scope = default_raw_scope_for_run_mode(self.run_mode)
         self.mode_dirs: Dict[str, str] = {}
 
-    def _ensure_mode_dir(self, bucket: str) -> str:
-        normalized = str(bucket or "").strip().lower()
+    def _ensure_scope_dir(self, scope: str) -> str:
+        normalized = normalize_artifact_scope(scope, default="legacy")
         if normalized not in self._ACTIVE_DIRS:
-            normalized = "shared"
+            normalized = "legacy"
         existing = self.mode_dirs.get(normalized)
         if existing:
             return str(existing)
-        path = os.path.join(self.root_dir, normalized)
-        os.makedirs(path, exist_ok=True)
-        self.mode_dirs[normalized] = path
+        relative_root = Path(scope_relative_root(normalized)) / "llm_interactions"
+        path = Path(self.run_dir) / relative_root
+        path.mkdir(parents=True, exist_ok=True)
+        self.mode_dirs[normalized] = str(path)
         return str(path)
 
     def infer_mode_from_role(self, role: str) -> str:
         normalized = str(role or "").strip().lower()
         if not normalized:
-            return "shared"
+            return self.default_scope
         if normalized.startswith("model_agent_") or normalized.startswith("intent_modeler"):
-            return "mass"
-        if normalized.startswith("policy_program"):
-            # Reserved policy-program traces are grouped with active mass flow.
-            return "mass"
+            return "mass" if self.run_mode != "vop_maas" else "delegated_mass"
+        if normalized.startswith("policy_program") or normalized.startswith("vop_"):
+            return "vop_maas" if self.run_mode == "vop_maas" else "mass"
         if normalized in {
             "meta_reasoner",
             "geometry_agent",
@@ -72,20 +78,25 @@ class LLMInteractionStore:
             "power_agent",
         }:
             return "agent_loop"
-        return "shared"
+        return self.default_scope
 
     def normalize_mode(self, mode: Optional[str]) -> str:
-        normalized = normalize_observability_mode(mode, default="shared")
-        if normalized in {"agent_loop", "mass"}:
+        normalized = str(mode or "").strip().lower()
+        if normalized == "delegated_mass":
+            return "delegated_mass"
+        normalized = normalize_observability_mode(normalized, default=self.default_scope)
+        if normalized in {"agent_loop", "mass", "vop_maas"}:
+            if normalized == "mass" and self.run_mode == "vop_maas":
+                return "delegated_mass"
             return normalized
-        return "shared"
+        return self.default_scope
 
     def resolve_dir(self, *, role: str = "", mode: Optional[str] = None) -> str:
         if str(mode or "").strip():
-            bucket = self.normalize_mode(mode)
+            scope = self.normalize_mode(mode)
         else:
-            bucket = self.infer_mode_from_role(role)
-        return self._ensure_mode_dir(bucket)
+            scope = self.infer_mode_from_role(role)
+        return self._ensure_scope_dir(scope)
 
     def get_active_buckets(self) -> list[str]:
         return sorted(self.mode_dirs.keys())
@@ -109,13 +120,25 @@ class LLMInteractionStore:
             with open(req_path, "w", encoding="utf-8") as f:
                 import json
 
-                json.dump(_sanitize_json_value(request), f, indent=2, ensure_ascii=False, allow_nan=False)
+                json.dump(
+                    _sanitize_json_value(request),
+                    f,
+                    indent=2,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                )
 
         if response is not None:
             resp_path = os.path.join(target_dir, f"{prefix}_resp.json")
             with open(resp_path, "w", encoding="utf-8") as f:
                 import json
 
-                json.dump(_sanitize_json_value(response), f, indent=2, ensure_ascii=False, allow_nan=False)
+                json.dump(
+                    _sanitize_json_value(response),
+                    f,
+                    indent=2,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                )
 
         return prefix

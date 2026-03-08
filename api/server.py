@@ -28,6 +28,7 @@ from api.experiment_index import (
     resolve_experiments_root,
     serialize_experiment_dir,
 )
+from core.artifact_index import load_artifact_index
 from workflow.orchestrator import WorkflowOrchestrator
 from core.logger import get_logger
 from core.exceptions import SatelliteDesignError
@@ -69,6 +70,22 @@ def _serialize_experiment_dir(path_value: str | Path) -> str:
 
 def _load_json_if_exists(path: Path) -> Dict[str, Any]:
     return load_json_if_exists(path)
+
+
+def _discover_trace_csv(experiment_path: Path) -> Path:
+    index = load_artifact_index(str(experiment_path))
+    paths = dict(index.get("paths", {}) or {})
+    for key, fallback in (
+        ("agent_loop_trace_csv", "evolution_trace.csv"),
+        ("mass_trace_csv", "mass_trace.csv"),
+    ):
+        raw = str(paths.get(key, "") or fallback)
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = experiment_path / candidate
+        if candidate.exists():
+            return candidate
+    return experiment_path / "evolution_trace.csv"
 
 
 def _serialize_task(task: Dict[str, Any]) -> Dict[str, Any]:
@@ -351,7 +368,7 @@ def get_task_result(task_id: str):
     summary = _load_json_if_exists(experiment_path / "summary.json")
 
     # 读取evolution trace
-    csv_path = experiment_path / "evolution_trace.csv"
+    csv_path = _discover_trace_csv(experiment_path)
     evolution_data = []
     if csv_path.exists():
         import csv

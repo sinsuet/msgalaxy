@@ -13,9 +13,23 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 
+from core.artifact_index import (
+    ARTIFACT_LAYOUT_VERSION,
+    build_artifact_index_payload,
+    default_raw_scope_for_run_mode,
+    load_artifact_index,
+    normalize_artifact_scope,
+    scope_relative_root,
+    write_artifact_index,
+)
 from core.event_logger import EventLogger
 from core.llm_interaction_store import LLMInteractionStore
-from core.mode_contract import normalize_observability_mode
+from core.mode_contract import (
+    normalize_observability_mode,
+    normalize_runtime_mode,
+    resolve_execution_mode,
+    resolve_lifecycle_state,
+)
 from core.path_policy import serialize_artifact_path, serialize_run_path
 from core.modes.agent_loop.trace_store import (
     append_agent_loop_trace_row,
@@ -33,6 +47,13 @@ GLOBAL_FILE_LOGGER_NAMES = {
     "websocket_client",
 }
 
+RUN_NAME_SCHEMA_VERSION = 2
+RUN_NAME_MODE_TOKENS = {
+    "agent_loop": "agent",
+    "mass": "mass",
+    "vop_maas": "vop",
+}
+
 
 def _should_persist_global_log(name: str) -> bool:
     normalized = str(name or "").strip().lower()
@@ -41,6 +62,11 @@ def _should_persist_global_log(name: str) -> bool:
     if normalized.startswith("experiment_"):
         return False
     return normalized in GLOBAL_FILE_LOGGER_NAMES
+
+
+def resolve_run_name_mode_token(run_mode: Any) -> str:
+    normalized = normalize_runtime_mode(run_mode, default="mass")
+    return str(RUN_NAME_MODE_TOKENS.get(normalized, normalized or "run"))
 
 def _sanitize_json_value(value: Any) -> Any:
     """Convert non-JSON-safe numeric values (NaN/Inf) into JSON-safe nulls."""
@@ -88,6 +114,369 @@ def _json_dumps_safe(payload: Any) -> str:
         ensure_ascii=False,
         allow_nan=False,
     )
+
+
+def discover_active_llm_buckets(run_dir: str) -> List[str]:
+    index = load_artifact_index(run_dir)
+    llm_map = dict(index.get("paths", {}).get("llm_interactions", {}) or {})
+    if llm_map:
+        buckets = []
+        for key, value in llm_map.items():
+            raw = str(value or "").strip()
+            if not raw:
+                continue
+            candidate = Path(run_dir) / raw
+            if candidate.is_dir():
+                buckets.append(str(key))
+        if buckets:
+            return sorted(buckets)
+
+    llm_dir = Path(run_dir) / "llm_interactions"
+    if not llm_dir.exists() or not llm_dir.is_dir():
+        return []
+    buckets: List[str] = []
+    for item in sorted(llm_dir.iterdir(), key=lambda path: path.name):
+        if item.is_dir():
+            buckets.append(item.name)
+    return buckets
+
+
+def _load_run_summary_payload(run_dir: str) -> Dict[str, Any]:
+    summary_path = Path(run_dir) / "summary.json"
+    if not summary_path.exists():
+        return {}
+    try:
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return dict(payload or {}) if isinstance(payload, dict) else {}
+
+
+def _load_llm_final_summary_digest(run_dir: str, summary: Dict[str, Any]) -> Dict[str, Any]:
+    rel_path = str(summary.get("llm_final_summary_digest_path", "") or "").strip()
+    if not rel_path:
+        return {}
+    path = Path(run_dir) / rel_path
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return dict(payload or {}) if isinstance(payload, dict) else {}
+
+
+def _load_mass_final_summary_digest(run_dir: str, summary: Dict[str, Any]) -> Dict[str, Any]:
+    rel_path = str(summary.get("mass_final_summary_digest_path", "") or "").strip()
+    if not rel_path:
+        return {}
+    path = Path(run_dir) / rel_path
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return dict(payload or {}) if isinstance(payload, dict) else {}
+
+
+def _build_llm_final_summary_conclusion(
+    digest: Dict[str, Any],
+    summary: Dict[str, Any],
+) -> str:
+    delegated = dict(digest.get("delegated_mass_result", {}) or {})
+    final_result = dict(digest.get("final_result_summary", {}) or {})
+    diagnosis = str(
+        delegated.get("diagnosis_status", "") or summary.get("diagnosis_status", "") or ""
+    )
+    audit_status = str(
+        delegated.get("final_audit_status", "")
+        or summary.get("final_audit_status", "")
+        or ""
+    )
+    verdict = str(
+        final_result.get("effectiveness_verdict", "")
+        or delegated.get("effectiveness_verdict", "")
+        or ""
+    )
+    if diagnosis == "feasible":
+        if audit_status and audit_status not in {"passed", "ok", "success"}:
+            return f"已得到可行解，但审计状态仍为 {audit_status}。"
+        return "已得到可行解，VOP 控制层与 delegated mass 结果基本闭环。"
+    if verdict:
+        return f"当前效果判断为 {verdict}，建议继续做下一轮策略收敛。"
+    return "已生成中文总结，但最终效果仍需结合详细文档复核。"
+
+
+def build_llm_final_summary_report_block(
+    run_dir: str,
+    summary: Dict[str, Any],
+) -> str:
+    run_mode = str(summary.get("run_mode", "") or "").strip()
+    status = str(summary.get("llm_final_summary_status", "") or "").strip()
+    summary_path = str(summary.get("llm_final_summary_zh_path", "") or "").strip()
+    if run_mode != "vop_maas" or (not summary_path and not status):
+        return ""
+
+    digest = _load_llm_final_summary_digest(run_dir, summary)
+    goal_summary = dict(digest.get("goal_summary", {}) or {})
+    decision_flow = list(digest.get("decision_flow", []) or [])
+    operator_summary = dict(digest.get("operator_summary", {}) or {})
+    optimization_scheme = dict(digest.get("optimization_scheme", {}) or {})
+    delegated = dict(digest.get("delegated_mass_result", {}) or {})
+
+    first_decision = dict(decision_flow[0] or {}) if decision_flow else {}
+    last_decision = dict(decision_flow[-1] or {}) if decision_flow else {}
+    block_lines = [
+        "<!-- LLM_FINAL_SUMMARY_ZH:START -->",
+        "## 中文 LLM 决策总结",
+        "",
+        f"- 生成状态：`{status or 'n/a'}`",
+        f"- 文档路径：`{summary_path or 'n/a'}`",
+    ]
+    runtime_feature_path = str(
+        summary.get("runtime_feature_fingerprint_path", "") or ""
+    ).strip()
+    if runtime_feature_path:
+        block_lines.append(f"- 运行指纹：`{runtime_feature_path}`")
+
+    requirement_brief = str(goal_summary.get("requirement_text_brief", "") or "").strip()
+    if requirement_brief:
+        block_lines.append(f"- 目标摘要：`{requirement_brief}`")
+    block_lines.append(f"- 决策轮数：`{len(decision_flow) or int(summary.get('vop_round_count', 0) or 0)}`")
+
+    program_id = str(
+        operator_summary.get("selected_operator_program_id", "")
+        or summary.get("vop_selected_operator_program_id", "")
+        or ""
+    ).strip()
+    operator_actions = [
+        str(item).strip()
+        for item in list(operator_summary.get("operator_actions", []) or [])
+        if str(item).strip()
+    ]
+    if program_id or operator_actions:
+        block_lines.append(
+            f"- 主算子：program=`{program_id or 'n/a'}`，actions=`{', '.join(operator_actions) or 'n/a'}`"
+        )
+
+    search_space_override = str(
+        optimization_scheme.get("search_space_override", "")
+        or summary.get("vop_search_space_override", "")
+        or ""
+    ).strip()
+    if search_space_override:
+        block_lines.append(
+            f"- 关键变更：search_space=`{search_space_override}`，replan=`{str(last_decision.get('replan_reason', '') or 'n/a')}`"
+        )
+
+    diagnosis = str(
+        delegated.get("diagnosis_status", "")
+        or summary.get("diagnosis_status", "")
+        or ""
+    ).strip()
+    audit_status = str(
+        delegated.get("final_audit_status", "")
+        or summary.get("final_audit_status", "")
+        or ""
+    ).strip()
+    block_lines.append(
+        f"- 观察结果：diagnosis=`{diagnosis or 'n/a'}`，audit=`{audit_status or 'n/a'}`"
+    )
+    block_lines.append(
+        f"- 一句话结论：{_build_llm_final_summary_conclusion(digest, summary)}"
+    )
+    block_lines.extend(["<!-- LLM_FINAL_SUMMARY_ZH:END -->", ""])
+    return "\n".join(block_lines)
+
+
+def _build_mass_final_summary_conclusion(
+    digest: Dict[str, Any],
+    summary: Dict[str, Any],
+) -> str:
+    final_result = dict(digest.get("final_result", {}) or {})
+    release_audit = dict(digest.get("release_audit_summary", {}) or {})
+    conclusion = str(final_result.get("conclusion", "") or "").strip()
+    if conclusion:
+        return conclusion
+    diagnosis = str(summary.get("diagnosis_status", "") or "").strip()
+    audit_status = str(
+        release_audit.get("final_audit_status", "") or summary.get("final_audit_status", "") or ""
+    ).strip()
+    if diagnosis == "feasible":
+        if audit_status == "release_grade_real_comsol_validated":
+            return "已得到可行解，且 release audit 已达 release-grade。"
+        return f"已得到可行解，但最终 audit 状态为 {audit_status or 'n/a'}。"
+    if audit_status:
+        return f"尚未形成 release-grade 结果，当前 audit 状态为 {audit_status}。"
+    return "已生成 MASS 中文总结，建议结合文档复核收敛与审计结论。"
+
+
+def build_mass_final_summary_report_block(
+    run_dir: str,
+    summary: Dict[str, Any],
+) -> str:
+    run_mode = str(summary.get("run_mode", "") or "").strip()
+    status = str(summary.get("mass_final_summary_status", "") or "").strip()
+    summary_path = str(summary.get("mass_final_summary_zh_path", "") or "").strip()
+    digest_path = str(summary.get("mass_final_summary_digest_path", "") or "").strip()
+    if run_mode != "mass" or (not status and not summary_path):
+        return ""
+
+    digest = _load_mass_final_summary_digest(run_dir, summary)
+    run_identity = dict(digest.get("run_identity", {}) or {})
+    attempt_progress = dict(digest.get("attempt_progress", {}) or {})
+    generation_progress = dict(digest.get("generation_progress", {}) or {})
+    feasibility_progress = dict(digest.get("feasibility_progress", {}) or {})
+    release_audit = dict(digest.get("release_audit_summary", {}) or {})
+
+    block_lines = [
+        "<!-- MASS_FINAL_SUMMARY_ZH:START -->",
+        "## 中文优化过程总结",
+        "",
+        f"- 生成状态：`{status or 'n/a'}`",
+        f"- 文档路径：`{summary_path or 'n/a'}`",
+        f"- Digest 路径：`{digest_path or 'n/a'}`",
+        f"- 算法主线：`{str(run_identity.get('algorithm', '') or summary.get('pymoo_algorithm', '') or 'n/a')}`",
+        f"- 收敛概览：attempt_count=`{attempt_progress.get('attempt_count', 'n/a')}`，generation_count=`{generation_progress.get('generation_count', 'n/a')}`",
+        f"- 可行性：first_feasible_eval=`{feasibility_progress.get('first_feasible_eval', 'n/a')}`，final_audit_status=`{release_audit.get('final_audit_status', summary.get('final_audit_status', 'n/a'))}`",
+        f"- 一句话结论：{_build_mass_final_summary_conclusion(digest, summary)}",
+        "<!-- MASS_FINAL_SUMMARY_ZH:END -->",
+        "",
+    ]
+    return "\n".join(block_lines)
+
+
+def _upsert_markdown_block(content: str, block: str, start_marker: str, end_marker: str) -> str:
+    if not block:
+        return content
+    if start_marker in content and end_marker in content:
+        prefix, remainder = content.split(start_marker, 1)
+        _, suffix = remainder.split(end_marker, 1)
+        return f"{prefix}{block}{suffix.lstrip()}"
+    separator = "" if content.endswith("\n") else "\n"
+    return f"{content}{separator}\n{block}"
+
+
+def write_markdown_report(
+    run_dir: str,
+    summary: Dict[str, Any],
+    *,
+    active_buckets: Optional[List[str]] = None,
+) -> None:
+    report_path = os.path.join(run_dir, "report.md")
+    observability_tables = dict(summary.get("observability_tables", {}) or {})
+    artifact_index = load_artifact_index(run_dir)
+    top_level = dict(artifact_index.get("top_level", {}) or {})
+    indexed_paths = dict(artifact_index.get("paths", {}) or {})
+    execution_mode = str(summary.get("execution_mode", "") or "")
+    lifecycle_state = str(summary.get("lifecycle_state", "") or "")
+
+    with open(report_path, 'w', encoding='utf-8') as f:
+        f.write(f"# Satellite Design Optimization Report\n\n")
+        f.write(f"**Status**: {summary['status']}\n\n")
+        f.write(f"**Final Iteration**: {summary['final_iteration']}\n\n")
+        f.write(f"**Timestamp**: {summary['timestamp']}\n\n")
+        run_mode = str(summary.get("run_mode", "") or "")
+        if run_mode or execution_mode or lifecycle_state:
+            f.write("## Run Identity\n\n")
+            if run_mode:
+                f.write(f"- Run mode: `{run_mode}`\n")
+            if execution_mode:
+                f.write(f"- Execution mode: `{execution_mode}`\n")
+            if lifecycle_state:
+                f.write(f"- Lifecycle state: `{lifecycle_state}`\n")
+            artifact_layout_version = summary.get("artifact_layout_version")
+            if artifact_layout_version is not None:
+                f.write(f"- Artifact layout version: `{artifact_layout_version}`\n")
+            artifact_index_path = str(summary.get("artifact_index_path", "") or "")
+            if artifact_index_path:
+                f.write(f"- Artifact index: `{artifact_index_path}`\n")
+            f.write("\n")
+
+        if summary.get('notes'):
+            f.write(f"## Notes\n\n{summary['notes']}\n\n")
+
+        audit_status = str(summary.get("final_audit_status", "") or "").strip()
+        simulation_backend = str(summary.get("simulation_backend", "") or "").strip()
+        thermal_mode = str(summary.get("thermal_evaluator_mode", "") or "").strip()
+        final_mph_path = str(summary.get("final_mph_path", "") or "").strip()
+        if (
+            audit_status
+            or simulation_backend
+            or thermal_mode
+            or "first_feasible_eval" in summary
+            or "comsol_calls_to_first_feasible" in summary
+        ):
+            f.write("## Release Audit\n\n")
+            if audit_status:
+                f.write(f"- Final audit status: `{audit_status}`\n")
+            if simulation_backend:
+                f.write(f"- Simulation backend: `{simulation_backend}`\n")
+            if thermal_mode:
+                f.write(f"- Thermal evaluator mode: `{thermal_mode}`\n")
+            first_feasible_eval = summary.get("first_feasible_eval")
+            if first_feasible_eval is None:
+                f.write("- First feasible eval: `n/a`\n")
+            else:
+                f.write(f"- First feasible eval: `{first_feasible_eval}`\n")
+            comsol_calls = summary.get("comsol_calls_to_first_feasible")
+            if comsol_calls is None:
+                f.write("- COMSOL calls to first feasible: `n/a`\n")
+            else:
+                f.write(
+                    f"- COMSOL calls to first feasible: `{comsol_calls}`\n"
+                )
+            if final_mph_path:
+                f.write(f"- Final MPH path: `{final_mph_path}`\n")
+            release_audit_path = str(
+                observability_tables.get("release_audit_path", "") or ""
+            ).strip()
+            if release_audit_path:
+                f.write(f"- Release audit table: `{release_audit_path}`\n")
+            vop_round_audit_table = str(
+                summary.get("vop_round_audit_table", "") or ""
+            ).strip()
+            if vop_round_audit_table:
+                f.write(f"- VOP round audit table: `{vop_round_audit_table}`\n")
+            f.write("\n")
+
+        mass_final_summary_block = build_mass_final_summary_report_block(run_dir, summary)
+        if mass_final_summary_block:
+            f.write(mass_final_summary_block)
+
+        f.write(f"## Files\n\n")
+        evolution_trace = str(indexed_paths.get("agent_loop_trace_csv", "") or "")
+        mass_trace = str(indexed_paths.get("mass_trace_csv", "") or "")
+        if evolution_trace:
+            f.write(f"- Evolution trace: `{evolution_trace}`\n")
+        if mass_trace:
+            f.write(f"- mass trace: `{mass_trace}`\n")
+        f.write(f"- Events: `{top_level.get('events_dir', 'events')}`\n")
+        f.write(f"  - generation events: `events/generation_events.jsonl`\n")
+        f.write(f"- Materialized tables: `{top_level.get('tables_dir', 'tables')}`\n")
+        if observability_tables.get("release_audit_path"):
+            f.write(
+                f"  - release audit: `{observability_tables.get('release_audit_path')}`\n"
+            )
+        if summary.get("vop_round_audit_table"):
+            f.write(
+                f"  - VOP rounds: `{summary.get('vop_round_audit_table')}`\n"
+            )
+        if active_buckets:
+            f.write(
+                "- LLM scopes: "
+                + ", ".join(
+                    [
+                        f"`{str((indexed_paths.get('llm_interactions', {}) or {}).get(name, name))}`"
+                        for name in active_buckets
+                    ]
+                )
+                + "\n"
+            )
+        else:
+            f.write("- LLM scopes: (none)\n")
+        f.write(f"- Visualizations: `{top_level.get('visualizations_dir', 'visualizations')}`\n")
 
 
 def _sanitize_run_label(raw_label: Any) -> str:
@@ -140,7 +529,9 @@ def _contains_algorithm_token(label: str, algorithm: str) -> bool:
 def _build_compact_run_label(raw_label: Any, *, run_mode: str, run_algorithm: str) -> str:
     label = _sanitize_run_label(raw_label)
     algorithm = _normalize_run_algorithm(run_algorithm)
-    mode_tag = "agent" if str(run_mode or "").strip().lower() == "agent_loop" else _sanitize_run_label(run_mode)
+    normalized_mode = normalize_runtime_mode(run_mode, default="mass")
+    mode_tag = resolve_run_name_mode_token(normalized_mode)
+    normalized_mode_token = _sanitize_run_label(normalized_mode)
 
     if not label:
         label = mode_tag or "run"
@@ -171,6 +562,8 @@ def _build_compact_run_label(raw_label: Any, *, run_mode: str, run_algorithm: st
             continue
         if token == "simple" and compacted_tokens and re.fullmatch(r"l\d+", compacted_tokens[-1]):
             continue
+        if token in {mode_tag, normalized_mode_token}:
+            continue
         if token in seen:
             continue
         seen.add(token)
@@ -191,7 +584,7 @@ def _build_compact_run_label(raw_label: Any, *, run_mode: str, run_algorithm: st
     for token in compacted.split("_"):
         if token.startswith("l") and token[1:].isdigit():
             preferred.append(token)
-        elif token in {"op", "mp", "base", "agent", "mass"}:
+        elif token in {"op", "mp", "base", "agent", "mass", "vop"}:
             preferred.append(token)
         elif token.startswith("s") and token[1:].isdigit():
             preferred.append(token)
@@ -251,22 +644,24 @@ class ExperimentLogger:
         """
         self.base_dir = base_dir
         self.base_dir_path = Path(self.base_dir).resolve()
-        resolved_mode = str(run_mode or "").strip().lower()
-        if resolved_mode not in {"agent_loop", "mass"}:
-            resolved_mode = "unknown"
-        self.run_mode = resolved_mode
-        self.run_mode_bucket = (
-            normalize_observability_mode(self.run_mode, default="shared")
-            if self.run_mode in {"agent_loop", "mass"}
-            else "shared"
+        self.run_mode = normalize_runtime_mode(run_mode, default="mass")
+        self.execution_mode = resolve_execution_mode(self.run_mode)
+        self.lifecycle_state = resolve_lifecycle_state(self.run_mode)
+        self.run_mode_bucket = normalize_observability_mode(
+            self.run_mode,
+            default=self.run_mode,
         )
+        self.artifact_layout_version = int(ARTIFACT_LAYOUT_VERSION)
+        self.default_raw_scope = default_raw_scope_for_run_mode(self.run_mode)
+        self.run_name_mode_token = resolve_run_name_mode_token(self.run_mode)
+        self.run_name_schema_version = int(RUN_NAME_SCHEMA_VERSION)
         self.run_label = _sanitize_run_label(run_label)
         self.run_algorithm = _normalize_run_algorithm(run_algorithm) or "na"
         strategy = str(run_naming_strategy or "compact").strip().lower()
         if strategy not in {"compact", "verbose"}:
             strategy = "compact"
         self.run_naming_strategy = strategy
-        mode_tag = "agent" if self.run_mode == "agent_loop" else self.run_mode
+        mode_tag = self.run_name_mode_token
 
         started_at = datetime.now()
         self.run_started_at = started_at.isoformat()
@@ -287,7 +682,12 @@ class ExperimentLogger:
                 run_mode=self.run_mode,
                 run_algorithm=self.run_algorithm,
             )
-            run_prefix = f"{self.run_time}_{short_tag}"
+            if not short_tag:
+                run_prefix = f"{self.run_time}_{mode_tag}"
+            elif short_tag == mode_tag or str(short_tag).startswith(f"{mode_tag}_"):
+                run_prefix = f"{self.run_time}_{short_tag}"
+            else:
+                run_prefix = f"{self.run_time}_{mode_tag}_{short_tag}"
 
         self.run_sequence = int(max(1, _next_run_sequence(parent_dir=str(date_root), name_prefix=run_prefix)))
         run_stem = run_prefix if self.run_sequence == 1 else f"{run_prefix}_{self.run_sequence:02d}"
@@ -306,10 +706,25 @@ class ExperimentLogger:
             persisted_run_dir=serialize_artifact_path(self.base_dir_path, self.run_dir),
         )
         self.event_logger.run_id = self.run_id
+        self.artifacts_root = Path(self.run_dir) / "artifacts"
+        self.artifacts_root.mkdir(parents=True, exist_ok=True)
+        self.artifact_index = build_artifact_index_payload(
+            run_dir=self.run_dir,
+            run_mode=self.run_mode,
+            execution_mode=self.execution_mode,
+            lifecycle_state=self.lifecycle_state,
+        )
+        write_artifact_index(self.run_dir, self.artifact_index)
         self.save_run_manifest(
             {
                 "run_mode": self.run_mode,
                 "run_mode_bucket": self.run_mode_bucket,
+                "execution_mode": self.execution_mode,
+                "lifecycle_state": self.lifecycle_state,
+                "artifact_layout_version": int(self.artifact_layout_version),
+                "artifact_index_path": str(self.artifact_index.get("artifact_index_path", "") or ""),
+                "run_name_mode_token": self.run_name_mode_token,
+                "run_name_schema_version": int(self.run_name_schema_version),
                 "run_label": self.run_label,
                 "run_algorithm": self.run_algorithm,
                 "run_naming_strategy": self.run_naming_strategy,
@@ -322,17 +737,19 @@ class ExperimentLogger:
         )
 
         # 创建子文件夹
-        self.llm_store = LLMInteractionStore(self.run_dir)
-        self.llm_log_dir = self.llm_store.root_dir
+        self.llm_store = LLMInteractionStore(self.run_dir, run_mode=self.run_mode)
+        self.llm_log_dir = self._relative_path_for_scope(self.default_raw_scope, "llm_interactions")
 
         self.viz_dir = os.path.join(self.run_dir, "visualizations")
         os.makedirs(self.viz_dir, exist_ok=True)
 
         # 初始化 CSV 统计文件
-        self.csv_path = os.path.join(self.run_dir, "evolution_trace.csv")
-        self._init_csv()
-        self.mass_csv_path = os.path.join(self.run_dir, "mass_trace.csv")
-        self._init_mass_csv()
+        self.csv_path = self.get_agent_loop_trace_path() if self.run_mode == "agent_loop" else ""
+        self.mass_csv_path = self.get_mass_trace_path()
+        if self.run_mode == "agent_loop":
+            self._init_csv()
+        if self.default_raw_scope in {"mass", "delegated_mass"}:
+            self._init_mass_csv()
 
         # 历史记录
         self.history: List[str] = []
@@ -351,6 +768,77 @@ class ExperimentLogger:
     def serialize_run_path(self, path_value: Any) -> str:
         return serialize_run_path(self.run_dir, path_value)
 
+    def _scope_dir(self, scope: str) -> Path:
+        normalized = normalize_artifact_scope(scope, default=self.default_raw_scope)
+        path = Path(self.run_dir) / scope_relative_root(normalized)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _path_for_scope(self, scope: str, *parts: str) -> str:
+        scope_dir = self._scope_dir(scope)
+        if not parts:
+            return str(scope_dir)
+        return str(scope_dir.joinpath(*parts))
+
+    def _relative_path_for_scope(self, scope: str, *parts: str) -> str:
+        normalized = normalize_artifact_scope(scope, default=self.default_raw_scope)
+        scope_dir = Path(self.run_dir) / scope_relative_root(normalized)
+        if not parts:
+            return str(scope_dir)
+        return str(scope_dir.joinpath(*parts))
+
+    def _default_raw_scope_path(self, *parts: str) -> str:
+        return self._path_for_scope(self.default_raw_scope, *parts)
+
+    def _default_llm_mode(self) -> str:
+        if self.run_mode == "vop_maas":
+            return "delegated_mass"
+        return self.run_mode
+
+    def get_agent_loop_trace_path(self) -> str:
+        return self._relative_path_for_scope("agent_loop", "evolution_trace.csv")
+
+    def get_mass_trace_path(self) -> str:
+        return self._default_raw_scope_path("mass_trace.csv")
+
+    def get_trace_dir(self) -> str:
+        return self._default_raw_scope_path("trace")
+
+    def get_snapshots_dir(self) -> str:
+        return self._default_raw_scope_path("snapshots")
+
+    def get_step_files_dir(self) -> str:
+        return self._default_raw_scope_path("step_files")
+
+    def get_maas_diagnostics_path(self) -> str:
+        return self._default_raw_scope_path("maas_diagnostics.jsonl")
+
+    def refresh_artifact_index(self) -> Dict[str, Any]:
+        self.artifact_index = build_artifact_index_payload(
+            run_dir=self.run_dir,
+            run_mode=self.run_mode,
+            execution_mode=self.execution_mode,
+            lifecycle_state=self.lifecycle_state,
+        )
+        return write_artifact_index(self.run_dir, self.artifact_index)
+
+    def _enrich_identity_payload(
+        self,
+        payload: Optional[Dict[str, Any]],
+        *,
+        producer_mode: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        enriched = dict(payload or {})
+        enriched.setdefault("run_mode", self.run_mode)
+        enriched.setdefault("execution_mode", self.execution_mode)
+        enriched.setdefault("lifecycle_state", self.lifecycle_state)
+        enriched.setdefault(
+            "producer_mode",
+            str(producer_mode or self.execution_mode or self.run_mode),
+        )
+        enriched.setdefault("artifact_layout_version", int(self.artifact_layout_version))
+        return enriched
+
     def _add_run_log_handler(self, timestamp: str):
         """
         添加文件处理器，将日志输出到实验目录的 run_log.txt
@@ -360,15 +848,13 @@ class ExperimentLogger:
         """
         # 创建 run_log.txt 文件路径
         run_log_path = os.path.join(self.run_dir, "run_log.txt")
-        run_debug_path = os.path.join(self.run_dir, "run_log_debug.txt")
-
         class _RunLogCompactFilter(logging.Filter):
             """
             精简 run_log.txt 中高重复、低信息密度的日志。
 
             设计原则：
             - WARNING/ERROR 一律保留；
-            - 高频重复的结构指标明细转移到 debug 日志；
+            - 高频重复的结构指标明细直接过滤；
             - 关键流程锚点（COMSOL 调用、预算耗尽、审计结论）保留。
             """
 
@@ -417,21 +903,13 @@ class ExperimentLogger:
         compact_handler._msgalaxy_run_handler = True  # type: ignore[attr-defined]
         root_logger.addHandler(compact_handler)
 
-        # run_log_debug.txt: 完整版，保留全部 INFO 细节用于深挖
-        debug_handler = logging.FileHandler(run_debug_path, encoding='utf-8')
-        debug_handler.setLevel(logging.INFO)
-        debug_handler.setFormatter(formatter)
-        debug_handler._msgalaxy_run_handler = True  # type: ignore[attr-defined]
-        root_logger.addHandler(debug_handler)
-
         # 确保根 logger 的级别不会过滤掉 INFO 级别日志
         if root_logger.level > logging.INFO:
             root_logger.setLevel(logging.INFO)
 
         self.logger.info(
-            "Run log initialized: %s (compact) | %s (full)",
+            "[RUN] Run log initialized: %s",
             run_log_path,
-            run_debug_path,
         )
 
     def _init_csv(self):
@@ -459,7 +937,7 @@ class ExperimentLogger:
             response: 响应数据
             context_dict: 输入上下文（旧方式）
             response_dict: LLM 响应（旧方式）
-            mode: 可选模式标签（agent_loop/mass）
+            mode: 可选模式标签（agent_loop/mass/vop_maas/delegated_mass）
         """
         # 兼容旧方式
         if context_dict is not None:
@@ -476,7 +954,7 @@ class ExperimentLogger:
             role=role,
             request=request,
             response=response,
-            mode=mode if mode is not None else self.run_mode_bucket,
+            mode=mode if mode is not None else self._default_llm_mode(),
         )
 
         if request is not None or response is not None:
@@ -489,6 +967,8 @@ class ExperimentLogger:
         Args:
             data: 指标数据字典
         """
+        if self.run_mode != "agent_loop" or not self.csv_path:
+            return
         row = materialize_metrics_payload(data)
         append_agent_loop_trace_row(self.csv_path, row)
 
@@ -618,7 +1098,7 @@ class ExperimentLogger:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Persist a layout snapshot and emit the paired layout event."""
-        snapshots_dir = os.path.join(self.run_dir, "snapshots")
+        snapshots_dir = self._default_raw_scope_path("snapshots")
         os.makedirs(snapshots_dir, exist_ok=True)
 
         stage_token = "".join(
@@ -652,6 +1132,9 @@ class ExperimentLogger:
             "run_id": self.run_id,
             "run_dir": self.serialize_artifact_path(self.run_dir),
             "timestamp": datetime.now().isoformat(),
+            "run_mode": self.run_mode,
+            "execution_mode": self.execution_mode,
+            "lifecycle_state": self.lifecycle_state,
             "sequence": int(sequence),
             "iteration": int(iteration),
             "attempt": int(attempt),
@@ -672,7 +1155,8 @@ class ExperimentLogger:
         with open(snapshot_path, "w", encoding="utf-8") as f:
             _json_dump_safe(payload, f)
 
-        event_payload = {
+        event_payload = self._enrich_identity_payload(
+            {
             "iteration": int(iteration),
             "attempt": int(attempt),
             "sequence": int(sequence),
@@ -692,7 +1176,9 @@ class ExperimentLogger:
             "changed_coatings": list(delta.get("changed_coatings", [])),
             "metrics": dict(metrics or {}),
             "metadata": dict(metadata or {}),
-        }
+            },
+            producer_mode=self.execution_mode,
+        )
         self.event_logger.append_layout_event(event_payload)
         return {"snapshot_path": snapshot_path, "event": event_payload, "delta": delta}
 
@@ -717,6 +1203,15 @@ class ExperimentLogger:
             "run_dir": self.serialize_artifact_path(self.run_dir),
             "run_id": self.run_id,
             "run_mode": self.run_mode,
+            "execution_mode": self.execution_mode,
+            "lifecycle_state": self.lifecycle_state,
+            "artifact_layout_version": int(self.artifact_layout_version),
+            "artifact_index_path": str(self.artifact_index.get("artifact_index_path", "") or ""),
+            "run_name_mode_token": self.run_name_mode_token,
+            "run_name_schema_version": int(self.run_name_schema_version),
+            "delegated_execution_mode": (
+                self.execution_mode if self.run_mode != self.execution_mode else ""
+            ),
             "run_label": self.run_label,
             "run_algorithm": self.run_algorithm,
             "run_naming_strategy": self.run_naming_strategy,
@@ -775,6 +1270,12 @@ class ExperimentLogger:
             "run_date_dir": Path(self.run_dir).parent.name,
             "run_label": self.run_label,
             "run_mode": self.run_mode,
+            "execution_mode": self.execution_mode,
+            "lifecycle_state": self.lifecycle_state,
+            "artifact_layout_version": int(self.artifact_layout_version),
+            "artifact_index_path": str(self.artifact_index.get("artifact_index_path", "") or ""),
+            "run_name_mode_token": self.run_name_mode_token,
+            "run_name_schema_version": int(self.run_name_schema_version),
             "run_algorithm": self.run_algorithm,
             "run_naming_strategy": self.run_naming_strategy,
             "run_date": self.run_date,
@@ -808,6 +1309,16 @@ class ExperimentLogger:
         data["run_dir"] = self.serialize_artifact_path(data.get("run_dir", self.run_dir))
         data.setdefault("run_mode", self.run_mode)
         data.setdefault("run_mode_bucket", self.run_mode_bucket)
+        data.setdefault("execution_mode", self.execution_mode)
+        data.setdefault("lifecycle_state", self.lifecycle_state)
+        data.setdefault("artifact_layout_version", int(self.artifact_layout_version))
+        data.setdefault("artifact_index_path", str(self.artifact_index.get("artifact_index_path", "") or ""))
+        data.setdefault("run_name_mode_token", self.run_name_mode_token)
+        data.setdefault("run_name_schema_version", int(self.run_name_schema_version))
+        data.setdefault(
+            "delegated_execution_mode",
+            self.execution_mode if self.run_mode != self.execution_mode else "",
+        )
         data.setdefault("run_label", self.run_label)
         data.setdefault("run_algorithm", self.run_algorithm)
         data.setdefault("run_naming_strategy", self.run_naming_strategy)
@@ -820,17 +1331,109 @@ class ExperimentLogger:
         self._write_latest_index(manifest)
         return manifest
 
+    @staticmethod
+    def _stringify_log_value(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, dict):
+            try:
+                rendered = json.dumps(
+                    _sanitize_json_value(value),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            except Exception:
+                rendered = str(value).strip()
+            if len(rendered) > 180:
+                return rendered[:177] + "..."
+            return rendered
+        if isinstance(value, (list, tuple, set)):
+            items = [str(item).strip() for item in value if str(item).strip()]
+            return ",".join(items[:6])
+        return str(value).strip()
+
+    def _emit_run_log_milestone(self, tag: str, message: str, **fields: Any) -> None:
+        details = []
+        for key, raw_value in fields.items():
+            value = self._stringify_log_value(raw_value)
+            if not value:
+                continue
+            details.append(f"{key}={value}")
+        suffix = f" | {', '.join(details)}" if details else ""
+        self.logger.info("%s %s%s", str(tag or "").strip(), str(message or "").strip(), suffix)
+
     def log_maas_phase_event(self, data: Dict[str, Any]) -> None:
         """Append a MaaS phase event."""
         try:
-            self.event_logger.append_phase_event(dict(data or {}))
+            payload = self._enrich_identity_payload(
+                dict(data or {}),
+                producer_mode=str(dict(data or {}).get("producer_mode", "") or self.execution_mode),
+            )
+            self.event_logger.append_phase_event(payload)
+            phase = str(payload.get("phase", "") or "").strip()
+            status = str(payload.get("status", "") or "").strip()
+            producer_mode = str(payload.get("producer_mode", "") or "").strip()
+            phase_family = str(payload.get("phase_family", "") or "").strip()
+            details = dict(payload.get("details", {}) or {})
+            if phase in {"A", "B", "C", "D"}:
+                self._emit_run_log_milestone(
+                    f"[MASS][{phase}]",
+                    status or "event",
+                    step=details.get("step"),
+                    iteration=payload.get("iteration"),
+                    attempt=payload.get("attempt"),
+                    stage=payload.get("stage"),
+                )
+            elif producer_mode == "vop_maas" or phase_family == "vop_maas" or phase.startswith("V"):
+                stage = str(payload.get("stage", "") or "").strip().lower()
+                tag = "[VOP][DECISION]"
+                if stage == "bootstrap":
+                    tag = "[VOP][BOOTSTRAP]"
+                elif "reflective" in stage:
+                    tag = "[VOP][REPLAN]"
+                self._emit_run_log_milestone(
+                    tag,
+                    status or "event",
+                    round_index=payload.get("round_index"),
+                    stage=payload.get("stage"),
+                    policy_id=payload.get("policy_id"),
+                    previous_policy_id=payload.get("previous_policy_id"),
+                )
         except Exception as exc:
             self.logger.debug("maas phase event write failed: %s", exc)
 
     def log_maas_policy_event(self, data: Dict[str, Any]) -> None:
         """Append a MaaS policy event."""
         try:
-            self.event_logger.append_policy_event(dict(data or {}))
+            payload = self._enrich_identity_payload(
+                dict(data or {}),
+                producer_mode=str(dict(data or {}).get("producer_mode", "") or self.execution_mode),
+            )
+            self.event_logger.append_policy_event(payload)
+            if str(payload.get("producer_mode", "") or "").strip() == "vop_maas":
+                self._emit_run_log_milestone(
+                    "[VOP][DECISION]",
+                    "policy recorded",
+                    round_index=payload.get("round_index"),
+                    stage=payload.get("stage"),
+                    policy_id=payload.get("policy_id"),
+                    search_space=(
+                        dict(payload.get("metadata", {}) or {}).get("search_space_prior")
+                        or payload.get("search_space_override")
+                    ),
+                    program=payload.get("selected_operator_program_id"),
+                    actions=payload.get("actions"),
+                    rationale=payload.get("decision_rationale"),
+                    changes=payload.get("change_summary"),
+                    expected=payload.get("expected_effects"),
+                    confidence=payload.get("confidence"),
+                )
         except Exception as exc:
             self.logger.debug("maas policy event write failed: %s", exc)
 
@@ -852,21 +1455,24 @@ class ExperimentLogger:
             try:
                 record = dict(item or {})
                 self.event_logger.append_generation_event(
-                    {
-                        "iteration": iteration,
-                        "attempt": attempt,
-                        "generation": int(record.get("generation", 0) or 0),
-                        "pymoo_algorithm": pymoo_algorithm,
-                        "branch_action": branch_action,
-                        "branch_source": branch_source,
-                        "search_space_mode": search_space_mode,
-                        "population_size": int(record.get("population_size", 0) or 0),
-                        "feasible_count": int(record.get("feasible_count", 0) or 0),
-                        "feasible_ratio": record.get("feasible_ratio"),
-                        "best_cv": record.get("best_cv"),
-                        "mean_cv": record.get("mean_cv"),
-                        "best_feasible_sum_f": record.get("best_feasible_sum_f"),
-                    }
+                    self._enrich_identity_payload(
+                        {
+                            "iteration": iteration,
+                            "attempt": attempt,
+                            "generation": int(record.get("generation", 0) or 0),
+                            "pymoo_algorithm": pymoo_algorithm,
+                            "branch_action": branch_action,
+                            "branch_source": branch_source,
+                            "search_space_mode": search_space_mode,
+                            "population_size": int(record.get("population_size", 0) or 0),
+                            "feasible_count": int(record.get("feasible_count", 0) or 0),
+                            "feasible_ratio": record.get("feasible_ratio"),
+                            "best_cv": record.get("best_cv"),
+                            "mean_cv": record.get("mean_cv"),
+                            "best_feasible_sum_f": record.get("best_feasible_sum_f"),
+                        },
+                        producer_mode=str(record.get("producer_mode", "") or self.execution_mode),
+                    )
                 )
             except Exception as exc:
                 self.logger.debug("maas generation event write failed: %s", exc)
@@ -874,7 +1480,11 @@ class ExperimentLogger:
     def log_maas_physics_event(self, data: Dict[str, Any]) -> None:
         """Append a MaaS physics event."""
         try:
-            self.event_logger.append_physics_event(dict(data or {}))
+            payload = self._enrich_identity_payload(
+                dict(data or {}),
+                producer_mode=str(dict(data or {}).get("producer_mode", "") or self.execution_mode),
+            )
+            self.event_logger.append_physics_event(payload)
         except Exception as exc:
             self.logger.debug("maas physics event write failed: %s", exc)
 
@@ -886,8 +1496,16 @@ class ExperimentLogger:
             list(materialized.get("row", []) or []),
         )
 
-        attempt_event_payload = dict(materialized.get("attempt_event_payload", {}) or {})
+        attempt_event_payload = self._enrich_identity_payload(
+            dict(materialized.get("attempt_event_payload", {}) or {}),
+            producer_mode="mass",
+        )
         candidate_event_payload = materialized.get("candidate_event_payload", None)
+        if isinstance(candidate_event_payload, dict):
+            candidate_event_payload = self._enrich_identity_payload(
+                dict(candidate_event_payload),
+                producer_mode="mass",
+            )
         is_best_attempt = bool(materialized.get("is_best_attempt", False))
         try:
             if not is_best_attempt:
@@ -899,36 +1517,38 @@ class ExperimentLogger:
 
     def _generate_markdown_report(self, summary: Dict[str, Any]):
         """Generate the markdown summary report."""
-        report_path = os.path.join(self.run_dir, "report.md")
-
-        with open(report_path, 'w', encoding='utf-8') as f:
-            f.write(f"# Satellite Design Optimization Report\n\n")
-            f.write(f"**Status**: {summary['status']}\n\n")
-            f.write(f"**Final Iteration**: {summary['final_iteration']}\n\n")
-            f.write(f"**Timestamp**: {summary['timestamp']}\n\n")
-
-            if summary.get('notes'):
-                f.write(f"## Notes\n\n{summary['notes']}\n\n")
-
-            f.write(f"## Files\n\n")
-            f.write(f"- Evolution trace: `evolution_trace.csv`\n")
-            f.write(f"- mass trace: `mass_trace.csv`\n")
-            f.write(f"- Events: `events/`\n")
-            f.write(f"  - generation events: `events/generation_events.jsonl`\n")
-            f.write(f"- Materialized tables: `tables/`\n")
-            f.write(f"- LLM interactions: `llm_interactions/`\n")
-            active_buckets = self.llm_store.get_active_buckets()
-            if active_buckets:
-                f.write(
-                    "- mode buckets: "
-                    + ", ".join([f"`{name}/`" for name in active_buckets])
-                    + "\n"
-                )
-            else:
-                f.write("- mode buckets: (none)\n")
-            f.write(f"- Visualizations: `visualizations/`\n")
-
+        write_markdown_report(
+            run_dir=self.run_dir,
+            summary=summary,
+            active_buckets=self.llm_store.get_active_buckets(),
+        )
         print("  已生成报告: report.md")
+
+    def append_llm_final_summary_report_section(
+        self,
+        summary: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        report_path = Path(self.run_dir) / "report.md"
+        if not report_path.exists():
+            return
+        summary_payload = dict(summary or _load_run_summary_payload(self.run_dir) or {})
+        if not summary_payload:
+            return
+        block = build_llm_final_summary_report_block(self.run_dir, summary_payload)
+        if not block:
+            return
+        try:
+            content = report_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            self.logger.warning("llm final summary report enrichment failed: %s", exc)
+            return
+        updated = _upsert_markdown_block(
+            content,
+            block,
+            "<!-- LLM_FINAL_SUMMARY_ZH:START -->",
+            "<!-- LLM_FINAL_SUMMARY_ZH:END -->",
+        )
+        report_path.write_text(updated, encoding="utf-8")
 
     # ============ Phase 4: Trace 审计日志 ============
 
@@ -949,7 +1569,7 @@ class ExperimentLogger:
             eval_result: 物理仿真的评估结果
         """
         # 创建 trace 子目录
-        trace_dir = os.path.join(self.run_dir, "trace")
+        trace_dir = self._default_raw_scope_path("trace")
         os.makedirs(trace_dir, exist_ok=True)
 
         prefix = f"iter_{iteration:02d}"
@@ -988,7 +1608,7 @@ class ExperimentLogger:
             attempt: MaaS 内部第几次建模/求解尝试（从 1 开始）
             payload: 任意可序列化诊断信息
         """
-        log_path = os.path.join(self.run_dir, "maas_diagnostics.jsonl")
+        log_path = self._default_raw_scope_path("maas_diagnostics.jsonl")
         event = {
             "iteration": int(iteration),
             "attempt": int(attempt),

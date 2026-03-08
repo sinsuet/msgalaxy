@@ -32,7 +32,25 @@ from api.experiment_index import (
     resolve_experiments_root,
     serialize_experiment_dir,
 )
+from core.artifact_index import load_artifact_index
 from workflow.orchestrator import WorkflowOrchestrator
+
+
+def _discover_trace_artifacts(exp_path: Path) -> list[tuple[str, Path]]:
+    index = load_artifact_index(str(exp_path))
+    paths = dict(index.get("paths", {}) or {})
+    discovered: list[tuple[str, Path]] = []
+    for label, key, fallback in (
+        ("Evolution trace", "agent_loop_trace_csv", "evolution_trace.csv"),
+        ("Mass trace", "mass_trace_csv", "mass_trace.csv"),
+    ):
+        raw = str(paths.get(key, "") or fallback)
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = exp_path / candidate
+        if candidate.exists():
+            discovered.append((label, candidate))
+    return discovered
 
 
 def cmd_optimize(args):
@@ -112,10 +130,8 @@ def cmd_show_experiment(args):
     else:
         print("Report not found.")
 
-    # 读取演化轨迹
-    trace_file = exp_path / "evolution_trace.csv"
-    if trace_file.exists():
-        print(f"\nEvolution trace: {serialize_experiment_dir(exp_root, trace_file)}")
+    for label, trace_file in _discover_trace_artifacts(exp_path):
+        print(f"\n{label}: {serialize_experiment_dir(exp_root, trace_file)}")
 
 
 def cmd_latest_experiment(args):

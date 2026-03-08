@@ -1,23 +1,60 @@
 ﻿# MsGalaxy HANDOFF
 
 **Role**: Single Source of Truth (SSOT)  
-**Last Updated**: 2026-03-07 17:21 +08:00 (Asia/Shanghai)  
+**Last Updated**: 2026-03-09 00:45 +08:00 (Asia/Shanghai)
 **State Tag**: `mp-op-maas-v3-transition`  
-**Current Focus**: 新版 `L1-L4` 串行 `NSGA-III + real COMSOL` strict-real 主线已跑通：`L1/L2/L3/L4` 均通过 `source/operator-family/operator-realization` gate 与 `dset` 复核。当前转入收尾阶段：补齐 release-grade audit 指标写出，并基于已跑通模板重建轻量 benchmark 主线。旧 benchmark 资产已清空，后续按新命名规则单独重建。
+**Current Focus**: 继续沿 `vop_maas` 主链收口 real-LLM primary round、`PolicyPack -> mass` 注入、feedback-aware second-pass 与 `L1-L4` targeted regression；`Mode Scoped Experiment Observability v2` 本轮已进一步补完 `run naming + single run log + VOP controller-first summary/report/visualization + runtime fingerprint -> bundle/brief/release-audit`，下一步转向 `mass` run 的传统优化过程中文总结。
 
 ---
 
 ## 1. 当前真实状态（Implemented vs Planned）
 
 ### 1.1 已实现（可执行）
-- 两条优化模式已接入运行时路由：
+- 三条优化模式已接入运行时路由：
   - `optimization.mode=agent_loop`
   - `optimization.mode=mass`
+  - `optimization.mode=vop_maas`（experimental，verified operator-policy mode，执行委托给 `mass`）
 - `mass` 为 A/B/C/D 闭环：
   - A `ModelingIntent` 生成/构建
   - B 硬约束规范化为 `g(x) <= 0`
   - C 编译为 pymoo 问题并执行（`nsga2/nsga3/moead`）
   - D 诊断、反射、可选放松与重试
+- `vop_maas` 已从 reserved scaffold 升级为可运行 experimental mode：
+  - 先构建 `VOPG`（Violation-Operator Provenance Graph）结构化上下文
+  - 再生成/验证/筛选 `VOPPolicyPack`
+  - 仅以 `policy_priors` 形式注入 `mass` 内核，不直接输出最终布局坐标
+  - 当前已实现 `mock_policy`、schema validator、counterfactual-style screening、stable fallback-to-`mass`
+  - `MetaReasoner.generate_policy_program(...)` 现可稳健消费 real-LLM 直接 JSON、fenced JSON 与 DashScope list-block message content，并对缺省 `operator_candidates / policy_source / candidate_id / program_id` 做 bounded autofill；修补后会显式标记 `policy_source=llm_api_autofill`
+  - 已新增 **单轮、受限、可审计** 的 reflective replanning 薄切片：仅在首轮 policy 已应用且结果明确失败/停滞时触发一次 `policy_feedback -> regenerated policy -> delegated mass rerun`
+  - `vop_policy_feedback` 会稳定汇总 `first_feasible_eval / comsol_calls_to_first_feasible / fallback attribution / effective fidelity`，并新增 `failure_signature / fidelity_escalation_allowed / fidelity_escalation_reason`
+  - reflective round 已新增 feedback-aware fidelity_plan：仅在真实 `comsol` backend 且命中特定 failure signature 时，才会有界地升级 `thermal_evaluator_mode / online_comsol_eval_budget / physics_audit_top_k`，并把“不升级”原因稳定写出
+  - `vop_maas -> mass` 委托执行现对 `optimization` 配置做 per-run snapshot/restore，避免首轮 policy 污染后续 reflective round
+  - `PolicyPack -> mass` intent patch 现补齐 `structural/power` focus 的 metric 级注入覆盖：除 `max_stress / voltage_drop` 外，还会把 `first_modal_freq / safety_factor / power_margin` 按 objective 形式注入
+- reflective round / feedback-aware fidelity attribution 现会稳定写入 `summary.json`，并在 `events/run_manifest.json`、`tables/policy_tuning.csv`、`tables/phases.csv`、`tables/vop_rounds.csv` 保留可审计字段（如 `vop_policy_primary_round_index`、`vop_policy_primary_round_key`、`vop_reflective_replanning.*`、`vop_feedback_aware_fidelity_*`）
+- `tables/vop_rounds.csv` 已成为 round-level 审计主落点，稳定字段至少覆盖 `round_index / vop_round_key / trigger_reason / feedback_aware_fidelity_plan / feedback_aware_fidelity_reason / previous_policy_id / candidate_policy_id / final_policy_id / mass_rerun_executed / skipped_reason`
+- `summary.json` 现额外保留轻量 `vop_round_audit_digest` 与 `vop_round_audit_table`，用于和 `policy_tuning.csv` / `phases.csv` 基于 `vop_round_key` 做 round-level join
+- `policy_tuning.csv` / `phases.csv` / `vop_rounds.csv` 现共享固定前置 join-key（`run_id,timestamp,iteration,attempt,vop_round_key,round_index,policy_id,previous_policy_id`），便于轻量联查与下游读取
+- `vop_rounds.csv` 已补 controller-level round 审计字段：`decision_rationale / change_summary / expected_effects / observed_effects / effectiveness_summary`，并可回填 `summary/report/visualization`
+- `summary.json` / manifest extra 现固定补齐 `vop_decision_summary` 与 `vop_delegated_effect_summary`，使 `vop_maas` 的主消费面从“mass 结果附带 VOP”升级为 “VOP controller-first + delegated mass summary”
+- release-grade audit 字段 `final_audit_status / first_feasible_eval / comsol_calls_to_first_feasible` 已统一写入 `summary.json`、`events/run_manifest.json`、`report.md`、visualization summary 与 `tables/release_audit.csv`
+- 结果系统现开始切入 `Mode Scoped Experiment Observability v2`：`summary.json / run_manifest.json` 追加 `execution_mode / lifecycle_state / artifact_layout_version / artifact_index_path`；raw artifacts 不再以根目录混放为主，而是迁入 `artifacts/<mode>/...`
+- `vop_maas` run 目录现显式保持 `run_mode=vop_maas`，委托 `mass` 的原始执行证据进入 `artifacts/vop_maas/delegated_mass/*`；历史 reader 仍保留 fallback
+- 新 run 短名现固定带 mode token：`mass -> <HHMM>_mass_<short-tag>`、`vop_maas -> <HHMM>_vop_<short-tag>`、`agent_loop -> <HHMM>_agent_<short-tag>`；历史 run 不改名
+- 新 run 现只保留单日志 `run_log.txt`；`run_log_debug.txt` 仅作为 legacy reader fallback，不再为新 run 生成
+- `run_log.txt` 对 `vop_maas` 现输出 `[VOP][BOOTSTRAP] / [VOP][DECISION] / [VOP][DELEGATE] / [VOP][EFFECT] / [VOP][REPLAN]` 里程碑，原始 prompt/response dump 继续留在 mode-scoped `llm_interactions`
+- 新 `vop_maas` run 在完成后会额外生成 `llm_final_summary_zh.md`、`events/llm_final_summary_digest.json` 与 `events/runtime_feature_fingerprint.json`：先落可审计模板摘要，再在 LLM 可用时追加中文叙事版；`report.md` 仅内嵌简短入口摘要，不镜像全文
+- `runtime_feature_fingerprint.json` 用来把 `R25` 未完整覆盖的 runtime feature lines（`run_mode vs execution_mode`、intent 来源、搜索空间 / genome、proxy vs online COMSOL、`MCTS/meta_policy/physics_audit`、strict gates、VOP controller override）收口成 canonical runtime snapshot；`llm_final_summary_zh.md` 则在此基础上输出完整任务说明 + 表格化中文技术复盘
+- `visualization_summary.txt` 的 `vop_maas` 主视图现已追加 `Runtime Feature Fingerprint` 摘要块，不再只显示 round/audit 文本而缺失 baseline/gate/controller overlay
+- Blender review sidecar 现已把 `runtime_feature_fingerprint_path`、`llm_final_summary_zh_path`、`llm_final_summary_digest_path` 暴露到 `render_bundle.json`、`review_payload.json`、`render_manifest.json` 与 `render_brief.md`
+- `run/mass/audit_release_summary.py` 生成的 Markdown 现新增 `## Observability Links`，可直接联到 `runtime_feature_fingerprint.json`、`llm_final_summary_zh.md`、`tables/vop_rounds.csv` 与 `tables/release_audit.csv`
+- `core/final_summary_zh.py` 中早期重复定义的 legacy render/digest 实现已物理删除，当前只保留单一正式入口，避免后续维护时出现“修了新逻辑但旧函数仍残留”的混淆
+- LLM 接入治理已进入统一网关迁移阶段：新增 `docs/adr/0009-llm-openai-compatible-gateway.md`、`docs/reports/R34_llm_unified_gateway_research_20260308.md`、`docs/reports/R35_llm_gateway_migration_plan_20260308.md`，并已开始把 `MetaReasoner`、`agent_loop` agents、runner profile 覆盖迁移到 `OpenAI-compatible chat.completions + embeddings` 主层
+- 当前默认供应商仍为 `Qwen Max`，默认访问路径改为 `DashScope OpenAI-compatible`；`DashScope native Generation` 仅保留为显式受控 fallback，不可对鉴权/模型名/base_url 错误做静默回退
+- 三套 base config 已补示例 text profiles：`qwen_max_default`、`openai_gpt_default`、`claude_compat_default`、`glm_compat_default`、`minimax_compat_default`；runner 与统一入口现支持 `--llm-profile` 覆盖 `openai.default_text_profile`
+- 统一网关现新增 **provider-agnostic reasoning knobs**：`reasoning_profile / thinking_mode / completion_budget_tokens / reasoning_budget_tokens`；`qwen_max_default` 默认配置已切到高预算高思考模式，`OpenAICompatibleAdapter` 会对 `Qwen(DashScope)` 映射 `extra_body.enable_thinking / thinking_budget`，对 `OpenAI` 映射 `reasoning_effort / max_completion_tokens`
+  - `Mode Scoped Experiment Observability v2` 的正式决策与执行蓝图现以 `docs/adr/0008-mode-scoped-experiment-observability-v2.md` 和 `docs/reports/R32_mode_scoped_experiment_observability_refactor_20260308.md` 为准；后续阶段只追加 checkpoint report
+  - 新增 `L1-L4` targeted regression：以真实 `MetaReasoner -> PolicyProgrammer -> VOPPolicyProgramService` 链路覆盖 `primary round -> policy_priors injection -> feedback-aware second-pass -> delegated mass rerun`
+  - 当前实现边界是 `M1-M4` 第一可运行切片 + `M5-min` 单轮 reflective replanning，不包含 policy memory / template evolution / neural guidance
 - Mass 专用 RAG（`CGRAG-Mass`）已切换为当前唯一检索后端：
   - 代码路径：`optimization/knowledge/mass/*`
   - 证据库：`data/knowledge_base/mass_evidence.jsonl`
@@ -53,14 +90,19 @@
   - `run/run_scenario.py`
   - `run/mass/run_L1.py` ~ `run/mass/run_L4.py`
   - `run/agent_loop/run_L1.py` ~ `run/agent_loop/run_L4.py`
+  - `run/vop_maas/run_L1.py` ~ `run/vop_maas/run_L4.py`（experimental，默认仍建议先用 `simplified` / `mock_policy` 验线）
 - 旧批量 benchmark 入口、旧模板、旧测试链已删除；`benchmarks/` 已在 2026-03-07 清空，后续若重建必须遵循 `RULES.md` 的短名规则。
 - Blender 可视化侧链 P0 已落地：可从 run 目录生成 `render_bundle.json`、Blender 场景脚本、Codex brief，并可选 direct Blender render。
+- Blender 可视化下一批准方向已冻结为 **Blender Review Package**（planned target，尚未实现）：保持 Blender 作为主 3D 审阅面，新增离线 review dashboard 作为伴随分析面；默认入口仍为 `run/render_blender_scene.py`，默认 profile 为 `engineering`，默认 state set 为 `initial/best/final`。
 
 ### 1.2 未实现/仅规划（不可过度声明）
 - M4（神经可行性预测、神经算子策略、多保真神经调度）尚未开始实现。
 - mission/FOV/EMC 高保真路径仍依赖外部 evaluator；当前仓内默认执行的是 keepout 代理接口。
 - L1-L4 新版轻量 benchmark 框架目前不存在；后续需要基于新模板与新命名规则重建。
 - 当前还没有新的 `LLM intent vs deterministic` 对照结论；这一阶段尚未开始。
+- `LLMGateway` 迁移仍在推进中：`MetaReasoner`、`agent_loop` agents 与 runner/profile 归一已开始落地，但尚未宣称所有历史调用点全部完成切换
+- `vop_maas` 的 **多轮** reflective replanning、policy memory、template evolution 仍未实现；当前只能按 `M5-min` 单轮薄切片对外表述，不能上升为完整 `M5/M6`。
+- Blender Review Package 仍处于规划态：当前仓内 **尚未** 具备三态 Blender scene、`review_payload.json`、离线 `review_dashboard.html`、升级版 `render_manifest.json v2`，不得将其描述为已落地能力。
 
 ---
 
@@ -71,6 +113,7 @@
 - pymoo 层：多目标搜索核心（`NSGA-II` / `NSGA-III` / `MOEA/D`）。
 - Physics 层：proxy 快评估 + online COMSOL + 电源网络方程回退。
 - 当前恢复工作主线聚焦在 `mass`：保持 MOEA 为数值优化核心，不以 LLM 直接输出最终坐标替代搜索。
+- `vop_maas` 的当前定位是 `mass` 之上的 verified operator-policy controller：LLM 只控制策略层/算子层，不替代数值优化器。
 
 ### 2.2 约束契约（当前有效）
 - 硬约束统一规范为 `g(x) <= 0`。
@@ -158,7 +201,12 @@
   - `final_mph_path` 已写出
   - `source/operator-family/operator-realization` 三类 gate 全通过
   - `run_log.txt` 中 `dset` 错误计数为 `0`
-- 结论：新版 `L1-L4` 模板与 `real-strict` profile 已完成单次串行主线验证；下一阶段转向 release-grade audit 指标写出与轻量 benchmark 重建。
+- 结论：新版 `L1-L4` 模板与 `real-strict` profile 已完成单次串行主线验证；release-grade audit 字段已统一写出，下一阶段优先转向历史产物补重建与 targeted strict-real 回归，benchmark 继续后置。
+- `experiments/0307/release_audit_summary.csv` 与 `experiments/0307/release_audit_summary.md` 已生成：
+  - `release_grade_real_comsol_validated=7`
+  - `diagnostic_only_no_feasible_final_state=6`
+  - `diagnostic_only_non_comsol_backend=1`
+  - `audit_release_summary.py` 现会优先读取 `tables/release_audit.csv` / `tables/vop_rounds.csv`，并对非 release-grade run 输出 `gap_category / primary_failure_signature / minimal_remediation / evidence_hint`
 
 ### 3.3 回归测试
 - 已通过：
@@ -180,19 +228,20 @@
 
 ---
 
-## 4. v3 分阶段状态（M0-M4）
+## 4. v3 分阶段状态（M0-M5-min）
 
-- M0：基线指标与 trace schema 已落地。
+- M0：已进一步冻结为单算法可执行研究包；当前只保留已跑通的 `L1-L4 + NSGA-III` 主线，详见 `docs/reports/R29_vop_maas_m0_execution_package_20260307.md`。
 - M1：hard-constraint coverage + metric registry 闸门已落地。
 - M2：结构/电源 proxy 与真实路径已进入可执行链。
 - M3：`Operator Program DSL v3` 已形成可执行薄切片，并已在 strict-real 路径中通过 gate 约束验证。
 - M4：未实现，保持规划态。
+- M5-min：`vop_maas` 已补单轮 reflective replanning 薄切片；当前支持基于 `previous_policy_pack + vop_policy_feedback + updated VOPG` 的一次再规划，并带 feedback-aware fidelity_plan 推荐/并入，再次委托 `mass` 执行，不包含 memory / template evolution。
 
 ---
 
 ## 5. 当前已知问题与风险
 
-- `summary.json` 中 `final_audit_status / first_feasible_eval / comsol_calls_to_first_feasible` 仍未稳定写出；当前可表述为 strict-real 主线已跑通，但暂不应升级表述为 release-grade audited evidence。
+- release-grade audit 字段虽已统一写出，但历史 `experiments/` 产物若早于本次收口，仍需重新生成 `report.md` / visualization summary / `tables/release_audit.csv` 后，才能按同一口径复核。
 - 新 benchmark 框架尚未重建；当前仓库不提供可直接复用的批量对照入口。
 - `LLM intent` 相对 deterministic 的统计收益尚无新版证据。
 - mission 高保真路径仍依赖外部 evaluator；若要求 real-only 且 evaluator 不可用，会被 strict gate 阻断。
@@ -221,14 +270,33 @@ python run/mass/run_L3.py --backend comsol --thermal-evaluator-mode online_comso
 python run/mass/run_L4.py --backend comsol --thermal-evaluator-mode online_comsol --level-profile config/system/mass/level_profiles_l1_l4_real_strict.yaml --deterministic-intent --run-naming-strategy compact
 ```
 
-### 6.3 strict-real 复核命令
+### 6.3 `vop_maas` experimental 验线命令
+```bash
+python run/run_scenario.py --stack vop_maas --level L1 --backend simplified --max-iterations 1
+python run/vop_maas/run_L1.py --backend simplified --mock-policy --deterministic-intent --max-iterations 1
+pytest tests/test_vop_maas_mode.py -q
+```
+- 当前推荐先用 `simplified + mock_policy` 验证路由、schema、screening、fallback 与 metadata。
+- 若需要 real-LLM primary round，`run/vop_maas/common.py` 现会优先读取 `DASHSCOPE_API_KEY`，其次回退到 `OPENAI_API_KEY`。
+- `vop_maas` 真实执行仍委托给 `mass`；无可用 policy 时应明确回退到纯 `mass`。
+
+### 6.4 strict-real 复核命令
 ```powershell
 $run = 'experiments/0307/1708_l4_nsga3'
 (Get-Content "$run/summary.json" -Raw | ConvertFrom-Json) | Select-Object status, diagnosis_status, diagnosis_reason, best_cv_min, source_gate_passed, operator_family_gate_passed, operator_realization_gate_passed
 (Select-String -Path "$run/run_log.txt" -Pattern 'Dataset "dset.*does not exist' -AllMatches | Measure-Object).Count
 ```
 
-### 6.4 命名规则（执行时遵循）
+### 6.5 历史产物补重建与审计摘要
+```bash
+python run/mass/tool_rebuild_run_artifacts.py experiments/0307/0141_l1_nsga3 experiments/0307/0209_l2_nsga3 experiments/0307/1646_l3_nsga3 experiments/0307/1708_l4_nsga3
+python run/mass/audit_release_summary.py experiments/0307/0141_l1_nsga3 experiments/0307/0209_l2_nsga3 experiments/0307/1646_l3_nsga3 experiments/0307/1708_l4_nsga3 --output-csv experiments/0307/release_audit_summary.csv
+```
+- `tool_rebuild_run_artifacts.py` 会补齐 `summary.json / run_manifest / report.md / visualization_summary.txt / tables/release_audit.csv` 口径。
+- `audit_release_summary.py` 优先读取 `tables/release_audit.csv + tables/vop_rounds.csv`（缺失时才回落到 `summary.json` / `events/vop_round_events.jsonl`），用于快速汇总，不要求手工 join。
+- 非 release-grade run 会额外产出 `gap_category / primary_failure_signature / minimal_remediation / evidence_hint`，可直接做 gap rollup 与最小修复建议。
+
+### 6.6 命名规则（执行时遵循）
 - benchmark 目录短名：`bm_<stack>_<scope>_<algo>_<intent>_<eval>[_sNN][_tag]`
 - experiments 目录短名：`<HHMM>_<stack>_<level>_<algo>_<intent>_<eval>[_tag]`
 - helper 脚本短名：`bm_<scope>.py` / `tool_<topic>.py` / `audit_<topic>.py`
@@ -238,11 +306,10 @@ $run = 'experiments/0307/1708_l4_nsga3'
 
 ## 7. 下一步（优先级）
 
-1. 将 `final_audit_status / first_feasible_eval / comsol_calls_to_first_feasible` 补齐到 `summary.json`，形成 release-grade real COMSOL 审计口径。
-2. 以当前已跑通的 `real_strict` profile 为基线，重建轻量 benchmark 框架；新框架只服务当前能力，不兼容旧模板。
-3. benchmark 重建完成后，再做 `LLM intent vs deterministic` 对照与关键 online COMSOL 复核。
-4. 对 `L3/L4` 的修复点继续补高价值回归：初始 clearance 同步、初始 mission keepout repair、final-state 复核 summary 收口。
-5. M4 与大规模消融继续后置，不提前插入当前主线。
+1. 对历史 strict-real 运行做一次最小必要的 artifact rebuild，使 `summary.json / run_manifest / report.md / visualization_summary.txt / tables/release_audit.csv` 完全同口径。
+2. 继续补 targeted `L3/L4` strict-real 回归与下游消费脚本，优先围绕 `tables/vop_rounds.csv` 与 `tables/release_audit.csv`，不扩 benchmark。
+3. benchmark 重建、`LLM intent vs deterministic` 对照与关键 online COMSOL 复核继续后置，等待当前口径稳定后再推进。
+4. M4 与大规模消融继续后置，不提前插入当前主线。
 
 ---
 
@@ -257,9 +324,14 @@ $run = 'experiments/0307/1708_l4_nsga3'
 - `run/agent_loop/run_L2.py`
 - `run/agent_loop/run_L3.py`
 - `run/agent_loop/run_L4.py`
+- `run/vop_maas/run_L1.py`
+- `run/vop_maas/run_L2.py`
+- `run/vop_maas/run_L3.py`
+- `run/vop_maas/run_L4.py`
 - `config/system/mass/base.yaml`
 - `config/system/mass/level_profiles_l1_l4.yaml`
 - `config/system/mass/level_profiles_l1_l4_real_strict.yaml`
+- `config/system/vop_maas/base.yaml`
 - `docs/adr/`
 - `docs/reports/`
 - `config/bom/mass/level_L1_foundation_stack.json`
@@ -267,6 +339,17 @@ $run = 'experiments/0307/1708_l4_nsga3'
 - `config/bom/mass/level_L3_structural_mission_stack.json`
 - `config/bom/mass/level_L4_full_stack_operator.json`
 - `workflow/modes/mass/pipeline_service.py`
+- `workflow/modes/vop_maas/policy_program_service.py`
+- `workflow/modes/vop_maas/contracts.py`
+- `workflow/modes/vop_maas/policy_context.py`
+- `workflow/modes/vop_maas/policy_compiler.py`
+- `docs/reports/R28_vop_maas_master_plan_20260307.md`
+- `docs/reports/R29_vop_maas_m0_execution_package_20260307.md`
+- `docs/adr/0007-vop-maas-verified-operator-policy-experimental-mode.md`
+- `docs/adr/0008-mode-scoped-experiment-observability-v2.md`
+- `docs/reports/R32_mode_scoped_experiment_observability_refactor_20260308.md`
+- `docs/reports/R33_phase1_identity_contract_checkpoint_20260308.md`
+- `docs/reports/R38_runtime_feature_fingerprint_summary_upgrade_20260308.md`
 - `workflow/orchestrator.py`
 - `optimization/modes/mass/maas_mcts.py`
 - `optimization/modes/mass/pymoo_integration/problem_generator.py`

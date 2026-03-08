@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 import yaml
+from dotenv import load_dotenv
 
 # 添加项目根目录到路径
 project_root = Path(__file__).resolve().parents[2]
@@ -40,6 +41,36 @@ def _load_workflow_orchestrator():
     from workflow.orchestrator import WorkflowOrchestrator
 
     return WorkflowOrchestrator
+
+
+def _load_openai_config_preview(base_config_path: str, *, llm_profile: str = "") -> dict:
+    config_path = Path(str(base_config_path or "")).resolve()
+    if not config_path.exists():
+        return {}
+    try:
+        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    config = dict(loaded or {}) if isinstance(loaded, dict) else {}
+    openai_cfg = dict(config.get("openai", {}) or {})
+    selected_profile = str(llm_profile or "").strip()
+    if selected_profile:
+        openai_cfg["default_text_profile"] = selected_profile
+    return openai_cfg
+
+
+def _resolve_llm_runtime_profile(config_openai: dict | None = None):
+    load_dotenv(project_root / ".env", override=False)
+    openai_cfg = dict(config_openai or {})
+    try:
+        from optimization.llm.gateway import LLMProfileResolver
+
+        resolver = LLMProfileResolver(openai_cfg)
+        selected_profile = str(openai_cfg.get("default_text_profile", "") or "").strip()
+        profile = resolver.resolve_text_profile(selected_profile)
+        return profile, ""
+    except Exception as exc:
+        return None, str(exc)
 
 
 MASS_LEVEL_PROFILE_PATH = project_root / "config" / "system" / "mass" / "level_profiles_l1_l4.yaml"
@@ -343,6 +374,11 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         help="基础配置文件路径",
     )
     parser.add_argument(
+        "--llm-profile",
+        default="",
+        help="覆盖 openai.default_text_profile",
+    )
+    parser.add_argument(
         "--disable-physics-audit",
         action="store_true",
         help="关闭 mass Top-K 物理审计",
@@ -403,6 +439,45 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         help="运行目录命名策略（默认: %(default)s）",
     )
     return parser
+
+
+def _resolve_llm_api_key(config_openai: dict | None = None) -> tuple[str, str]:
+    load_dotenv(project_root / ".env", override=False)
+    openai_cfg = dict(config_openai or {})
+    profile, _error = _resolve_llm_runtime_profile(openai_cfg)
+    if profile is not None and str(getattr(profile, "api_key", "") or "").strip():
+        return str(profile.api_key), str(getattr(profile, "api_key_source", "") or "")
+    config_api_key = str(openai_cfg.get("api_key", "") or "").strip()
+    if (
+        config_api_key.startswith("${")
+        and config_api_key.endswith("}")
+    ) or config_api_key.startswith("$"):
+        config_api_key = ""
+    candidates = [
+        ("config.openai.api_key", config_api_key),
+        ("OPENAI_RELAY_API_KEY", str(os.environ.get("OPENAI_RELAY_API_KEY", "") or "").strip()),
+        ("DASHSCOPE_API_KEY", str(os.environ.get("DASHSCOPE_API_KEY", "") or "").strip()),
+        ("OPENAI_API_KEY", str(os.environ.get("OPENAI_API_KEY", "") or "").strip()),
+    ]
+    for source, value in candidates:
+        if value:
+            return value, source
+    return "", ""
+
+
+def _print_active_llm_profile(orchestrator) -> None:
+    profile = getattr(orchestrator, "active_text_llm_profile", None)
+    if profile is None:
+        print(f"     - LLM model: {orchestrator.config['openai'].get('model', '')}")
+        return
+    print(f"     - LLM profile: {getattr(profile, 'name', '')}")
+    print(f"     - LLM provider: {getattr(profile, 'provider', '')}")
+    print(f"     - LLM model: {getattr(profile, 'model', '')}")
+    print(f"     - LLM api_style: {getattr(profile, 'api_style', '')}")
+    print(f"     - LLM key source: {getattr(profile, 'api_key_source', '')}")
+    endpoint = str(getattr(profile, "base_url", "") or "").strip()
+    if endpoint:
+        print(f"     - LLM endpoint: {endpoint}")
 
 
 def _sanitize_deterministic_bound_args(
@@ -470,11 +545,15 @@ def _write_runtime_config(args, tmp_dir: Path) -> Path:
     config["optimization"]["mode"] = args.mode
     config["optimization"]["max_iterations"] = int(args.max_iterations)
     config["simulation"]["backend"] = args.backend
-    config["openai"]["model"] = "qwen3-max"
-    api_key = str(config["openai"].get("api_key", "") or os.environ.get("OPENAI_API_KEY", "")).strip()
-    if api_key:
+    selected_profile = str(getattr(args, "llm_profile", "") or "").strip()
+    if selected_profile:
+        config["openai"]["default_text_profile"] = selected_profile
+    api_key, api_key_source = _resolve_llm_api_key(config.get("openai", {}))
+    if api_key_source == "config.openai.api_key" and api_key:
         config["openai"]["api_key"] = api_key
-    elif bool(getattr(args, "deterministic_intent", False)):
+    else:
+        config["openai"].pop("api_key", None)
+    if not api_key and bool(getattr(args, "deterministic_intent", False)):
         # Deterministic mode patches intent generation after orchestrator init,
         # so a local placeholder avoids failing before the patch is installed.
         config["openai"]["api_key"] = "deterministic_local_placeholder"
@@ -750,13 +829,18 @@ def main(argv=None):
     print("=" * 80)
     print()
 
-    api_key = os.environ.get("OPENAI_API_KEY")
+    openai_preview = _load_openai_config_preview(
+        str(getattr(args, "base_config", "")),
+        llm_profile=str(getattr(args, "llm_profile", "") or ""),
+    )
+    api_key, api_key_source = _resolve_llm_api_key(openai_preview)
     if not api_key:
-        print("[WARN] OPENAI_API_KEY not set")
+        print("[WARN] No active LLM API key resolved for selected profile")
+        print("       可检查 DASHSCOPE_API_KEY / OPENAI_RELAY_API_KEY / OPENAI_API_KEY")
         print("       若未启用 --deterministic-intent，LLM 相关功能会失败")
         print()
     else:
-        print(f"[OK] API Key loaded: {api_key[:10]}...{api_key[-4:]}")
+        print(f"[OK] Active LLM key source preview: {api_key_source}")
         print()
 
     print("[INIT] Initializing workflow orchestrator...")
@@ -807,7 +891,7 @@ def main(argv=None):
                 print("[OK] Deterministic ModelingIntent enabled (LLM bypass)")
 
             print("[OK] Orchestrator initialized")
-            print(f"     - LLM model: {orchestrator.config['openai']['model']}")
+            _print_active_llm_profile(orchestrator)
             print(f"     - Optimization mode: {orchestrator.optimization_mode}")
             print(f"     - Simulation backend: {orchestrator.config['simulation']['backend']}")
             if orchestrator.optimization_mode == "mass":

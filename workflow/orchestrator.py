@@ -50,6 +50,7 @@ except ImportError:
     SimplifiedPhysicsEngine = None
 
 from optimization.meta_reasoner import MetaReasoner
+from optimization.llm import LLMGateway, LLMProfileResolver
 from optimization.llm.controllers import IntentModeler, PolicyProgrammer, StrategicPlanner
 from optimization.modes.agent_loop import (
     AgentCoordinator,
@@ -598,52 +599,70 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
 
         # 3. LLM模块
         openai_config = self.config.get("openai", {})
-        api_key = openai_config.get("api_key")
-        base_url = openai_config.get("base_url")  # 获取base_url配置
-
-        if not api_key:
-            raise ValueError("API key not found in config")
+        self.llm_profile_resolver = LLMProfileResolver(openai_config)
+        self.llm_gateway = LLMGateway(profile_resolver=self.llm_profile_resolver)
+        self.active_text_llm_profile = self.llm_profile_resolver.resolve_text_profile(
+            str(openai_config.get("default_text_profile", "") or "")
+        )
+        try:
+            self.active_embedding_llm_profile = self.llm_profile_resolver.resolve_embedding_profile(
+                str(openai_config.get("default_embedding_profile", "") or "")
+            )
+        except Exception:
+            self.active_embedding_llm_profile = None
+        api_key = self.active_text_llm_profile.api_key
+        base_url = self.active_text_llm_profile.base_url
 
         # Meta-Reasoner
         self.meta_reasoner = MetaReasoner(
             api_key=api_key,
-            model=openai_config.get("model", "qwen3-max"),
-            temperature=openai_config.get("temperature", 0.7),
+            model=self.active_text_llm_profile.model,
+            temperature=self.active_text_llm_profile.temperature,
             base_url=base_url,
-            logger=self.logger
+            logger=self.logger,
+            llm_gateway=self.llm_gateway,
+            llm_profile=self.active_text_llm_profile.name,
         )
 
         # Agents
-        agent_model = openai_config.get("model", "qwen3-max")
-        agent_temperature = openai_config.get("temperature", 0.7)
+        agent_model = self.active_text_llm_profile.model
+        agent_temperature = self.active_text_llm_profile.temperature
 
         self.geometry_agent = GeometryAgent(
             api_key=api_key,
             model=agent_model,
             temperature=agent_temperature,
             base_url=base_url,
-            logger=self.logger
+            logger=self.logger,
+            llm_gateway=self.llm_gateway,
+            llm_profile=self.active_text_llm_profile.name,
         )
         self.thermal_agent = ThermalAgent(
             api_key=api_key,
             model=agent_model,
             temperature=agent_temperature,
             base_url=base_url,
-            logger=self.logger
+            logger=self.logger,
+            llm_gateway=self.llm_gateway,
+            llm_profile=self.active_text_llm_profile.name,
         )
         self.structural_agent = StructuralAgent(
             api_key=api_key,
             model=agent_model,
             temperature=agent_temperature,
             base_url=base_url,
-            logger=self.logger
+            logger=self.logger,
+            llm_gateway=self.llm_gateway,
+            llm_profile=self.active_text_llm_profile.name,
         )
         self.power_agent = PowerAgent(
             api_key=api_key,
             model=agent_model,
             temperature=agent_temperature,
             base_url=base_url,
-            logger=self.logger
+            logger=self.logger,
+            llm_gateway=self.llm_gateway,
+            llm_profile=self.active_text_llm_profile.name,
         )
 
         # Coordinator
@@ -662,6 +681,8 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
             knowledge_base_path=knowledge_config.get("base_path", "data/knowledge_base"),
             embedding_model=knowledge_config.get("embedding_model"),
             base_url=base_url,
+            llm_gateway=self.llm_gateway,
+            embedding_profile_name=getattr(self.active_embedding_llm_profile, "name", ""),
             enable_semantic=bool(knowledge_config.get("enable_semantic", True)),
             filter_anomalous_cases=bool(
                 knowledge_config.get("filter_anomalous_cases", True)
@@ -777,8 +798,32 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
                             f"BOM约束: {json.dumps(constraints, ensure_ascii=False)}"
                         )
                         lines.append(f"BOM组件数: {len(components) if isinstance(components, list) else 0}")
+                        if isinstance(components, list):
+                            component_ids = [
+                                str(item.get("id", "")).strip()
+                                for item in components
+                                if isinstance(item, dict) and str(item.get("id", "")).strip()
+                            ]
+                            if component_ids:
+                                lines.append(
+                                    "BOM组件ID(必须原样复用): "
+                                    + ", ".join(component_ids)
+                                )
                 except Exception as exc:
                     lines.append(f"BOM解析失败: {exc}")
+
+        lines.append(
+            "Canonical metric keys: "
+            "cg_offset, min_clearance, num_collisions, boundary_violation, "
+            "max_temp, safety_factor, first_modal_freq, voltage_drop, "
+            "power_margin, peak_power, mission_keepout_violation"
+        )
+        lines.append(
+            "Do not use runtime limit names as metric keys: "
+            "max_temp_c, min_clearance_mm, max_cg_offset_mm, min_safety_factor, "
+            "min_modal_freq_hz, max_voltage_drop_v, min_power_margin_pct, "
+            "max_power_w, task_fov_violation"
+        )
 
         return "\n".join(lines)
 
@@ -1070,7 +1115,7 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
         from pathlib import Path
 
         # 创建临时目录
-        temp_dir = Path(self.logger.run_dir) / "step_files"
+        temp_dir = Path(self.logger.get_step_files_dir())
         temp_dir.mkdir(parents=True, exist_ok=True)
 
         step_file = temp_dir / f"design_iter_{iteration:03d}.step"

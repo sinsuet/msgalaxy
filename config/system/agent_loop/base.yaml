@@ -167,7 +167,113 @@ openai:
   model: qwen3-max
   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
   temperature: 0.7
-  max_tokens: 2000
+  timeout_s: 300
+  max_tokens: 8192
+  completion_budget_tokens: 8192
+  reasoning_profile: high
+  thinking_mode: enabled
+  reasoning_budget_tokens: 4096
+  default_text_profile: qwen_max_default
+  default_embedding_profile: qwen_embedding_default
+  profiles:
+    qwen_max_default:
+      provider: qwen
+      api_style: openai_chat
+      model: qwen3-max
+      base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      api_key_envs:
+      - DASHSCOPE_API_KEY
+      - OPENAI_API_KEY
+      temperature: 0.7
+      timeout_s: 300
+      max_tokens: 8192
+      completion_budget_tokens: 8192
+      reasoning_profile: high
+      thinking_mode: enabled
+      strict_json_thinking_mode: disabled
+      reasoning_budget_tokens: 4096
+      capabilities:
+        native_json_output: true
+      native_fallback:
+        enabled: true
+    openai_gpt_default:
+      provider: openai
+      api_style: openai_chat
+      model: gpt-5-chat-latest
+      base_url: https://api.openai.com/v1
+      api_key_envs:
+      - OPENAI_API_KEY
+      temperature: 0.7
+      max_tokens: 2000
+      capabilities:
+        native_json_output: true
+      native_fallback:
+        enabled: false
+    openai_gpt_relay_default:
+      provider: openai_compatible
+      api_style: openai_responses
+      model: gpt-5.4
+      base_url: https://cdn-gmn.chuangzuoli.com/v1/responses
+      api_key_envs:
+      - OPENAI_RELAY_API_KEY
+      - OPENAI_API_KEY
+      temperature: 0.7
+      timeout_s: 300
+      max_tokens: 8192
+      completion_budget_tokens: 8192
+      capabilities:
+        native_json_output: false
+      native_fallback:
+        enabled: false
+    claude_compat_default:
+      provider: anthropic
+      api_style: openai_chat
+      model: claude-opus-4-1-20250805
+      base_url: https://api.anthropic.com/v1/
+      api_key_envs:
+      - ANTHROPIC_API_KEY
+      temperature: 0.7
+      max_tokens: 2000
+      capabilities:
+        native_json_output: false
+      native_fallback:
+        enabled: false
+    glm_compat_default:
+      provider: glm
+      api_style: openai_chat
+      model: glm-4.7
+      base_url: https://open.bigmodel.cn/api/paas/v4
+      api_key_envs:
+      - BIGMODEL_API_KEY
+      temperature: 0.7
+      max_tokens: 2000
+      capabilities:
+        native_json_output: false
+      native_fallback:
+        enabled: false
+    minimax_compat_default:
+      provider: minimax
+      api_style: openai_chat
+      model: MiniMax-M2.5
+      base_url: https://api.minimax.io/v1
+      api_key_envs:
+      - MINIMAX_API_KEY
+      temperature: 0.7
+      max_tokens: 2000
+      capabilities:
+        native_json_output: false
+      native_fallback:
+        enabled: false
+    qwen_embedding_default:
+      provider: qwen
+      api_style: openai_embeddings
+      model: text-embedding-v4
+      base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      api_key_envs:
+      - DASHSCOPE_API_KEY
+      - OPENAI_API_KEY
+      capabilities:
+        embeddings: true
 knowledge:
   base_path: data/knowledge_base
   enable_semantic: true

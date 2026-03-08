@@ -11,6 +11,91 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from core.path_policy import serialize_run_path
 
+_COMMON_OBSERVABILITY_JOIN_KEYS = [
+    "run_id",
+    "timestamp",
+    "iteration",
+    "attempt",
+    "vop_round_key",
+    "round_index",
+    "policy_id",
+    "previous_policy_id",
+    "run_mode",
+    "producer_mode",
+    "execution_mode",
+    "lifecycle_state",
+]
+
+_TABLE_HEADER_PRIORITY: Dict[str, List[str]] = {
+    "policy_tuning": _COMMON_OBSERVABILITY_JOIN_KEYS
+    + [
+        "mode",
+        "stage",
+        "applied",
+        "selected_operator_program_id",
+        "replan_reason",
+        "feedback_aware_fidelity_reason",
+        "decision_rationale",
+        "change_summary",
+        "expected_effects",
+        "confidence",
+    ],
+    "phases": _COMMON_OBSERVABILITY_JOIN_KEYS
+    + [
+        "phase",
+        "phase_family",
+        "phase_mode",
+        "stage",
+        "status",
+        "replan_reason",
+        "feedback_aware_fidelity_reason",
+    ],
+    "vop_rounds": _COMMON_OBSERVABILITY_JOIN_KEYS
+    + [
+        "stage",
+        "policy_id",
+        "trigger_reason",
+        "feedback_aware_fidelity_plan",
+        "feedback_aware_fidelity_reason",
+        "candidate_policy_id",
+        "final_policy_id",
+        "selected_operator_program_id",
+        "operator_actions",
+        "search_space_override",
+        "decision_rationale",
+        "change_summary",
+        "runtime_overrides",
+        "fidelity_plan",
+        "expected_effects",
+        "observed_effects",
+        "effectiveness_summary",
+        "confidence",
+        "policy_applied",
+        "mass_rerun_executed",
+        "skipped_reason",
+    ],
+    "release_audit": [
+        "run_id",
+        "run_mode",
+        "execution_mode",
+        "lifecycle_state",
+        "status",
+        "final_iteration",
+        "optimization_mode",
+        "simulation_backend",
+        "thermal_evaluator_mode",
+        "diagnosis_status",
+        "diagnosis_reason",
+        "final_audit_status",
+        "first_feasible_eval",
+        "comsol_calls_to_first_feasible",
+        "source_gate_passed",
+        "operator_family_gate_passed",
+        "operator_realization_gate_passed",
+        "final_mph_path",
+    ],
+}
+
 
 def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
     if not path.exists():
@@ -29,20 +114,47 @@ def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
     return rows
 
 
-def _write_csv(path: Path, rows: Iterable[Dict[str, Any]]) -> int:
+def _read_json(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return dict(payload or {}) if isinstance(payload, dict) else {}
+
+
+def _ordered_headers(rows: List[Dict[str, Any]], preferred_headers: Optional[List[str]] = None) -> List[str]:
+    preferred = [str(item) for item in list(preferred_headers or []) if str(item).strip()]
+    discovered: List[str] = []
+    seen = set()
+    for key in preferred:
+        if key in seen:
+            continue
+        seen.add(key)
+        discovered.append(key)
+    for row in rows:
+        for key in row.keys():
+            key_str = str(key)
+            if key_str in seen:
+                continue
+            seen.add(key_str)
+            discovered.append(key_str)
+    return discovered
+
+
+def _write_csv(
+    path: Path,
+    rows: Iterable[Dict[str, Any]],
+    *,
+    preferred_headers: Optional[List[str]] = None,
+) -> int:
     materialized = list(rows)
     if not materialized:
         path.write_text("", encoding="utf-8")
         return 0
 
-    headers: List[str] = []
-    seen = set()
-    for row in materialized:
-        for key in row.keys():
-            if key in seen:
-                continue
-            seen.add(key)
-            headers.append(str(key))
+    headers = _ordered_headers(materialized, preferred_headers=preferred_headers)
 
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=headers)
@@ -50,6 +162,65 @@ def _write_csv(path: Path, rows: Iterable[Dict[str, Any]]) -> int:
         for row in materialized:
             writer.writerow(row)
     return int(len(materialized))
+
+
+def _json_ready(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_ready(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_ready(item) for item in value]
+    if hasattr(value, "model_dump"):
+        return _json_ready(value.model_dump())
+    return str(value)
+
+
+def _normalize_vop_round_rows(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    json_columns = {
+        "feedback_aware_fidelity_plan",
+        "operator_actions",
+        "change_summary",
+        "runtime_overrides",
+        "fidelity_plan",
+        "expected_effects",
+        "observed_effects",
+        "effectiveness_summary",
+        "vop_decision_summary",
+        "vop_delegated_effect_summary",
+    }
+    for row in rows:
+        payload = dict(row or {})
+        if not payload:
+            continue
+        for column in json_columns:
+            if column not in payload:
+                continue
+            payload[column] = json.dumps(
+                _json_ready(payload.get(column)),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        normalized.append(payload)
+    return normalized
+
+
+def persist_vop_round_events(run_dir: str, rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    base = Path(run_dir)
+    events_dir = base / "events"
+    events_dir.mkdir(parents=True, exist_ok=True)
+    path = events_dir / "vop_round_events.jsonl"
+
+    materialized = [dict(_json_ready(row) or {}) for row in list(rows or []) if dict(row or {})]
+    with path.open("w", encoding="utf-8") as f:
+        for row in materialized:
+            f.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
+
+    return {
+        "vop_round_events": int(len(materialized)),
+        "vop_round_events_path": serialize_run_path(base, path),
+    }
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -185,6 +356,41 @@ def _build_layout_delta_rows(run_dir: Path, layout_rows: List[Dict[str, Any]]) -
     return output
 
 
+def _build_release_audit_rows(run_dir: Path) -> List[Dict[str, Any]]:
+    summary = _read_json(run_dir / "summary.json")
+    if not summary:
+        return []
+
+    return [
+        {
+            "run_id": str(summary.get("run_id", "") or ""),
+            "run_mode": str(summary.get("run_mode", "") or ""),
+            "execution_mode": str(summary.get("execution_mode", "") or ""),
+            "lifecycle_state": str(summary.get("lifecycle_state", "") or ""),
+            "status": str(summary.get("status", "") or ""),
+            "final_iteration": summary.get("final_iteration"),
+            "optimization_mode": str(summary.get("optimization_mode", "") or ""),
+            "simulation_backend": str(summary.get("simulation_backend", "") or ""),
+            "thermal_evaluator_mode": str(
+                summary.get("thermal_evaluator_mode", "") or ""
+            ),
+            "diagnosis_status": str(summary.get("diagnosis_status", "") or ""),
+            "diagnosis_reason": str(summary.get("diagnosis_reason", "") or ""),
+            "final_audit_status": str(summary.get("final_audit_status", "") or ""),
+            "first_feasible_eval": summary.get("first_feasible_eval"),
+            "comsol_calls_to_first_feasible": summary.get(
+                "comsol_calls_to_first_feasible"
+            ),
+            "source_gate_passed": summary.get("source_gate_passed"),
+            "operator_family_gate_passed": summary.get("operator_family_gate_passed"),
+            "operator_realization_gate_passed": summary.get(
+                "operator_realization_gate_passed"
+            ),
+            "final_mph_path": str(summary.get("final_mph_path", "") or ""),
+        }
+    ]
+
+
 def _flatten_attempt_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for row in rows:
@@ -237,18 +443,42 @@ def materialize_observability_tables(run_dir: str) -> Dict[str, Any]:
     physics = _read_jsonl(events_dir / "physics_events.jsonl")
     candidates = _read_jsonl(events_dir / "candidate_events.jsonl")
     phases = _read_jsonl(events_dir / "phase_events.jsonl")
+    vop_rounds = _read_jsonl(events_dir / "vop_round_events.jsonl")
     layouts = _read_jsonl(events_dir / "layout_events.jsonl")
     layout_deltas = _build_layout_delta_rows(base, layouts)
+    release_audit = _build_release_audit_rows(base)
 
     counts = {
         "attempts": _write_csv(tables_dir / "attempts.csv", _flatten_attempt_rows(attempts)),
         "generations": _write_csv(tables_dir / "generations.csv", generations),
-        "policies": _write_csv(tables_dir / "policy_tuning.csv", policies),
+        "policies": _write_csv(
+            tables_dir / "policy_tuning.csv",
+            policies,
+            preferred_headers=_TABLE_HEADER_PRIORITY.get("policy_tuning"),
+        ),
         "physics": _write_csv(tables_dir / "physics_budget.csv", physics),
         "candidates": _write_csv(tables_dir / "candidates.csv", candidates),
-        "phases": _write_csv(tables_dir / "phases.csv", phases),
+        "phases": _write_csv(
+            tables_dir / "phases.csv",
+            phases,
+            preferred_headers=_TABLE_HEADER_PRIORITY.get("phases"),
+        ),
+        "vop_rounds": _write_csv(
+            tables_dir / "vop_rounds.csv",
+            _normalize_vop_round_rows(vop_rounds),
+            preferred_headers=_TABLE_HEADER_PRIORITY.get("vop_rounds"),
+        ),
         "layouts": _write_csv(tables_dir / "layout_timeline.csv", layouts),
         "layout_deltas": _write_csv(tables_dir / "layout_deltas.csv", layout_deltas),
+        "release_audit": _write_csv(
+            tables_dir / "release_audit.csv",
+            release_audit,
+            preferred_headers=_TABLE_HEADER_PRIORITY.get("release_audit"),
+        ),
     }
     counts["tables_dir"] = serialize_run_path(base, tables_dir)
+    counts["vop_rounds_path"] = serialize_run_path(base, tables_dir / "vop_rounds.csv")
+    counts["release_audit_path"] = serialize_run_path(
+        base, tables_dir / "release_audit.csv"
+    )
     return counts

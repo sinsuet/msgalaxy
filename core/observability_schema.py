@@ -3,7 +3,7 @@ Typed event schemas for MaaS observability.
 
 Phase-1 scope:
 - run manifest
-- phase events (A/B/C/D)
+- phase events (A/B/C/D + experimental extension phases)
 - attempt events
 - policy events
 - physics events
@@ -28,6 +28,11 @@ class _BaseEvent(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     run_id: str = ""
+    run_mode: str = ""
+    producer_mode: str = ""
+    execution_mode: str = ""
+    lifecycle_state: str = ""
+    artifact_layout_version: Optional[int] = None
     timestamp: str = Field(default_factory=_now_iso)
     iteration: int = 0
     attempt: Optional[int] = None
@@ -43,6 +48,11 @@ class RunManifestEvent(BaseModel):
     run_dir: str = ""
     run_mode: str = ""
     run_mode_bucket: str = ""
+    execution_mode: str = ""
+    delegated_execution_mode: str = ""
+    lifecycle_state: str = ""
+    artifact_layout_version: Optional[int] = None
+    artifact_index_path: str = ""
     run_label: str = ""
     run_algorithm: str = ""
     run_naming_strategy: str = ""
@@ -66,9 +76,9 @@ class RunManifestEvent(BaseModel):
 
 
 class PhaseEvent(_BaseEvent):
-    """A/B/C/D phase transitions."""
+    """Runtime phase transitions for mass and compatible experimental modes."""
 
-    phase: Literal["A", "B", "C", "D"] = "A"
+    phase: str = "A"
     status: Literal["started", "completed", "failed"] = "started"
     details: Dict[str, Any] = Field(default_factory=dict)
 

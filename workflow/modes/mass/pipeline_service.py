@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import numpy as np
 
 from core.exceptions import SatelliteDesignError
+from core.final_summary_mass_zh import generate_mass_final_summary_zh
 from core.protocol import DesignState
 from optimization.knowledge.mass import MassEvidence
 from optimization.modes.mass.maas_mcts import (
@@ -27,12 +28,21 @@ from optimization.modes.mass.maas_mcts import (
 from optimization.modes.mass.meta_policy import propose_meta_policy_actions
 from optimization.modes.mass.modeling_validator import validate_modeling_intent
 from optimization.modes.mass.observability.materialize import materialize_observability_tables
+from optimization.modes.mass.observability.release_audit import (
+    build_release_audit_payload,
+)
 from optimization.modes.mass.operator_physics_matrix import (
     evaluate_operator_family_coverage,
     evaluate_operator_realization,
     parse_required_families,
 )
-from optimization.protocol import ModelingIntent, PowerMetrics, StructuralMetrics, ThermalMetrics
+from optimization.protocol import (
+    ModelingIntent,
+    ModelingObjective,
+    PowerMetrics,
+    StructuralMetrics,
+    ThermalMetrics,
+)
 from optimization.modes.mass.trace_features import extract_maas_trace_features
 
 if TYPE_CHECKING:
@@ -45,6 +55,35 @@ class MaaSPipelineService:
     def __init__(self, host: "WorkflowOrchestrator") -> None:
         self.host = host
 
+    @staticmethod
+    def _apply_policy_fidelity_floor(
+        fidelity_plan: Dict[str, Any],
+        *,
+        opt_cfg: Dict[str, Any],
+        simulation_backend: str = "",
+    ) -> Dict[str, Any]:
+        plan = dict(fidelity_plan or {})
+        backend = str(simulation_backend or "").strip().lower()
+        floor_mode = str(opt_cfg.get("mass_thermal_evaluator_mode", "") or "").strip().lower()
+        if backend == "comsol" and floor_mode == "online_comsol":
+            current_mode = str(plan.get("thermal_evaluator_mode", "") or "").strip().lower()
+            if current_mode != "online_comsol":
+                plan["thermal_evaluator_mode"] = "online_comsol"
+
+        if backend == "comsol":
+            floor_budget = max(int(opt_cfg.get("mass_online_comsol_eval_budget", 0) or 0), 0)
+            current_budget = max(int(plan.get("online_comsol_eval_budget", 0) or 0), 0)
+            if floor_budget > current_budget:
+                plan["online_comsol_eval_budget"] = int(floor_budget)
+
+        if bool(opt_cfg.get("mass_enable_physics_audit", True)):
+            floor_audit = max(int(opt_cfg.get("mass_audit_top_k", 1) or 1), 1)
+            current_audit = max(int(plan.get("physics_audit_top_k", 0) or 0), 0)
+            if floor_audit > current_audit:
+                plan["physics_audit_top_k"] = int(floor_audit)
+
+        return plan
+
     def run_pipeline(
         self,
         *,
@@ -52,6 +91,7 @@ class MaaSPipelineService:
         bom_file: Optional[str],
         max_iterations: int,
         convergence_threshold: float,
+        policy_priors: Optional[Dict[str, Any]] = None,
     ) -> DesignState:
         """
         mass 模式：
@@ -65,11 +105,269 @@ class MaaSPipelineService:
         if runtime is None:
             raise RuntimeError("runtime_facade is not configured")
         runtime_mode = str(getattr(host, "optimization_mode", "mass") or "mass")
+        active_policy_priors = dict(policy_priors or {})
+
+        def _append_objective_if_missing(
+            intent: ModelingIntent,
+            *,
+            name: str,
+            metric_key: str,
+            direction: str,
+            weight: float,
+        ) -> None:
+            objective_keys = {
+                str(getattr(item, "metric_key", "") or "").strip().lower()
+                for item in list(getattr(intent, "objectives", []) or [])
+            }
+            if str(metric_key or "").strip().lower() in objective_keys:
+                return
+            intent.objectives.append(
+                ModelingObjective(
+                    name=name,
+                    metric_key=metric_key,
+                    direction=direction,
+                    weight=float(weight),
+                )
+            )
+
+        def _apply_vop_policy_to_intent(intent: ModelingIntent) -> Dict[str, Any]:
+            report: Dict[str, Any] = {
+                "applied": False,
+                "constraint_focus": [],
+                "added_objectives": [],
+                "selected_operator_program_id": "",
+            }
+            if not active_policy_priors:
+                return report
+
+            focus = [
+                str(item).strip().lower()
+                for item in list(active_policy_priors.get("constraint_focus", []) or [])
+                if str(item).strip()
+            ]
+            focus_set = set(focus)
+            focus_objectives = [
+                ("thermal", "min_vop_max_temp", "max_temp", "minimize", 0.35),
+                ("max_temp", "min_vop_max_temp", "max_temp", "minimize", 0.35),
+                ("geometry", "max_vop_clearance", "min_clearance", "maximize", 0.25),
+                ("clearance", "max_vop_clearance", "min_clearance", "maximize", 0.25),
+                ("collision", "min_vop_collisions", "num_collisions", "minimize", 0.30),
+                ("boundary", "min_vop_boundary", "boundary_violation", "minimize", 0.25),
+                ("cg_limit", "min_vop_cg", "cg_offset", "minimize", 0.30),
+                ("cg_offset", "min_vop_cg", "cg_offset", "minimize", 0.30),
+                ("structural", "min_vop_stress", "max_stress", "minimize", 0.20),
+                ("max_stress", "min_vop_stress", "max_stress", "minimize", 0.20),
+                (
+                    "structural",
+                    "max_vop_modal_freq",
+                    "first_modal_freq",
+                    "maximize",
+                    0.15,
+                ),
+                (
+                    "first_modal_freq",
+                    "max_vop_modal_freq",
+                    "first_modal_freq",
+                    "maximize",
+                    0.15,
+                ),
+                (
+                    "structural",
+                    "max_vop_safety_factor",
+                    "safety_factor",
+                    "maximize",
+                    0.15,
+                ),
+                (
+                    "safety_factor",
+                    "max_vop_safety_factor",
+                    "safety_factor",
+                    "maximize",
+                    0.15,
+                ),
+                ("power", "min_vop_voltage_drop", "voltage_drop", "minimize", 0.20),
+                ("voltage_drop", "min_vop_voltage_drop", "voltage_drop", "minimize", 0.20),
+                (
+                    "power",
+                    "max_vop_power_margin",
+                    "power_margin",
+                    "maximize",
+                    0.15,
+                ),
+                (
+                    "power_margin",
+                    "max_vop_power_margin",
+                    "power_margin",
+                    "maximize",
+                    0.15,
+                ),
+                (
+                    "mission",
+                    "min_vop_keepout",
+                    "mission_keepout_violation",
+                    "minimize",
+                    0.20,
+                ),
+                (
+                    "mission_keepout_violation",
+                    "min_vop_keepout",
+                    "mission_keepout_violation",
+                    "minimize",
+                    0.20,
+                ),
+            ]
+            added_objectives: List[str] = []
+            for focus_key, name, metric_key, direction, weight in focus_objectives:
+                if focus_key not in focus_set:
+                    continue
+                before_count = len(list(intent.objectives or []))
+                _append_objective_if_missing(
+                    intent,
+                    name=name,
+                    metric_key=metric_key,
+                    direction=direction,
+                    weight=weight,
+                )
+                after_count = len(list(intent.objectives or []))
+                if after_count > before_count:
+                    added_objectives.append(metric_key)
+
+            assumptions = list(getattr(intent, "assumptions", []) or [])
+            policy_id = str(active_policy_priors.get("policy_id", "") or "").strip()
+            if policy_id:
+                assumptions.append(f"vop_policy:{policy_id}")
+            if focus:
+                assumptions.append(f"vop_focus:{','.join(focus)}")
+            selected_program = dict(
+                active_policy_priors.get("selected_operator_candidate", {}) or {}
+            )
+            selected_program_id = str(
+                (selected_program.get("program", {}) or {}).get("program_id", "")
+                or selected_program.get("candidate_id", "")
+                or ""
+            ).strip()
+            if selected_program_id:
+                assumptions.append(f"vop_operator_seed:{selected_program_id}")
+            if assumptions:
+                intent.assumptions = assumptions
+            notes = str(getattr(intent, "notes", "") or "").strip()
+            suffix = "vop_policy_intent_patch"
+            if suffix not in notes:
+                intent.notes = f"{notes}|{suffix}" if notes else suffix
+
+            report["applied"] = bool(focus or selected_program_id)
+            report["constraint_focus"] = list(focus)
+            report["added_objectives"] = list(added_objectives)
+            report["selected_operator_program_id"] = selected_program_id
+            return report
+
+        def _apply_vop_policy_runtime_overrides() -> Dict[str, Any]:
+            report: Dict[str, Any] = {
+                "applied": False,
+                "policy_id": str(active_policy_priors.get("policy_id", "") or ""),
+                "search_space_override": "",
+                "runtime_overrides": {},
+                "fidelity_overrides": {},
+                "selected_operator_program_id": "",
+                "selected_operator_actions": [],
+                "constraint_focus": list(active_policy_priors.get("constraint_focus", []) or []),
+            }
+            if not active_policy_priors:
+                return report
+
+            opt_cfg = host.config.setdefault("optimization", {})
+            search_space = str(active_policy_priors.get("search_space_prior", "") or "").strip().lower()
+            if search_space in {"coordinate", "operator_program", "hybrid"}:
+                opt_cfg["mass_search_space"] = search_space
+                report["search_space_override"] = search_space
+
+            runtime_knobs = dict(active_policy_priors.get("runtime_knob_priors", {}) or {})
+            knob_map = {
+                "maas_relax_ratio": "mass_relax_ratio",
+                "mcts_action_prior_weight": "mass_mcts_action_prior_weight",
+                "mcts_cv_penalty_weight": "mass_mcts_cv_penalty_weight",
+                "online_comsol_eval_budget": "mass_online_comsol_eval_budget",
+                "online_comsol_schedule_mode": "mass_online_comsol_schedule_mode",
+                "online_comsol_schedule_top_fraction": "mass_online_comsol_schedule_top_fraction",
+                "online_comsol_schedule_explore_prob": "mass_online_comsol_schedule_explore_prob",
+                "online_comsol_schedule_uncertainty_weight": "mass_online_comsol_schedule_uncertainty_weight",
+            }
+            for source_key, target_key in knob_map.items():
+                if source_key not in runtime_knobs:
+                    continue
+                opt_cfg[target_key] = runtime_knobs[source_key]
+                report["runtime_overrides"][target_key] = runtime_knobs[source_key]
+
+            fidelity_plan = self._apply_policy_fidelity_floor(
+                dict(active_policy_priors.get("fidelity_plan", {}) or {}),
+                opt_cfg=opt_cfg,
+                simulation_backend=str(
+                    dict(host.config.get("simulation", {}) or {}).get("backend", "") or ""
+                ),
+            )
+            if str(fidelity_plan.get("thermal_evaluator_mode", "") or "").strip().lower() in {
+                "proxy",
+                "online_comsol",
+            }:
+                opt_cfg["mass_thermal_evaluator_mode"] = str(
+                    fidelity_plan["thermal_evaluator_mode"]
+                ).strip().lower()
+                report["fidelity_overrides"]["mass_thermal_evaluator_mode"] = opt_cfg[
+                    "mass_thermal_evaluator_mode"
+                ]
+            if "online_comsol_eval_budget" in fidelity_plan:
+                opt_cfg["mass_online_comsol_eval_budget"] = int(
+                    fidelity_plan.get("online_comsol_eval_budget", 0) or 0
+                )
+                report["fidelity_overrides"]["mass_online_comsol_eval_budget"] = int(
+                    opt_cfg["mass_online_comsol_eval_budget"]
+                )
+            if "physics_audit_top_k" in fidelity_plan:
+                opt_cfg["mass_audit_top_k"] = max(
+                    1,
+                    int(fidelity_plan.get("physics_audit_top_k", 1) or 1),
+                )
+                report["fidelity_overrides"]["mass_audit_top_k"] = int(opt_cfg["mass_audit_top_k"])
+
+            selected_program = dict(active_policy_priors.get("selected_operator_candidate", {}) or {})
+            selected_program_payload = dict(selected_program.get("program", {}) or {})
+            selected_program_id = str(
+                selected_program_payload.get("program_id", "")
+                or selected_program.get("candidate_id", "")
+                or ""
+            ).strip()
+            selected_actions = []
+            selected_action_params = []
+            for action_payload in list(selected_program_payload.get("actions", []) or []):
+                if not isinstance(action_payload, dict):
+                    continue
+                action_name = str(action_payload.get("action", "") or "").strip().lower()
+                if not action_name:
+                    continue
+                selected_actions.append(action_name)
+                params_payload = action_payload.get("params", {})
+                selected_action_params.append(
+                    dict(params_payload) if isinstance(params_payload, dict) else {}
+                )
+            if selected_actions:
+                opt_cfg["mass_operator_program_forced_slot_actions"] = list(selected_actions)
+                opt_cfg["mass_operator_program_forced_slot_action_params"] = list(selected_action_params)
+                report["selected_operator_program_id"] = selected_program_id
+                report["selected_operator_actions"] = list(selected_actions)
+
+            report["applied"] = bool(
+                report["search_space_override"]
+                or report["runtime_overrides"]
+                or report["fidelity_overrides"]
+                or report["selected_operator_actions"]
+            )
+            return report
 
         host.logger.logger.info(
             f"Entering {runtime_mode} pipeline: "
             "Understanding -> Formulation -> Coding -> Reflection"
         )
+        policy_effect_summary = _apply_vop_policy_runtime_overrides()
         host.logger.save_run_manifest(
             {
                 "optimization_mode": runtime_mode,
@@ -373,6 +671,15 @@ class MaaSPipelineService:
             getattr(modeling_intent, "intent_id", "") or ""
         )
         modeling_intent_diagnostics["intent_notes"] = str(getattr(modeling_intent, "notes", "") or "")
+        vop_intent_patch_report = _apply_vop_policy_to_intent(modeling_intent)
+        if bool(vop_intent_patch_report.get("applied", False)):
+            modeling_intent_diagnostics["vop_policy_applied"] = True
+            modeling_intent_diagnostics["vop_policy_id"] = str(
+                active_policy_priors.get("policy_id", "") or ""
+            )
+            modeling_intent_diagnostics["vop_constraint_focus"] = list(
+                vop_intent_patch_report.get("constraint_focus", []) or []
+            )
 
         validation_opt_cfg = host.config.get("optimization", {})
         validation = validate_modeling_intent(
@@ -1759,6 +2066,9 @@ class MaaSPipelineService:
         final_state.metadata["modeling_validation"] = validation
         final_state.metadata["formulation_report"] = last_formulation_report
         final_state.metadata["compile_report"] = last_compile_report
+        final_state.metadata["vop_policy_priors"] = dict(active_policy_priors or {})
+        final_state.metadata["vop_policy_effect_summary"] = dict(policy_effect_summary or {})
+        final_state.metadata["vop_intent_patch_report"] = dict(vop_intent_patch_report or {})
         final_state.metadata["thermal_evaluator_mode"] = thermal_evaluator_mode
         final_state.metadata["enforce_audit_feasible"] = bool(enforce_audit_feasible)
         final_state.metadata["solver_diagnosis"] = last_diagnosis
@@ -1915,6 +2225,9 @@ class MaaSPipelineService:
                 "modeling_intent_initial": modeling_intent.model_dump(),
                 "modeling_intent_final": active_intent.model_dump(),
                 "modeling_intent_diagnostics": dict(modeling_intent_diagnostics),
+                "vop_policy_priors": dict(active_policy_priors or {}),
+                "vop_policy_effect_summary": dict(policy_effect_summary or {}),
+                "vop_intent_patch_report": dict(vop_intent_patch_report or {}),
                 "validation": validation,
                 "solver_diagnosis": last_diagnosis,
                 "relaxation_suggestions": last_relaxation_suggestions,
@@ -2981,6 +3294,18 @@ class MaaSPipelineService:
         persisted_rag_ingest_store_path = host.logger.serialize_artifact_path(
             str(rag_ingest_report.get("store_path", "") or "")
         )
+        release_audit_payload = build_release_audit_payload(
+            simulation_backend=simulation_backend,
+            thermal_evaluator_mode=thermal_evaluator_mode,
+            enable_physics_audit=enable_physics_audit,
+            diagnosis_status=str(last_diagnosis.get("status", "") or ""),
+            source_gate_report=source_gate_report,
+            operator_family_gate_report=operator_family_gate_report,
+            operator_realization_gate_report=operator_realization_gate_report,
+            final_mph_path=persisted_final_mph_path,
+            trace_features=maas_trace_features,
+        )
+        final_state.metadata["release_audit"] = dict(release_audit_payload)
         host.logger.save_summary(
             status=summary_status,
             final_iteration=iteration,
@@ -2994,15 +3319,35 @@ class MaaSPipelineService:
             extra={
                 "optimization_mode": runtime_mode,
                 "pymoo_algorithm": str(pymoo_algorithm),
+                "simulation_backend": str(
+                    release_audit_payload.get("simulation_backend", "") or ""
+                ),
                 "thermal_evaluator_mode": thermal_evaluator_mode,
                 "diagnosis_status": last_diagnosis.get("status"),
                 "diagnosis_reason": last_diagnosis.get("reason"),
+                "final_audit_status": str(
+                    release_audit_payload.get("final_audit_status", "") or ""
+                ),
                 "maas_attempt_count": len(maas_attempts),
                 "maas_attempt_budget": int(maas_max_attempts),
                 "maas_attempt_budget_base": int(maas_base_attempts),
                 "maas_attempt_budget_report": dict(dynamic_attempt_report),
                 "mcts_stop_reason": str(mcts_report.get("stop_reason", "")),
                 "search_space": summary_search_space or None,
+                "vop_policy_applied": bool(policy_effect_summary.get("applied", False)),
+                "vop_policy_id": str(active_policy_priors.get("policy_id", "") or ""),
+                "vop_search_space_override": str(
+                    policy_effect_summary.get("search_space_override", "") or ""
+                ),
+                "vop_runtime_overrides": dict(
+                    policy_effect_summary.get("runtime_overrides", {}) or {}
+                ),
+                "vop_fidelity_overrides": dict(
+                    policy_effect_summary.get("fidelity_overrides", {}) or {}
+                ),
+                "vop_selected_operator_program_id": str(
+                    policy_effect_summary.get("selected_operator_program_id", "") or ""
+                ),
                 "dominant_violation": summary_attempt_payload.get("dominant_violation"),
                 "constraint_violation_breakdown": summary_attempt_payload.get("constraint_violation_breakdown"),
                 "best_candidate_metrics": summary_attempt_payload.get("best_candidate_metrics"),
@@ -3061,8 +3406,12 @@ class MaaSPipelineService:
                 "feasible_rate": maas_trace_features.get("feasible_rate"),
                 "best_cv_min": maas_trace_features.get("best_cv_min"),
                 "best_cv_min_source": maas_trace_features.get("best_cv_min_source"),
-                "first_feasible_eval": maas_trace_features.get("first_feasible_eval"),
-                "comsol_calls_to_first_feasible": maas_trace_features.get("comsol_calls_to_first_feasible"),
+                "first_feasible_eval": release_audit_payload.get(
+                    "first_feasible_eval"
+                ),
+                "comsol_calls_to_first_feasible": release_audit_payload.get(
+                    "comsol_calls_to_first_feasible"
+                ),
                 "comsol_calls_per_feasible_attempt": (
                     maas_trace_features.get("runtime_thermal", {}) or {}
                 ).get("comsol_calls_per_feasible_attempt"),
@@ -3242,6 +3591,7 @@ class MaaSPipelineService:
                     json.dumps(summary_payload, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
+                host.logger._generate_markdown_report(summary_payload)
             except Exception as exc:
                 host.logger.logger.debug(
                     "summary observability update failed: %s", exc
@@ -3258,7 +3608,24 @@ class MaaSPipelineService:
                 "extra": {
                     "diagnosis_status": str(last_diagnosis.get("status", "")),
                     "diagnosis_reason": str(last_diagnosis.get("reason", "")),
+                    "simulation_backend": str(
+                        release_audit_payload.get("simulation_backend", "") or ""
+                    ),
+                    "final_audit_status": str(
+                        release_audit_payload.get("final_audit_status", "") or ""
+                    ),
+                    "first_feasible_eval": release_audit_payload.get(
+                        "first_feasible_eval"
+                    ),
+                    "comsol_calls_to_first_feasible": release_audit_payload.get(
+                        "comsol_calls_to_first_feasible"
+                    ),
                     "attempt_count": int(len(maas_attempts)),
+                    "vop_policy_applied": bool(policy_effect_summary.get("applied", False)),
+                    "vop_policy_id": str(active_policy_priors.get("policy_id", "") or ""),
+                    "vop_search_space_override": str(
+                        policy_effect_summary.get("search_space_override", "") or ""
+                    ),
                     "seed_population_total_count": int(
                         summary_seed_report.get("total_seed_count_post_dedup", 0) or 0
                     ),
@@ -3413,6 +3780,28 @@ class MaaSPipelineService:
             }
         )
         runtime.generate_final_report(final_state, iteration)
+        if runtime_mode == "mass":
+            try:
+                mass_final_summary_result = generate_mass_final_summary_zh(host.logger.run_dir)
+                if bool(mass_final_summary_result.get("generated", False)):
+                    final_state.metadata["mass_final_summary"] = {
+                        "status": str(mass_final_summary_result.get("status", "") or ""),
+                        "markdown_path": str(
+                            mass_final_summary_result.get("markdown_path", "") or ""
+                        ),
+                        "digest_path": str(
+                            mass_final_summary_result.get("digest_path", "") or ""
+                        ),
+                    }
+                    updated_summary = dict(
+                        mass_final_summary_result.get("summary", {}) or {}
+                    )
+                    if updated_summary:
+                        host.logger._generate_markdown_report(updated_summary)
+            except Exception as exc:
+                host.logger.logger.warning(
+                    "mass mass_final_summary_zh generation failed: %s", exc
+                )
         host.logger.logger.info(
             "mass pipeline completed. "
             f"attempts={len(maas_attempts)}, "

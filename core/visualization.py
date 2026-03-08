@@ -32,12 +32,18 @@ import numpy as np
 import pandas as pd
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
+from core.artifact_index import load_artifact_index
 from core.exceptions import VisualizationError
 from core.logger import get_logger
 from core.mode_contract import is_mass_mode, normalize_observability_mode
 from core.path_policy import serialize_run_path
+from core.runtime_feature_fingerprint import (
+    fingerprint_display_rows,
+    load_runtime_feature_fingerprint,
+)
 from core.modes.agent_loop.visualization_dispatch import render_agent_loop_artifacts
 from core.modes.mass.visualization_dispatch import render_mass_artifacts
+from core.modes.vop_maas.visualization_dispatch import render_vop_maas_artifacts
 
 logger = get_logger("visualization")
 
@@ -87,6 +93,159 @@ def _read_csv_safely(path: str) -> pd.DataFrame:
         return pd.read_csv(path)
     except Exception:
         return pd.DataFrame()
+
+
+def _load_summary_safely(experiment_dir: str) -> Dict[str, Any]:
+    summary_path = os.path.join(experiment_dir, "summary.json")
+    if not os.path.exists(summary_path):
+        return {}
+    try:
+        with open(summary_path, "r", encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _coerce_json_like(value: Any) -> Any:
+    if value is None:
+        return {}
+    if isinstance(value, (dict, list)):
+        return value
+    text = str(value or "").strip()
+    if not text or text.lower() in {"nan", "none", "null"}:
+        return {}
+    try:
+        return json.loads(text)
+    except Exception:
+        try:
+            return ast.literal_eval(text)
+        except Exception:
+            return text
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _compact_json_text(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    if isinstance(value, str):
+        normalized = value.strip()
+        return normalized or "n/a"
+    payload = _coerce_json_like(value)
+    if payload in ({}, [], ""):
+        return "n/a"
+    try:
+        text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        text = str(payload)
+    if len(text) > 220:
+        return text[:217] + "..."
+    return text
+
+
+def _build_runtime_feature_fingerprint_summary(experiment_dir: str) -> str:
+    try:
+        payload = load_runtime_feature_fingerprint(experiment_dir)
+    except Exception:
+        payload = {}
+    if not payload:
+        return ""
+    summary = _load_summary_safely(experiment_dir)
+    tables = fingerprint_display_rows(payload)
+    lines: List[str] = ["=== Runtime Feature Fingerprint ==="]
+
+    for row in list(tables.get("baseline_table", []) or []):
+        lines.append(
+            "- "
+            + f"{str(row.get('Feature', '') or 'n/a')}: "
+            + f"requested={str(row.get('Requested', '') or 'n/a')}, "
+            + f"effective={str(row.get('Effective', '') or 'n/a')}, "
+            + f"notes={str(row.get('Notes', '') or 'n/a')}"
+        )
+
+    for row in list(tables.get("gate_table", []) or []):
+        lines.append(
+            "- Gate "
+            + f"{str(row.get('gate', '') or 'n/a')}: "
+            + f"mode={str(row.get('mode', '') or 'n/a')}, "
+            + f"passed={str(row.get('passed', '') or 'n/a')}, "
+            + f"strict_blocked={str(row.get('strict_blocked', '') or 'n/a')}, "
+            + f"notes={str(row.get('notes', '') or 'n/a')}"
+        )
+
+    for row in list(tables.get("vop_table", []) or []):
+        lines.append(
+            "- Overlay "
+            + f"{str(row.get('feature', '') or 'n/a')}: "
+            + f"value={str(row.get('value', '') or 'n/a')}, "
+            + f"notes={str(row.get('notes', '') or 'n/a')}"
+        )
+
+    runtime_feature_path = str(summary.get("runtime_feature_fingerprint_path", "") or "").strip()
+    llm_final_summary_path = str(summary.get("llm_final_summary_zh_path", "") or "").strip()
+    if runtime_feature_path:
+        lines.append(f"- Artifact path: {runtime_feature_path}")
+    if llm_final_summary_path:
+        lines.append(f"- Chinese final summary: {llm_final_summary_path}")
+    return "\n".join(lines)
+
+
+def _latest_vop_round_row(vop_rounds: pd.DataFrame) -> Optional[pd.Series]:
+    if len(vop_rounds) == 0:
+        return None
+    ordered = vop_rounds.copy()
+    if "round_index" in ordered.columns:
+        ordered["__round_index"] = pd.to_numeric(
+            ordered["round_index"], errors="coerce"
+        ).fillna(-1)
+        ordered = ordered.sort_values(["__round_index", "vop_round_key"])
+    return ordered.tail(1).iloc[0]
+
+
+def _resolve_indexed_path(experiment_dir: str, raw_path: Any) -> str:
+    raw = str(raw_path or "").strip()
+    if not raw:
+        return ""
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = Path(experiment_dir) / candidate
+    candidate = candidate.resolve(strict=False)
+    if candidate.exists():
+        return str(candidate)
+    return ""
+
+
+def _resolve_run_artifact_path(experiment_dir: str, *, index_key: str, fallback: str = "") -> str:
+    index = load_artifact_index(experiment_dir)
+    indexed = _resolve_indexed_path(
+        experiment_dir,
+        dict(index.get("paths", {}) or {}).get(index_key, ""),
+    )
+    if indexed:
+        return indexed
+    return _resolve_indexed_path(experiment_dir, fallback)
+
+
+def _resolve_run_scoped_dir(
+    experiment_dir: str,
+    *,
+    scope: str,
+    field: str,
+    fallback: str = "",
+) -> str:
+    index = load_artifact_index(experiment_dir)
+    indexed = _resolve_indexed_path(
+        experiment_dir,
+        dict(dict(index.get("scopes", {}) or {}).get(scope, {}) or {}).get(field, ""),
+    )
+    if indexed:
+        return indexed
+    return _resolve_indexed_path(experiment_dir, fallback)
 
 
 def _parse_bool_series(df: pd.DataFrame, column: str) -> np.ndarray:
@@ -162,23 +321,33 @@ def _operator_action_family(action: str) -> str:
 def _detect_optimization_mode(experiment_dir: str) -> str:
     """
     检测本次实验的优化模式：
-    - 优先读取 summary.json 的 optimization_mode（归一化到两种活跃模式）
-    - 其次看 mass_trace.csv 是否有有效记录
+    - 优先读取 summary.json 的 run_mode / optimization_mode
+    - 其次看 indexed mass trace 是否有有效记录
     - 默认 agent_loop
     """
-    summary_path = os.path.join(experiment_dir, "summary.json")
     try:
-        if os.path.exists(summary_path):
-            import json
-
-            with open(summary_path, "r", encoding="utf-8") as f:
-                summary = json.load(f) or {}
-            mode = normalize_observability_mode(summary.get("optimization_mode", "agent_loop"))
-            return mode
+        summary = _load_summary_safely(experiment_dir)
+        if summary:
+            mode = normalize_observability_mode(
+                summary.get("run_mode") or summary.get("optimization_mode"),
+                default="legacy",
+            )
+            if mode != "legacy":
+                return mode
+            mode = normalize_observability_mode(
+                summary.get("optimization_mode"),
+                default="legacy",
+            )
+            if mode != "legacy":
+                return mode
     except Exception:
         pass
 
-    mass_trace_path = os.path.join(experiment_dir, "mass_trace.csv")
+    mass_trace_path = _resolve_run_artifact_path(
+        experiment_dir,
+        index_key="mass_trace_csv",
+        fallback="mass_trace.csv",
+    )
     try:
         if os.path.exists(mass_trace_path):
             df = pd.read_csv(mass_trace_path)
@@ -476,6 +645,8 @@ def _build_mass_tables_summary(tables_dir: str) -> str:
     policies = _read_csv_safely(os.path.join(tables_dir, "policy_tuning.csv"))
     physics = _read_csv_safely(os.path.join(tables_dir, "physics_budget.csv"))
     phases = _read_csv_safely(os.path.join(tables_dir, "phases.csv"))
+    vop_rounds = _read_csv_safely(os.path.join(tables_dir, "vop_rounds.csv"))
+    release_audit = _read_csv_safely(os.path.join(tables_dir, "release_audit.csv"))
     candidates = _read_csv_safely(os.path.join(tables_dir, "candidates.csv"))
     layouts = _read_csv_safely(os.path.join(tables_dir, "layout_timeline.csv"))
     layout_deltas = _read_csv_safely(os.path.join(tables_dir, "layout_deltas.csv"))
@@ -486,6 +657,8 @@ def _build_mass_tables_summary(tables_dir: str) -> str:
         "policies": int(len(policies)),
         "physics": int(len(physics)),
         "phases": int(len(phases)),
+        "vop_rounds": int(len(vop_rounds)),
+        "release_audit": int(len(release_audit)),
         "candidates": int(len(candidates)),
         "layouts": int(len(layouts)),
         "layout_deltas": int(len(layout_deltas)),
@@ -494,6 +667,38 @@ def _build_mass_tables_summary(tables_dir: str) -> str:
         "- Table rows: "
         + ", ".join(f"{key}={value}" for key, value in counts.items())
     )
+    vop_round_overview = _collect_vop_round_overview(vop_rounds, policies, phases)
+    if vop_round_overview is not None:
+        lines.append(
+            "- VOP round audit: "
+            f"rounds={int(vop_round_overview['round_count'])}, "
+            f"joined={int(vop_round_overview['joined_keys'])}, "
+            f"latest={str(vop_round_overview['latest_round_key']) or 'n/a'}, "
+            f"final_policy={str(vop_round_overview['final_policy_id']) or 'n/a'}"
+        )
+    if len(release_audit) > 0:
+        audit_row = release_audit.tail(1).iloc[0]
+        final_audit_status = str(audit_row.get("final_audit_status", "") or "").strip()
+        simulation_backend = str(audit_row.get("simulation_backend", "") or "").strip()
+        thermal_mode = str(
+            audit_row.get("thermal_evaluator_mode", "") or ""
+        ).strip()
+        first_feasible_eval = "n/a"
+        first_feasible_raw = audit_row.get("first_feasible_eval")
+        if pd.notna(first_feasible_raw) and str(first_feasible_raw).strip():
+            first_feasible_eval = str(first_feasible_raw).strip()
+        comsol_calls_to_first_feasible = "n/a"
+        comsol_calls_raw = audit_row.get("comsol_calls_to_first_feasible")
+        if pd.notna(comsol_calls_raw) and str(comsol_calls_raw).strip():
+            comsol_calls_to_first_feasible = str(comsol_calls_raw).strip()
+        lines.append(
+            "- Release audit: "
+            f"status={final_audit_status or 'n/a'}, "
+            f"backend={simulation_backend or 'n/a'}, "
+            f"thermal={thermal_mode or 'n/a'}, "
+            f"first_feasible_eval={first_feasible_eval}, "
+            f"comsol_calls_to_first_feasible={comsol_calls_to_first_feasible}"
+        )
 
     if len(attempts) > 0 and "diagnosis_status" in attempts.columns:
         status_counts = attempts["diagnosis_status"].fillna("unknown").value_counts()
@@ -563,6 +768,250 @@ def _build_mass_tables_summary(tables_dir: str) -> str:
     if len(lines) == 1:
         lines.append("- No materialized table data available.")
     return "\n".join(lines)
+
+
+def _build_vop_controller_summary(
+    experiment_dir: str,
+    *,
+    tables_dir: str,
+) -> str:
+    """构建 VOP controller 视角摘要。"""
+    summary = _load_summary_safely(experiment_dir)
+    policies = _read_csv_safely(os.path.join(tables_dir, "policy_tuning.csv"))
+    phases = _read_csv_safely(os.path.join(tables_dir, "phases.csv"))
+    vop_rounds = _read_csv_safely(os.path.join(tables_dir, "vop_rounds.csv"))
+    release_audit = _read_csv_safely(os.path.join(tables_dir, "release_audit.csv"))
+    round_overview = _collect_vop_round_overview(vop_rounds, policies, phases)
+    latest_round = _latest_vop_round_row(vop_rounds)
+
+    primary_round_index = _safe_int(summary.get("vop_policy_primary_round_index"), -1)
+    if primary_round_index < 0 and latest_round is not None:
+        primary_round_index = _safe_int(latest_round.get("round_index", -1), -1)
+    primary_round_key = str(summary.get("vop_policy_primary_round_key", "") or "").strip()
+    if not primary_round_key and latest_round is not None:
+        primary_round_key = str(latest_round.get("vop_round_key", "") or "").strip()
+    if not primary_round_key and round_overview is not None:
+        primary_round_key = str(round_overview.get("latest_round_key", "") or "").strip()
+
+    round_count = _safe_int(summary.get("vop_round_count"), 0)
+    if round_count <= 0 and round_overview is not None:
+        round_count = _safe_int(round_overview.get("round_count"), 0)
+
+    decision_summary = _coerce_json_like(summary.get("vop_decision_summary", {}))
+    if not isinstance(decision_summary, dict):
+        decision_summary = {}
+    delegated_effect = _coerce_json_like(summary.get("vop_delegated_effect_summary", {}))
+    if not isinstance(delegated_effect, dict):
+        delegated_effect = {}
+    reflective = _coerce_json_like(summary.get("vop_reflective_replanning", {}))
+    if not isinstance(reflective, dict):
+        reflective = {}
+
+    if latest_round is not None:
+        latest_round_dict = latest_round.to_dict()
+        change_summary = _coerce_json_like(latest_round_dict.get("change_summary", {}))
+        if not isinstance(change_summary, dict):
+            change_summary = {}
+        if not decision_summary:
+            decision_summary = {
+                "policy_id": str(latest_round_dict.get("policy_id", "") or ""),
+                "selected_operator_program_id": str(
+                    latest_round_dict.get("selected_operator_program_id", "") or ""
+                ),
+                "operator_actions": list(
+                    change_summary.get("operator_actions", [])
+                    or _parse_operator_actions(latest_round_dict.get("operator_actions", []))
+                ),
+                "search_space_override": str(
+                    latest_round_dict.get("search_space_override", "")
+                    or change_summary.get("search_space_override", "")
+                    or ""
+                ),
+                "intent_changes": _coerce_json_like(
+                    change_summary.get("intent_changes", {})
+                ),
+                "runtime_overrides": _coerce_json_like(
+                    latest_round_dict.get("runtime_overrides", {})
+                    or change_summary.get("runtime_overrides", {})
+                ),
+                "fidelity_plan": _coerce_json_like(
+                    latest_round_dict.get("fidelity_plan", {})
+                    or change_summary.get("fidelity_plan", {})
+                ),
+                "expected_effects": _coerce_json_like(
+                    latest_round_dict.get("expected_effects", {})
+                ),
+                "decision_rationale": str(
+                    latest_round_dict.get("decision_rationale", "") or ""
+                ),
+                "confidence": latest_round_dict.get("confidence", None),
+            }
+        if not delegated_effect:
+            effectiveness = _coerce_json_like(
+                latest_round_dict.get("effectiveness_summary", {})
+            )
+            if not isinstance(effectiveness, dict):
+                effectiveness = {}
+            delegated_effect = {
+                "diagnosis_status": str(effectiveness.get("diagnosis_status", "") or ""),
+                "diagnosis_reason": str(effectiveness.get("diagnosis_reason", "") or ""),
+                "search_space_effect": str(
+                    effectiveness.get("search_space_effect", "") or ""
+                ),
+                "first_feasible_eval": effectiveness.get("first_feasible_eval", None),
+                "comsol_calls_to_first_feasible": effectiveness.get(
+                    "comsol_calls_to_first_feasible", None
+                ),
+                "audit_status": str(effectiveness.get("audit_status", "") or ""),
+                "effectiveness_verdict": str(
+                    effectiveness.get("effectiveness_verdict", "") or ""
+                ),
+                "observed_effects": _coerce_json_like(
+                    latest_round_dict.get("observed_effects", {})
+                ),
+            }
+        if not reflective:
+            reflective = {
+                "triggered": bool(
+                    str(latest_round_dict.get("trigger_reason", "") or "").strip()
+                ),
+                "trigger_reason": str(latest_round_dict.get("trigger_reason", "") or ""),
+                "final_policy_id": str(latest_round_dict.get("final_policy_id", "") or ""),
+                "executed_mass_rerun": str(
+                    latest_round_dict.get("mass_rerun_executed", "") or ""
+                ).strip().lower()
+                in {"1", "true", "yes", "y"},
+                "skipped_reason": str(latest_round_dict.get("skipped_reason", "") or ""),
+            }
+
+    if len(release_audit) > 0:
+        audit_row = release_audit.tail(1).iloc[0]
+        delegated_effect.setdefault(
+            "audit_status",
+            str(audit_row.get("final_audit_status", "") or ""),
+        )
+        delegated_effect.setdefault(
+            "first_feasible_eval",
+            audit_row.get("first_feasible_eval", None),
+        )
+        delegated_effect.setdefault(
+            "comsol_calls_to_first_feasible",
+            audit_row.get("comsol_calls_to_first_feasible", None),
+        )
+    lines: List[str] = []
+    lines.append("=== VOP Controller Summary ===")
+    lines.append(f"- Primary round index: {primary_round_index}")
+    lines.append(f"- Primary round key: {primary_round_key or 'n/a'}")
+    lines.append(f"- Round count: {round_count}")
+    lines.append(
+        f"- Policy id: {str(decision_summary.get('policy_id', '') or summary.get('final_policy_id', summary.get('vop_policy_id', '')) or 'n/a')}"
+    )
+    lines.append(
+        f"- Decision rationale: {_compact_json_text(decision_summary.get('decision_rationale', ''))}"
+    )
+    lines.append(
+        "- Search-space override: "
+        f"{str(decision_summary.get('search_space_override', '') or 'n/a')}"
+    )
+    lines.append(
+        "- Runtime/fidelity override: "
+        f"runtime={_compact_json_text(decision_summary.get('runtime_overrides', {}))}, "
+        f"fidelity={_compact_json_text(decision_summary.get('fidelity_plan', {}))}"
+    )
+    lines.append(
+        "- Reflective replan: "
+        f"triggered={bool(reflective.get('triggered', False))}, "
+        f"reason={str(reflective.get('trigger_reason', '') or reflective.get('skipped_reason', '') or 'n/a')}"
+    )
+    lines.append(
+        "- Expected vs observed effect: "
+        f"expected={_compact_json_text(decision_summary.get('expected_effects', {}))}, "
+        f"observed={_compact_json_text(delegated_effect.get('observed_effects', {}))}"
+    )
+    delegated = str(summary.get("delegated_execution_mode", "") or summary.get("execution_mode", "") or "")
+    if delegated:
+        lines.append(f"- Delegated execution mode: {delegated}")
+    lines.append(
+        "- Delegated mass final result: "
+        f"diagnosis={str(delegated_effect.get('diagnosis_status', '') or 'n/a')}, "
+        f"audit={str(delegated_effect.get('audit_status', '') or 'n/a')}, "
+        f"verdict={str(delegated_effect.get('effectiveness_verdict', '') or 'n/a')}"
+    )
+    if delegated_effect.get("first_feasible_eval", None) not in (None, "", "n/a"):
+        lines.append(
+            "- First feasible eval / COMSOL calls: "
+            f"{_compact_json_text(delegated_effect.get('first_feasible_eval'))} / "
+            f"{_compact_json_text(delegated_effect.get('comsol_calls_to_first_feasible'))}"
+        )
+    if latest_round is not None:
+        lines.append(
+            "- Latest round audit: "
+            f"stage={str(latest_round.get('stage', '') or 'n/a')}, "
+            f"final_policy={str(latest_round.get('final_policy_id', '') or 'n/a')}, "
+            f"mass_rerun_executed={str(latest_round.get('mass_rerun_executed', '') or 'n/a')}"
+        )
+    runtime_feature_summary = _build_runtime_feature_fingerprint_summary(experiment_dir)
+    if runtime_feature_summary:
+        lines.extend(["", runtime_feature_summary])
+    return "\n".join(lines)
+
+
+def _collect_vop_round_overview(
+    vop_rounds: pd.DataFrame,
+    policies: pd.DataFrame,
+    phases: pd.DataFrame,
+) -> Optional[Dict[str, Any]]:
+    policy_keys = set()
+    phase_keys = set()
+    round_keys = set()
+    final_policy_id = ""
+
+    if len(policies) > 0 and "vop_round_key" in policies.columns:
+        policy_keys = {
+            str(item).strip()
+            for item in policies["vop_round_key"].fillna("").tolist()
+            if str(item).strip()
+        }
+
+    if len(phases) > 0 and "vop_round_key" in phases.columns:
+        phase_keys = {
+            str(item).strip()
+            for item in phases["vop_round_key"].fillna("").tolist()
+            if str(item).strip()
+        }
+
+    if len(vop_rounds) > 0 and "vop_round_key" in vop_rounds.columns:
+        round_keys = {
+            str(item).strip()
+            for item in vop_rounds["vop_round_key"].fillna("").tolist()
+            if str(item).strip()
+        }
+        if "final_policy_id" in vop_rounds.columns:
+            ordered = vop_rounds.copy()
+            if "round_index" in ordered.columns:
+                ordered["__round_index"] = pd.to_numeric(
+                    ordered["round_index"], errors="coerce"
+                ).fillna(-1)
+                ordered = ordered.sort_values(["__round_index", "vop_round_key"])
+            latest_row = ordered.tail(1).iloc[0]
+            final_policy_id = str(latest_row.get("final_policy_id", "") or "")
+
+    all_keys = sorted(round_keys | policy_keys | phase_keys)
+    if not all_keys:
+        return None
+
+    return {
+        "round_count": int(len(round_keys) or len(all_keys)),
+        "policy_keys": int(len(policy_keys)),
+        "phase_keys": int(len(phase_keys)),
+        "joined_keys": int(
+            len((policy_keys & phase_keys) & round_keys)
+            if round_keys
+            else len(policy_keys & phase_keys)
+        ),
+        "latest_round_key": str(all_keys[-1]),
+        "final_policy_id": str(final_policy_id or ""),
+    }
 
 
 def _read_jsonl_safely(path: str) -> List[Dict[str, Any]]:
@@ -1368,13 +1817,16 @@ def plot_mass_storyboard(tables_dir: str, output_path: str) -> None:
         policies = _read_csv_safely(os.path.join(tables_dir, "policy_tuning.csv"))
         physics = _read_csv_safely(os.path.join(tables_dir, "physics_budget.csv"))
         phases = _read_csv_safely(os.path.join(tables_dir, "phases.csv"))
+        vop_rounds = _read_csv_safely(os.path.join(tables_dir, "vop_rounds.csv"))
+        release_audit = _read_csv_safely(os.path.join(tables_dir, "release_audit.csv"))
         candidates = _read_csv_safely(os.path.join(tables_dir, "candidates.csv"))
         layouts = _read_csv_safely(os.path.join(tables_dir, "layout_timeline.csv"))
         layout_deltas = _read_csv_safely(os.path.join(tables_dir, "layout_deltas.csv"))
 
         if (
             len(attempts) == 0 and len(generations) == 0 and len(policies) == 0
-            and len(physics) == 0 and len(phases) == 0 and len(candidates) == 0
+            and len(physics) == 0 and len(phases) == 0 and len(vop_rounds) == 0
+            and len(release_audit) == 0 and len(candidates) == 0
             and len(layouts) == 0 and len(layout_deltas) == 0
         ):
             logger.warning("mass 故事板跳过：tables 为空")
@@ -1498,6 +1950,46 @@ def plot_mass_storyboard(tables_dir: str, output_path: str) -> None:
             ax.text(0.5, 0.5, "No policy/physics events", transform=ax.transAxes,
                     ha="center", va="center", fontsize=10, color="gray")
             ax.set_title("Runtime Policy & Physics Events")
+        vop_round_overview = _collect_vop_round_overview(vop_rounds, policies, phases)
+        if vop_round_overview is not None:
+            overview_text = (
+                f"vop_rounds={int(vop_round_overview['round_count'])} "
+                f"joined={int(vop_round_overview['joined_keys'])} "
+                f"latest={str(vop_round_overview['latest_round_key'])}"
+            )
+            ax.text(
+                0.02,
+                0.88,
+                overview_text,
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=8,
+                color="#1f2937",
+                bbox={"boxstyle": "round", "facecolor": "#eef6ff", "alpha": 0.8, "edgecolor": "#b6d4fe"},
+            )
+        if len(release_audit) > 0:
+            audit_row = release_audit.tail(1).iloc[0]
+            audit_status = str(audit_row.get("final_audit_status", "") or "").strip() or "n/a"
+            first_feasible = "n/a"
+            first_feasible_raw = audit_row.get("first_feasible_eval")
+            if pd.notna(first_feasible_raw) and str(first_feasible_raw).strip():
+                first_feasible = str(first_feasible_raw).strip()
+            comsol_calls = "n/a"
+            comsol_calls_raw = audit_row.get("comsol_calls_to_first_feasible")
+            if pd.notna(comsol_calls_raw) and str(comsol_calls_raw).strip():
+                comsol_calls = str(comsol_calls_raw).strip()
+            ax.text(
+                0.02,
+                0.76,
+                f"audit={audit_status}\nfirst_feasible={first_feasible}, comsol_calls={comsol_calls}",
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=8,
+                color="#1f2937",
+                bbox={"boxstyle": "round", "facecolor": "#f6f8fa", "alpha": 0.78, "edgecolor": "#d0d7de"},
+            )
         if len(attempts) > 0 and "operator_actions" in attempts.columns:
             family_counts: Dict[str, int] = defaultdict(int)
             for raw_actions in attempts["operator_actions"].tolist():
@@ -2433,12 +2925,30 @@ def generate_visualizations(experiment_dir: str):
     logger.info(f"可视化模式检测: {optimization_mode}")
 
     # 1. 模式化轨迹图
-    csv_path = os.path.join(experiment_dir, 'evolution_trace.csv')
-    mass_csv_path = os.path.join(experiment_dir, "mass_trace.csv")
+    csv_path = _resolve_run_artifact_path(
+        experiment_dir,
+        index_key="agent_loop_trace_csv",
+        fallback="evolution_trace.csv",
+    )
+    mass_csv_path = _resolve_run_artifact_path(
+        experiment_dir,
+        index_key="mass_trace_csv",
+        fallback="mass_trace.csv",
+    )
     tables_dir = os.path.join(experiment_dir, "tables")
-    if is_mass_mode(optimization_mode):
+    if optimization_mode == "mass":
         timeline_report = render_mass_artifacts(
             mass_csv_path=mass_csv_path,
+            tables_dir=tables_dir,
+            viz_dir=viz_dir,
+            experiment_dir=experiment_dir,
+            plot_mass_trace=plot_mass_trace,
+            plot_mass_storyboard=plot_mass_storyboard,
+            plot_layout_timeline=plot_layout_timeline,
+        )
+    elif optimization_mode == "vop_maas":
+        timeline_report = render_vop_maas_artifacts(
+            delegated_mass_csv_path=mass_csv_path,
             tables_dir=tables_dir,
             viz_dir=viz_dir,
             experiment_dir=experiment_dir,
@@ -2473,7 +2983,7 @@ def generate_visualizations(experiment_dir: str):
     layout_evolution_report: Dict[str, Any] = {}
     snapshot_records: List[Dict[str, Any]] = []
 
-    if is_mass_mode(optimization_mode):
+    if optimization_mode in {"mass", "vop_maas"}:
         snapshot_records = _load_layout_snapshot_records(experiment_dir)
         if snapshot_records:
             try:
@@ -2516,7 +3026,7 @@ def generate_visualizations(experiment_dir: str):
 
             # 布局演化图
             output_path = os.path.join(viz_dir, 'layout_evolution.png')
-            if is_mass_mode(optimization_mode):
+            if optimization_mode in {"mass", "vop_maas"}:
                 layout_evolution_report = plot_layout_evolution_from_snapshots(
                     experiment_dir,
                     output_path,
@@ -2531,7 +3041,10 @@ def generate_visualizations(experiment_dir: str):
                 print(f"  [OK] 布局演化图: {output_path}")
 
             # 热代理图（确定性，基于功率密度）
-            thermal_data = build_power_density_proxy(final_state, csv_path=csv_path)
+            thermal_data = build_power_density_proxy(
+                final_state,
+                csv_path=mass_csv_path if optimization_mode in {"mass", "vop_maas"} else csv_path,
+            )
             output_path = os.path.join(viz_dir, 'thermal_heatmap.png')
             plot_thermal_heatmap(final_state, thermal_data, output_path)
             print(f"  [OK] 热图: {output_path}")
@@ -2541,7 +3054,7 @@ def generate_visualizations(experiment_dir: str):
 
     # 3. 可视化摘要文本
     try:
-        if is_mass_mode(optimization_mode):
+        if optimization_mode == "mass":
             summary_text = _build_mass_visualization_summary(mass_csv_path)
             if os.path.isdir(tables_dir):
                 summary_text = summary_text + "\n" + _build_mass_tables_summary(tables_dir)
@@ -2581,6 +3094,39 @@ def generate_visualizations(experiment_dir: str):
                 zero_reason = str(layout_evolution_report.get("zero_reason", "") or "").strip()
                 if zero_reason:
                     summary_text = summary_text + f"\n- Zero-movement reason: {zero_reason}"
+        elif optimization_mode == "vop_maas":
+            summary_text = _build_vop_controller_summary(
+                experiment_dir,
+                tables_dir=tables_dir,
+            )
+            summary_text = summary_text + "\n" + _build_mass_visualization_summary(mass_csv_path)
+            if os.path.isdir(tables_dir):
+                summary_text = summary_text + "\n" + _build_mass_tables_summary(tables_dir)
+            if timeline_report:
+                summary_text = summary_text + "\n=== Delegated Mass Timeline Artifacts ==="
+                summary_text = summary_text + (
+                    f"\n- Frames rendered: {int(timeline_report.get('frame_count', 0) or 0)}"
+                )
+                frames_dir = str(timeline_report.get("frames_dir", "") or "")
+                gif_path = str(timeline_report.get("gif_path", "") or "")
+                if frames_dir:
+                    summary_text = summary_text + (
+                        f"\n- Frames dir: {serialize_run_path(experiment_dir, frames_dir)}"
+                    )
+                if gif_path:
+                    summary_text = summary_text + (
+                        f"\n- GIF: {serialize_run_path(experiment_dir, gif_path)}"
+                    )
+            if layout_evolution_report:
+                summary_text = summary_text + "\n=== Delegated Mass Layout Evolution ==="
+                summary_text = summary_text + (
+                    f"\n- Snapshot records: {int(layout_evolution_report.get('record_count', 0) or 0)}"
+                )
+                summary_text = summary_text + (
+                    f"\n- Initial->Best moved: {int(layout_evolution_report.get('moved_count_initial_to_best', 0) or 0)}"
+                    f", mean={float(layout_evolution_report.get('mean_displacement_initial_to_best', 0.0) or 0.0):.4f} mm"
+                    f", max={float(layout_evolution_report.get('max_displacement_initial_to_best', 0.0) or 0.0):.4f} mm"
+                )
         else:
             summary_text = _build_visualization_summary(
                 csv_path=csv_path,

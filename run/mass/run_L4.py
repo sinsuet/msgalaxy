@@ -36,8 +36,11 @@ from run.mass.run_L1 import (  # noqa: E402
     _collect_component_ids_from_bom,
     _derive_adaptive_bounds_from_state,
     _level_defaults,
+    _load_openai_config_preview,
     _load_workflow_orchestrator,
+    _print_active_llm_profile,
     _print_visualization_summary,
+    _resolve_llm_api_key,
     _sanitize_deterministic_bound_args,
     _write_runtime_config,
 )
@@ -98,13 +101,18 @@ def main(argv=None) -> int:
     print("=" * 80)
     print()
 
-    api_key = os.environ.get("OPENAI_API_KEY")
+    openai_preview = _load_openai_config_preview(
+        str(getattr(args, "base_config", "")),
+        llm_profile=str(getattr(args, "llm_profile", "") or ""),
+    )
+    api_key, api_key_source = _resolve_llm_api_key(openai_preview)
     if not api_key:
-        print("[WARN] OPENAI_API_KEY not set")
+        print("[WARN] No active LLM API key resolved for selected profile")
+        print("       可检查 DASHSCOPE_API_KEY / OPENAI_RELAY_API_KEY / OPENAI_API_KEY")
         print("       若启用 --use-llm-intent，LLM 相关功能会失败")
         print()
     else:
-        print(f"[OK] API Key loaded: {api_key[:10]}...{api_key[-4:]}")
+        print(f"[OK] Active LLM key source preview: {api_key_source}")
         print()
 
     print("[INIT] Initializing workflow orchestrator...")
@@ -156,7 +164,7 @@ def main(argv=None) -> int:
                 print("[OK] Deterministic ModelingIntent enabled (LLM bypass)")
 
             print("[OK] Orchestrator initialized")
-            print(f"     - LLM model: {orchestrator.config['openai']['model']}")
+            _print_active_llm_profile(orchestrator)
             print(f"     - Optimization mode: {orchestrator.optimization_mode}")
             print(f"     - Simulation backend: {orchestrator.config['simulation']['backend']}")
             if orchestrator.optimization_mode == "mass":

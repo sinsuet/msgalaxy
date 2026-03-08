@@ -51,6 +51,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bom-file", default="", help="optional BOM override")
     parser.add_argument("--base-config", default="", help="optional base config override")
     parser.add_argument(
+        "--llm-profile",
+        default="",
+        help="optional LLM profile override (passed to stack runner)",
+    )
+    parser.add_argument(
         "--run-label",
         default="",
         help="optional run label override (passed to stack runner)",
@@ -116,6 +121,8 @@ def _normalize_path_for_compare(path_value: str) -> str:
 def _expected_bom_prefix(stack: str) -> str:
     if stack == "agent_loop":
         return "config/bom/agent_loop"
+    if stack == "vop_maas":
+        return "config/bom/mass"
     return "config/bom/mass"
 
 
@@ -192,7 +199,11 @@ def _resolve_script_args(args: Any, entry: Dict[str, Any]) -> List[str]:
     if deterministic_default or bool(getattr(args, "deterministic_intent", False)):
         script_args.append("--deterministic-intent")
 
-    if bool(getattr(args, "llm_intent", False)) and level != "L1":
+    if (
+        bool(getattr(args, "llm_intent", False))
+        and level != "L1"
+        and resolved_mode == "mass"
+    ):
         script_args.append("--use-llm-intent")
 
     run_label = str(getattr(args, "run_label", "") or "").strip()
@@ -201,6 +212,9 @@ def _resolve_script_args(args: Any, entry: Dict[str, Any]) -> List[str]:
     naming_strategy = str(getattr(args, "run_naming_strategy", "") or "").strip().lower()
     if naming_strategy in {"compact", "verbose"}:
         script_args.extend(["--run-naming-strategy", naming_strategy])
+    llm_profile = str(getattr(args, "llm_profile", "") or "").strip()
+    if llm_profile:
+        script_args.extend(["--llm-profile", llm_profile])
 
     return script_args
 

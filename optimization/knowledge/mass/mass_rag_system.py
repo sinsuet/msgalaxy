@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Iterable, List, Optional, Set
 
+from optimization.llm.gateway import LLMGateway
 from optimization.protocol import GlobalContextPack, KnowledgeItem
 
 from .evidence_schema import MassEvidence, RetrievalCandidate
@@ -28,6 +29,8 @@ class MassRAGSystem:
         knowledge_base_path: str = "data/knowledge_base",
         embedding_model: Optional[str] = None,
         base_url: Optional[str] = None,
+        llm_gateway: Optional[LLMGateway] = None,
+        embedding_profile_name: str = "",
         enable_semantic: bool = True,
         filter_anomalous_cases: bool = True,
         anomaly_temp_tokens: Optional[List[str]] = None,
@@ -37,6 +40,8 @@ class MassRAGSystem:
         _ = api_key
         _ = embedding_model
         _ = base_url
+        self.llm_gateway = llm_gateway
+        self.embedding_profile_name = str(embedding_profile_name or "").strip()
         self.enable_semantic = bool(enable_semantic)
         self.filter_anomalous_cases = bool(filter_anomalous_cases)
         self.anomaly_temp_tokens = [

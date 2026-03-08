@@ -8,14 +8,14 @@ Meta-Reasoner: 战略层元推理器
 """
 
 import os
+import re
 # 强制清空可能导致 10061 错误的本地代理环境变量
 for proxy_env in ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY']:
     if proxy_env in os.environ:
         del os.environ[proxy_env]
 
 import dashscope
-from http import HTTPStatus
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 import json
 import math
@@ -31,6 +31,43 @@ from .protocol import (
 )
 from core.logger import ExperimentLogger
 from core.exceptions import LLMError
+from optimization.llm.gateway import LLMGateway, build_legacy_gateway
+from optimization.modes.mass.operator_program import SUPPORTED_ACTIONS
+from optimization.modes.mass.metric_registry import get_metric_status, normalize_metric_key
+from optimization.modes.mass.maas_compiler import _build_component_aliases, _resolve_component_id
+
+
+VOP_ACTION_ALIAS_MAP: Dict[str, str] = {
+    "keepout_clear": "fov_keepout_push",
+    "clear_keepout": "fov_keepout_push",
+    "fov_clear": "fov_keepout_push",
+    "mission_keepout_push": "fov_keepout_push",
+    "move_group": "group_move",
+    "move_cluster": "group_move",
+    "recenter_cg": "cg_recenter",
+    "spread_heat": "hot_spread",
+    "thermal_spread": "hot_spread",
+    "thermal_contact": "set_thermal_contact",
+    "brace_add": "add_bracket",
+    "add_stiffener": "stiffener_insert",
+    "bus_proximity": "bus_proximity_opt",
+}
+
+VOP_DIRECTION_ALIAS_MAP: Dict[str, str] = {
+    "+": "positive",
+    "plus": "positive",
+    "positive": "positive",
+    "-": "negative",
+    "minus": "negative",
+    "negative": "negative",
+    "auto": "auto",
+    "either": "auto",
+    "both": "auto",
+}
+
+STRATEGIC_PLAN_MIN_MAX_TOKENS = 4096
+MODELING_INTENT_MIN_MAX_TOKENS = 8192
+POLICY_PROGRAM_MIN_MAX_TOKENS = 8192
 
 
 class MetaReasoner:
@@ -41,8 +78,13 @@ class MetaReasoner:
         api_key: str,
         model: str = "qwen3-max",
         temperature: float = 0.7,
-        base_url: Optional[str] = None,  # 保留兼容性，但不使用
-        logger: Optional[ExperimentLogger] = None
+        base_url: Optional[str] = None,
+        logger: Optional[ExperimentLogger] = None,
+        api_mode: str = "dashscope_generation",
+        responses_url: Optional[str] = None,
+        timeout_s: float = 120.0,
+        llm_gateway: Optional[LLMGateway] = None,
+        llm_profile: str = "",
     ):
         """
         初始化Meta-Reasoner
@@ -59,15 +101,68 @@ class MetaReasoner:
         self.model = model
         self.temperature = temperature
         self.logger = logger
+        self.llm_profile = str(llm_profile or "").strip()
+        self.llm_client = llm_gateway or build_legacy_gateway(
+            api_key=api_key,
+            model=model,
+            temperature=temperature,
+            base_url=base_url,
+            api_mode=api_mode,
+            timeout_s=timeout_s,
+        )
 
         # 加载系统提示词
         self.system_prompt = self._load_system_prompt()
         self.modeling_system_prompt = self._load_modeling_system_prompt()
+        self.vop_policy_system_prompt = self._load_vop_policy_system_prompt()
 
         # Few-shot示例
         self.few_shot_examples = self._load_few_shot_examples()
         self._modeling_intent_autofill_used = False
         self._reset_modeling_intent_diagnostics()
+
+    def _current_llm_log_metadata(self) -> Dict[str, Any]:
+        try:
+            profile = self.llm_client.resolve_text_profile(self.llm_profile)
+            return {
+                "profile": profile.name,
+                "provider": profile.provider,
+                "model": profile.model,
+                "api_style": profile.api_style,
+                "fallback_used": False,
+                "fallback_reason": "",
+                "key_source": profile.api_key_source,
+                "key_source_masked": profile.key_source_masked,
+            }
+        except Exception:
+            return {
+                "profile": str(self.llm_profile or ""),
+                "provider": "",
+                "model": str(self.model or ""),
+                "api_style": "",
+                "fallback_used": False,
+                "fallback_reason": "",
+                "key_source": "",
+                "key_source_masked": "",
+            }
+
+    def _resolve_preferred_max_tokens(self, *, minimum_tokens: int) -> int:
+        preferred = max(int(minimum_tokens or 0), 0)
+        try:
+            profile = self.llm_client.resolve_text_profile(self.llm_profile)
+            preferred = max(preferred, int(getattr(profile, "max_tokens", 0) or 0))
+        except Exception:
+            pass
+        return preferred
+
+    @staticmethod
+    def _attach_llm_log_metadata(payload: Any, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        if isinstance(payload, dict):
+            result = dict(payload)
+        else:
+            result = {"payload": payload}
+        result["_llm"] = dict(metadata or {})
+        return result
 
     def _reset_modeling_intent_diagnostics(self) -> None:
         """重置最近一次 ModelingIntent 调用诊断。"""
@@ -186,6 +281,29 @@ Operational rules:
 3. Hard constraints represent physical laws or mandatory engineering limits.
 4. Soft constraints represent preferences.
 5. Do not output code at this stage.
+6. Use canonical executable metric keys only, such as:
+   - cg_offset
+   - min_clearance
+   - num_collisions
+   - boundary_violation
+   - max_temp
+   - safety_factor
+   - first_modal_freq
+   - voltage_drop
+   - power_margin
+   - peak_power
+   - mission_keepout_violation
+7. Do NOT use runtime limit names as metric keys, such as:
+   - max_temp_c
+   - min_clearance_mm
+   - max_cg_offset_mm
+   - min_safety_factor
+   - min_modal_freq_hz
+   - max_voltage_drop_v
+   - min_power_margin_pct
+   - max_power_w
+   - task_fov_violation
+8. If requirement text provides BOM component IDs, you MUST reuse those exact IDs in variables.
 
 JSON schema guideline:
 {
@@ -231,218 +349,796 @@ JSON schema guideline:
 }
 """
 
+    def _load_vop_policy_system_prompt(self) -> str:
+        """Load the VOP-MaaS policy-program system prompt."""
+        allowed_actions = ", ".join(sorted(SUPPORTED_ACTIONS))
+        return (
+            "Role: You are the Verified Operator-Policy programmer for MsGalaxy VOP-MaaS.\n\n"
+            "Task:\n"
+            "- Read the structured multiphysics evidence and produce a bounded policy pack.\n"
+            "- You DO NOT output final component coordinates.\n"
+            "- You DO NOT replace pymoo or MaaS numeric optimization.\n"
+            "- You MAY bias the search using operator programs, search-space prior, runtime knob priors, and fidelity hints.\n\n"
+            "Hard rules:\n"
+            "1. Output MUST be one valid JSON object only.\n"
+            "2. Search-space prior MUST be one of: coordinate, operator_program, hybrid.\n"
+            "3. operator_candidates MUST be executable OP-MaaS DSL programs only.\n"
+            "4. Runtime knobs MUST stay bounded and advisory.\n"
+            "5. If evidence is weak, reduce confidence instead of inventing aggressive actions.\n"
+            f"6. Use exact operator action names from this allowlist only: {allowed_actions}.\n"
+            "7. If the dominant violation is mission/FOV/keepout, use `fov_keepout_push`; do not invent synonyms such as `keepout_clear`.\n"
+            "8. For `fov_keepout_push`, prefer params: `component_ids`, `axis`, `keepout_center_mm`, `min_separation_mm`, `preferred_side`, `focus_ratio`.\n"
+            "9. Do NOT weaken runtime fidelity already requested by the system/profile; if `VOP Graph.metadata.fidelity_floor_hint` requires online COMSOL, keep or strengthen it.\n"
+            "10. If `dominant_violation_family` is empty, prefer `VOP Graph.metadata.level_focus_hint` and bounded fidelity hints before falling back to mission/geometry.\n\n"
+            "Required JSON shape:\n"
+            "{\n"
+            '  "policy_id": "VOP_POLICY_YYYYMMDD_NNN",\n'
+            '  "constraint_focus": ["thermal", "power"],\n'
+            '  "search_space_prior": "hybrid",\n'
+            '  "operator_candidates": [\n'
+            "    {\n"
+            '      "candidate_id": "cand_01",\n'
+            '      "priority": 1.0,\n'
+            '      "note": "why this branch is useful",\n'
+            '      "program": {\n'
+            '        "program_id": "op_prog_01",\n'
+            '        "rationale": "structured explanation",\n'
+            '        "actions": [\n'
+            "          {\n"
+            '            "action": "hot_spread",\n'
+            '            "params": {\n'
+            '              "component_ids": ["battery_main", "payload_camera"],\n'
+            '              "axis": "y",\n'
+            '              "min_pair_distance_mm": 12.0,\n'
+            '              "spread_strength": 0.6,\n'
+            '              "focus_ratio": 0.6\n'
+            "            }\n"
+            "          }\n"
+            "        ]\n"
+            "      }\n"
+            "    }\n"
+            "  ],\n"
+            '  "runtime_knob_priors": {\n'
+            '    "maas_relax_ratio": 0.08,\n'
+            '    "mcts_action_prior_weight": 0.10,\n'
+            '    "online_comsol_eval_budget": 6\n'
+            "  },\n"
+            '  "fidelity_plan": {\n'
+            '    "physics_audit_top_k": 2\n'
+            "  },\n"
+            '  "confidence": 0.55,\n'
+            '  "rationale": "concise explanation grounded in evidence",\n'
+            '  "expected_effects": {\n'
+            '    "max_temp": -2.0,\n'
+            '    "power_margin": 2.0\n'
+            "  },\n"
+            '  "policy_source": "llm_api"\n'
+            "}\n"
+        )
+
     def _load_few_shot_examples(self) -> List[Dict[str, str]]:
-        """加载Few-Shot示例"""
+        """加载 strategic planning 的 few-shot 示例。"""
+        return []
+
+    def _normalize_vop_action_payload(
+        self,
+        action_payload: Any,
+    ) -> Tuple[Optional[Dict[str, Any]], bool]:
+        if not isinstance(action_payload, dict):
+            return None, True
+
+        autofill_used = False
+        action_name = str(action_payload.get("action", "") or "").strip().lower()
+        if not action_name:
+            return None, True
+
+        canonical_action = VOP_ACTION_ALIAS_MAP.get(action_name, action_name)
+        if canonical_action != action_name:
+            autofill_used = True
+        if canonical_action not in SUPPORTED_ACTIONS:
+            return None, True
+
+        raw_params = action_payload.get("params", {})
+        if not isinstance(raw_params, dict):
+            raw_params = {}
+            autofill_used = True
+
+        normalized_params = dict(raw_params)
+        if canonical_action == "fov_keepout_push":
+            normalized_params, params_repaired = self._normalize_fov_keepout_push_params(
+                normalized_params
+            )
+            autofill_used = autofill_used or params_repaired
+
+        normalized_action: Dict[str, Any] = {
+            "action": canonical_action,
+            "params": normalized_params,
+        }
+        note = str(action_payload.get("note", "") or "").strip()
+        if note:
+            normalized_action["note"] = note
+        return normalized_action, autofill_used
+
+    def _normalize_fov_keepout_push_params(
+        self,
+        params: Dict[str, Any],
+    ) -> Tuple[Dict[str, Any], bool]:
+        normalized = dict(params or {})
+        autofill_used = False
+
+        def _alias_into(target_key: str, alias_keys: List[str]) -> None:
+            nonlocal autofill_used
+            if target_key in normalized:
+                return
+            for alias_key in alias_keys:
+                if alias_key not in normalized:
+                    continue
+                normalized[target_key] = normalized.pop(alias_key)
+                autofill_used = True
+                return
+
+        _alias_into("component_ids", ["components", "targets", "target_component_ids"])
+        _alias_into("axis", ["keepout_axis", "push_axis"])
+        _alias_into("keepout_center_mm", ["keepout_center", "center_mm", "center"])
+        _alias_into(
+            "min_separation_mm",
+            ["min_offset_mm", "clearance_mm", "separation_mm", "min_distance_mm"],
+        )
+
+        if "preferred_side" not in normalized and "direction_hint" in normalized:
+            raw_direction = str(normalized.pop("direction_hint") or "").strip().lower()
+            mapped_direction = VOP_DIRECTION_ALIAS_MAP.get(raw_direction, "")
+            if mapped_direction:
+                normalized["preferred_side"] = mapped_direction
+            autofill_used = True
+
+        preferred_side = str(normalized.get("preferred_side", "") or "").strip().lower()
+        if preferred_side in VOP_DIRECTION_ALIAS_MAP:
+            normalized["preferred_side"] = VOP_DIRECTION_ALIAS_MAP[preferred_side]
+            autofill_used = True
+
+        return normalized, autofill_used
+
+    def _extract_component_catalog_from_requirement_text(
+        self,
+        requirement_text: str,
+    ) -> List[Dict[str, str]]:
+        raw = str(requirement_text or "").strip()
+        if not raw:
+            return []
+
+        catalog: List[Dict[str, str]] = []
+        seen_ids: set[str] = set()
+
+        path_match = re.search(r"BOM路径:\s*(.+)", raw)
+        if path_match:
+            bom_path = Path(path_match.group(1).strip())
+            try:
+                if bom_path.exists():
+                    with bom_path.open("r", encoding="utf-8") as handle:
+                        if bom_path.suffix.lower() == ".json":
+                            payload = json.load(handle)
+                        else:
+                            payload = yaml.safe_load(handle)
+                    if isinstance(payload, dict):
+                        components = payload.get("components", [])
+                        if isinstance(components, list):
+                            for item in components:
+                                if not isinstance(item, dict):
+                                    continue
+                                component_id = str(item.get("id", "") or "").strip()
+                                if not component_id or component_id in seen_ids:
+                                    continue
+                                seen_ids.add(component_id)
+                                catalog.append(
+                                    {
+                                        "id": component_id,
+                                        "category": str(item.get("category", "") or "").strip(),
+                                    }
+                                )
+            except Exception:
+                pass
+
+        if not catalog:
+            ids_match = re.search(r"BOM组件ID(?:\(必须原样复用\))?:\s*(.+)", raw)
+            if ids_match:
+                for token in ids_match.group(1).split(","):
+                    component_id = str(token or "").strip()
+                    if not component_id or component_id in seen_ids:
+                        continue
+                    seen_ids.add(component_id)
+                    catalog.append({"id": component_id, "category": ""})
+
+        return catalog
+
+    def _normalize_modeling_metric_key(self, metric_key: Any) -> Tuple[str, bool]:
+        raw_metric_key = str(metric_key or "").strip()
+        normalized_metric_key = normalize_metric_key(raw_metric_key)
+        return normalized_metric_key, normalized_metric_key != raw_metric_key
+
+    def _normalize_modeling_unit(self, unit: Any) -> Tuple[str, bool]:
+        raw_unit = str(unit or "").strip()
+        normalized = raw_unit
+        if raw_unit in {"°C", "℃", "degC", "deg_c", "celsius"}:
+            normalized = "C"
+        elif raw_unit.lower() in {"percent", "pct"}:
+            normalized = "%"
+        elif raw_unit.lower() in {"dimensionless", "unitless", "none", "n/a"}:
+            normalized = "dimensionless" if raw_unit else raw_unit
+        return normalized, normalized != raw_unit
+
+    def _repair_modeling_variables(
+        self,
+        variables: List[Dict[str, Any]],
+        *,
+        requirement_text: str,
+    ) -> bool:
+        component_catalog = self._extract_component_catalog_from_requirement_text(requirement_text)
+        if not component_catalog or not variables:
+            return False
+
+        component_ids = [str(item.get("id", "") or "").strip() for item in component_catalog if str(item.get("id", "") or "").strip()]
+        if not component_ids:
+            return False
+
+        alias_components = [
+            type(
+                "ComponentAliasSeed",
+                (),
+                {
+                    "id": str(item.get("id", "") or "").strip(),
+                    "category": str(item.get("category", "") or "").strip(),
+                },
+            )()
+            for item in component_catalog
+            if str(item.get("id", "") or "").strip()
+        ]
+        component_aliases = _build_component_aliases(alias_components)
+        component_id_set = set(component_ids)
+
+        repaired = False
+        resolved_by_raw: Dict[str, str] = {}
+        unresolved_in_order: List[str] = []
+        used_targets: set[str] = set()
+
+        for var in variables:
+            raw_component_id = str(var.get("component_id", "") or "").strip()
+            if not raw_component_id:
+                continue
+            if raw_component_id in resolved_by_raw:
+                used_targets.add(resolved_by_raw[raw_component_id])
+                continue
+            resolved = _resolve_component_id(
+                raw_component_id=raw_component_id,
+                variable_name=str(var.get("name", "") or ""),
+                component_ids=component_id_set,
+                component_aliases=component_aliases,
+            )
+            if resolved:
+                resolved_by_raw[raw_component_id] = resolved
+                used_targets.add(resolved)
+            elif raw_component_id not in unresolved_in_order:
+                unresolved_in_order.append(raw_component_id)
+
+        remaining_targets = [item for item in component_ids if item not in used_targets]
+        if unresolved_in_order and len(unresolved_in_order) == len(remaining_targets):
+            for raw_component_id, resolved in zip(unresolved_in_order, remaining_targets):
+                resolved_by_raw[raw_component_id] = resolved
+
+        for var in variables:
+            raw_component_id = str(var.get("component_id", "") or "").strip()
+            if not raw_component_id:
+                continue
+            repaired_component_id = str(resolved_by_raw.get(raw_component_id, "") or "").strip()
+            if repaired_component_id and repaired_component_id != raw_component_id:
+                var["component_id"] = repaired_component_id
+                repaired = True
+
+        return repaired
+
+    def _build_runtime_hard_constraint_payloads(
+        self,
+        runtime_constraints: Dict[str, float],
+    ) -> List[Dict[str, Any]]:
+        max_temp = float(runtime_constraints.get("max_temp_c", 60.0))
+        min_clearance = float(runtime_constraints.get("min_clearance_mm", 3.0))
+        max_cg = float(runtime_constraints.get("max_cg_offset_mm", 20.0))
+        min_safety_factor = float(runtime_constraints.get("min_safety_factor", 2.0))
+        min_modal_freq_hz = float(runtime_constraints.get("min_modal_freq_hz", 55.0))
+        max_voltage_drop_v = float(runtime_constraints.get("max_voltage_drop_v", 0.5))
+        min_power_margin_pct = float(runtime_constraints.get("min_power_margin_pct", 10.0))
+        max_power_w = float(runtime_constraints.get("max_power_w", 500.0))
+
         return [
             {
-                "user": """# 卫星设计优化 - 第3次迭代
-
-## 1. 当前设计状态
-电池组(Battery_01)位于X=13.0mm, 与结构肋板(Rib_01)在X=10.0mm处间隙仅3.0mm
-
-## 2. 多学科性能指标
-### 几何指标
-- 最小间隙: 3.0 mm (阈值: 3.0 mm)
-- 质心偏移: [0.5, -0.2, 0.1] mm
-- 碰撞数量: 0
-
-### 热控指标
-- 温度范围: 18.5°C ~ 58.2°C
-- 平均温度: 35.6°C
-
-## 3. 约束违反情况
-- [重要] 电池与肋板间隙不足 (当前值: 3.00, 阈值: 3.00)
-
-## 4. 历史轨迹
-- Iter 1: 尝试向-X移动电池，导致与其他组件干涉
-- Iter 2: 尝试向+X移动电池5mm，成功但接近边界""",
-                "assistant": """{
-  "plan_id": "PLAN_20260215_003",
-  "reasoning": "问题诊断：电池与肋板间隙恰好在阈值边缘（3.0mm），存在数值容差风险。历史记录显示-X方向会导致新的干涉，+X方向已尝试过5mm且成功。\\n\\n策略选择：采用local_search策略，继续沿+X方向探索更大范围（5-10mm），原因：(1)历史证明+X方向可行；(2)当前无热控或结构问题，无需全局重构；(3)小步迭代风险低。\\n\\n预期效果：间隙增加到5-8mm，提供足够安全裕度。可能的副作用：质心略微向+X偏移，但当前偏移量很小（0.5mm），有充足余量。",
-  "strategy_type": "local_search",
-  "strategy_description": "沿+X方向继续移动电池，扩大与肋板的安全间隙",
-  "tasks": [
-    {
-      "task_id": "TASK_003_001",
-      "agent_type": "geometry",
-      "objective": "将Battery_01沿+X方向移动，使其与Rib_01的间隙达到5-8mm",
-      "constraints": [
-        "移动后质心偏移不得超过±10mm",
-        "不得与其他组件产生新的干涉",
-        "移动范围限制在包络内"
-      ],
-      "priority": 1,
-      "context": {
-        "current_position": 13.0,
-        "target_clearance": 6.0,
-        "search_range": [5.0, 10.0]
-      }
-    }
-  ],
-  "expected_improvements": {
-    "min_clearance": 3.0
-  },
-  "risks": [
-    "质心可能向+X偏移约0.3-0.5mm，需监控",
-    "如果移动超过10mm可能接近包络边界"
-  ]
-}"""
+                "name": "g_collision",
+                "metric_key": "collision_violation",
+                "category": "geometry",
+                "relation": "<=",
+                "target_value": 0.0,
+                "unit": "count",
+                "expression": "collision_violation <= 0",
+                "latex": "g_{collision}=collision\\_violation\\le 0",
+                "physical_meaning": "no component collisions",
             },
             {
-                "user": """# 卫星设计优化 - 第8次迭代
-
-## 2. 多学科性能指标
-### 几何指标
-- 最小间隙: 5.2 mm
-- 质心偏移: [1.2, 0.8, -0.3] mm
-- 碰撞数量: 0
-
-### 热控指标
-- 温度范围: 22.3°C ~ 68.5°C
-- 平均温度: 42.1°C
-- 热点组件: Battery_01, PowerModule_02
-
-## 3. 约束违反情况
-- [严重] 电池温度超标 (当前值: 68.5, 阈值: 60.0)
-- [严重] 电源模块温度超标 (当前值: 65.2, 阈值: 60.0)
-
-## 4. 历史轨迹
-- Iter 5-7: 多次尝试微调电池位置，温度仍超标
-- 检索到的知识：[GJB 5236] 高功耗组件应安装在±Y面以利用辐射散热""",
-                "assistant": """{
-  "plan_id": "PLAN_20260215_008",
-  "reasoning": "问题诊断：电池和电源模块温度严重超标（>8°C），历史记录显示局部微调无效，说明当前布局的散热路径存在根本性问题。检索到的工程规范明确指出高功耗组件应安装在±Y面。\\n\\n策略选择：采用global_reconfig策略，将高功耗组件重新布局到±Y面。原因：(1)局部调整已证明无效；(2)工程规范提供了明确指导；(3)温度超标8°C属于严重问题，必须采取根本性措施。\\n\\n预期效果：通过改善散热路径，温度预计降低10-15°C。风险：大幅度移动可能影响质心和布线，需要多学科协同。",
-  "strategy_type": "global_reconfig",
-  "strategy_description": "将高功耗组件（电池、电源模块）重新布局到±Y面，改善散热路径",
-  "tasks": [
-    {
-      "task_id": "TASK_008_001",
-      "agent_type": "thermal",
-      "objective": "分析将Battery_01和PowerModule_02移至±Y面的散热效果",
-      "constraints": [
-        "目标温度<55°C（留5°C安全裕度）",
-        "考虑辐射散热面积"
-      ],
-      "priority": 1,
-      "context": {
-        "current_temps": {"Battery_01": 68.5, "PowerModule_02": 65.2},
-        "target_face": "±Y"
-      }
-    },
-    {
-      "task_id": "TASK_008_002",
-      "agent_type": "geometry",
-      "objective": "规划Battery_01和PowerModule_02到±Y面的布局方案",
-      "constraints": [
-        "保持质心偏移<±10mm",
-        "避免与现有组件干涉",
-        "优先选择+Y面（更大散热面积）"
-      ],
-      "priority": 2,
-      "context": {
-        "components_to_move": ["Battery_01", "PowerModule_02"],
-        "target_face": "+Y"
-      }
-    },
-    {
-      "task_id": "TASK_008_003",
-      "agent_type": "power",
-      "objective": "评估重新布局后的电源线路长度和压降",
-      "constraints": [
-        "压降<0.5V",
-        "线路长度增加<20%"
-      ],
-      "priority": 3,
-      "context": {}
-    }
-  ],
-  "expected_improvements": {
-    "max_temp": -12.0,
-    "avg_temp": -6.0
-  },
-  "risks": [
-    "大幅度移动可能导致质心偏移增加2-3mm",
-    "电源线路可能需要重新规划，增加复杂度",
-    "如果+Y面空间不足，可能需要调整其他组件"
-  ]
-}"""
-            }
+                "name": "g_clearance",
+                "metric_key": "min_clearance",
+                "category": "geometry",
+                "relation": ">=",
+                "target_value": min_clearance,
+                "unit": "mm",
+                "expression": f"min_clearance >= {min_clearance}",
+                "latex": f"g_{{clear}}={min_clearance}-min\\_clearance\\le 0",
+                "physical_meaning": "minimum mechanical clearance",
+            },
+            {
+                "name": "g_boundary",
+                "metric_key": "boundary_violation",
+                "category": "geometry",
+                "relation": "<=",
+                "target_value": 0.0,
+                "unit": "mm",
+                "expression": "boundary_violation <= 0",
+                "latex": "g_{boundary}=boundary\\_violation\\le 0",
+                "physical_meaning": "all components remain within envelope",
+            },
+            {
+                "name": "g_thermal",
+                "metric_key": "max_temp",
+                "category": "thermal",
+                "relation": "<=",
+                "target_value": max_temp,
+                "unit": "C",
+                "expression": f"max_temp <= {max_temp}",
+                "latex": f"g_{{thermal}}=max\\_temp-{max_temp}\\le 0",
+                "physical_meaning": "thermal upper bound",
+            },
+            {
+                "name": "g_cg",
+                "metric_key": "cg_offset",
+                "category": "geometry",
+                "relation": "<=",
+                "target_value": max_cg,
+                "unit": "mm",
+                "expression": f"cg_offset <= {max_cg}",
+                "latex": f"g_{{cg}}=cg\\_offset-{max_cg}\\le 0",
+                "physical_meaning": "center-of-gravity offset limit",
+            },
+            {
+                "name": "g_struct_sf",
+                "metric_key": "safety_factor",
+                "category": "structural",
+                "relation": ">=",
+                "target_value": min_safety_factor,
+                "unit": "dimensionless",
+                "expression": f"safety_factor >= {min_safety_factor}",
+                "latex": f"g_{{sf}}={min_safety_factor}-safety\\_factor\\le 0",
+                "physical_meaning": "structural safety factor lower bound",
+            },
+            {
+                "name": "g_struct_modal",
+                "metric_key": "first_modal_freq",
+                "category": "structural",
+                "relation": ">=",
+                "target_value": min_modal_freq_hz,
+                "unit": "Hz",
+                "expression": f"first_modal_freq >= {min_modal_freq_hz}",
+                "latex": f"g_{{modal}}={min_modal_freq_hz}-f_1\\le 0",
+                "physical_meaning": "first modal frequency lower bound",
+            },
+            {
+                "name": "g_power_vdrop",
+                "metric_key": "voltage_drop",
+                "category": "power",
+                "relation": "<=",
+                "target_value": max_voltage_drop_v,
+                "unit": "V",
+                "expression": f"voltage_drop <= {max_voltage_drop_v}",
+                "latex": f"g_{{vdrop}}=voltage\\_drop-{max_voltage_drop_v}\\le 0",
+                "physical_meaning": "bus voltage drop upper bound",
+            },
+            {
+                "name": "g_power_margin",
+                "metric_key": "power_margin",
+                "category": "power",
+                "relation": ">=",
+                "target_value": min_power_margin_pct,
+                "unit": "%",
+                "expression": f"power_margin >= {min_power_margin_pct}",
+                "latex": f"g_{{margin}}={min_power_margin_pct}-power\\_margin\\le 0",
+                "physical_meaning": "power reserve lower bound",
+            },
+            {
+                "name": "g_power_peak",
+                "metric_key": "peak_power",
+                "category": "power",
+                "relation": "<=",
+                "target_value": max_power_w,
+                "unit": "W",
+                "expression": f"peak_power <= {max_power_w}",
+                "latex": f"g_{{peak}}=peak\\_power-{max_power_w}\\le 0",
+                "physical_meaning": "peak power budget cap",
+            },
+            {
+                "name": "g_mission_keepout",
+                "metric_key": "mission_keepout_violation",
+                "category": "mission",
+                "relation": "<=",
+                "target_value": 0.0,
+                "unit": "dimensionless",
+                "expression": "mission_keepout_violation <= 0",
+                "latex": "g_{mission}=mission\\_keepout\\_violation\\le 0",
+                "physical_meaning": "mission keepout / FOV must be satisfied",
+            },
         ]
+
+    def _inject_missing_runtime_hard_constraints(
+        self,
+        hard_constraints: List[Dict[str, Any]],
+        *,
+        runtime_constraints: Dict[str, float],
+    ) -> bool:
+        if not isinstance(hard_constraints, list):
+            return False
+
+        existing_metric_keys = {
+            normalize_metric_key(item.get("metric_key"))
+            for item in hard_constraints
+            if isinstance(item, dict) and str(item.get("metric_key", "") or "").strip()
+        }
+
+        injected = False
+        for constraint_payload in self._build_runtime_hard_constraint_payloads(runtime_constraints):
+            metric_key = normalize_metric_key(constraint_payload.get("metric_key"))
+            if metric_key in existing_metric_keys:
+                continue
+            hard_constraints.append(dict(constraint_payload))
+            existing_metric_keys.add(metric_key)
+            injected = True
+
+        return injected
+
+    def _extract_dashscope_message_content(self, response: Any) -> str:
+        content = getattr(
+            getattr(response, "output", None),
+            "choices",
+            [type("Choice", (), {"message": type("Message", (), {"content": ""})()})()],
+        )[0].message.content
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: List[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text") or item.get("content") or item.get("value") or ""
+                    if text:
+                        parts.append(str(text))
+                elif isinstance(item, str):
+                    parts.append(item)
+            return "\n".join(parts)
+        if isinstance(content, dict):
+            return str(content.get("text") or content.get("content") or content.get("value") or "")
+        return str(content or "")
+
+    def _extract_json_object_text(self, raw_text: str) -> str:
+        text = str(raw_text or "").strip()
+        fenced_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
+        if fenced_match:
+            return fenced_match.group(1)
+
+        start = text.find("{")
+        if start < 0:
+            raise ValueError("JSON object start not found")
+
+        depth = 0
+        in_string = False
+        escape = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if escape:
+                escape = False
+                continue
+            if char == "\\":
+                escape = True
+                continue
+            if char == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start:index + 1]
+        raise ValueError("JSON object end not found")
+
+    def _sanitize_vop_policy_payload(
+        self,
+        payload: Any,
+        *,
+        max_candidates: int,
+        replan_round: int,
+    ) -> Dict[str, Any]:
+        raw = payload if isinstance(payload, dict) else {}
+        normalized_wrapper = dict(raw or {})
+        if "policy_pack" not in normalized_wrapper:
+            normalized_wrapper = {
+                "status": str(raw.get("status", "") or "ok"),
+                "source": str(raw.get("source", "") or "llm_api"),
+                "reason": str(
+                    raw.get("reason")
+                    or raw.get("message")
+                    or raw.get("error")
+                    or ""
+                ),
+                "policy_pack": dict(raw or {}),
+            }
+
+        policy_pack = normalized_wrapper.get("policy_pack", {})
+        if not isinstance(policy_pack, dict):
+            policy_pack = {}
+        policy_pack = dict(policy_pack)
+
+        if not policy_pack:
+            policy_pack = {
+                str(key): value
+                for key, value in normalized_wrapper.items()
+                if str(key) not in {"status", "source", "reason", "message", "error"}
+            }
+
+        autofill_used = False
+        policy_id = str(policy_pack.get("policy_id", "") or "").strip()
+        if not policy_id:
+            policy_id = (
+                f"VOP_POLICY_{datetime.now().strftime('%Y%m%d')}_"
+                f"{int(max(1, replan_round + 1)):03d}"
+            )
+            policy_pack["policy_id"] = policy_id
+            autofill_used = True
+
+        raw_focus = policy_pack.get("constraint_focus", [])
+        if isinstance(raw_focus, str):
+            constraint_focus = [
+                token.strip()
+                for token in re.split(r"[,\|;/\n]+", raw_focus)
+                if token and token.strip()
+            ]
+            autofill_used = True
+        elif isinstance(raw_focus, (list, tuple, set)):
+            constraint_focus = [str(token).strip() for token in raw_focus if str(token).strip()]
+        else:
+            constraint_focus = []
+            if raw_focus not in (None, "", []):
+                autofill_used = True
+        policy_pack["constraint_focus"] = constraint_focus
+
+        raw_candidates = policy_pack.get("operator_candidates", [])
+        if isinstance(raw_candidates, dict):
+            raw_candidates = [raw_candidates]
+            autofill_used = True
+        elif not isinstance(raw_candidates, list):
+            raw_candidates = []
+            if policy_pack.get("operator_candidates") not in (None, "", []):
+                autofill_used = True
+
+        legacy_programs: List[Any] = []
+        for key in ("program", "operator_program"):
+            candidate_program = policy_pack.get(key)
+            if isinstance(candidate_program, dict):
+                legacy_programs.append(candidate_program)
+        for key in ("programs", "operator_programs"):
+            candidate_programs = policy_pack.get(key)
+            if isinstance(candidate_programs, list):
+                legacy_programs.extend(candidate_programs)
+        if not raw_candidates and legacy_programs:
+            raw_candidates = list(legacy_programs)
+            autofill_used = True
+        if not raw_candidates and isinstance(policy_pack.get("actions"), list):
+            raw_candidates = [
+                {
+                    "program_id": str(policy_pack.get("program_id", "") or "").strip(),
+                    "actions": list(policy_pack.get("actions", []) or []),
+                    "rationale": str(policy_pack.get("rationale", "") or "").strip(),
+                }
+            ]
+            autofill_used = True
+
+        normalized_candidates: List[Dict[str, Any]] = []
+        for index, candidate in enumerate(list(raw_candidates or []), start=1):
+            if not isinstance(candidate, dict):
+                autofill_used = True
+                continue
+            program_payload = candidate.get("program")
+            if not isinstance(program_payload, dict):
+                if any(key in candidate for key in ("actions", "program_id", "rationale")):
+                    program_payload = {
+                        "program_id": candidate.get("program_id"),
+                        "rationale": candidate.get("rationale"),
+                        "actions": candidate.get("actions", []),
+                    }
+                    autofill_used = True
+                else:
+                    continue
+            else:
+                program_payload = dict(program_payload)
+            program_payload["rationale"] = str(program_payload.get("rationale", "") or "")
+            if not isinstance(program_payload.get("actions"), list):
+                program_payload["actions"] = list(program_payload.get("actions", []) or [])
+                autofill_used = True
+            sanitized_actions: List[Dict[str, Any]] = []
+            dropped_actions: List[str] = []
+            for action_payload in list(program_payload.get("actions", []) or []):
+                normalized_action, action_autofill_used = self._normalize_vop_action_payload(
+                    action_payload
+                )
+                autofill_used = autofill_used or action_autofill_used
+                if normalized_action is None:
+                    action_name = ""
+                    if isinstance(action_payload, dict):
+                        action_name = str(action_payload.get("action", "") or "").strip()
+                    dropped_actions.append(action_name or "invalid_action")
+                    continue
+                sanitized_actions.append(normalized_action)
+            if not sanitized_actions:
+                autofill_used = True
+                continue
+            program_payload["actions"] = sanitized_actions
+            if dropped_actions:
+                program_metadata = program_payload.get("metadata", {})
+                if not isinstance(program_metadata, dict):
+                    program_metadata = {}
+                program_metadata = dict(program_metadata)
+                program_metadata["llm_dropped_actions"] = list(dropped_actions)
+                program_payload["metadata"] = program_metadata
+
+            candidate_id = str(candidate.get("candidate_id", "") or "").strip()
+            if not candidate_id:
+                candidate_id = f"cand_{index:02d}"
+                autofill_used = True
+            program_id = str(program_payload.get("program_id", "") or "").strip()
+            if not program_id:
+                program_payload = dict(program_payload)
+                program_payload["program_id"] = f"op_prog_r{int(max(0, replan_round))}_{index:02d}"
+                autofill_used = True
+            normalized_candidates.append(
+                {
+                    "candidate_id": candidate_id,
+                    "priority": float(
+                        self._to_finite_float(candidate.get("priority"), 1.0) or 1.0
+                    ),
+                    "note": str(candidate.get("note", "") or "").strip(),
+                    "program": dict(program_payload),
+                }
+            )
+        policy_pack["operator_candidates"] = normalized_candidates[: max(1, int(max_candidates))]
+
+        search_space_prior = str(policy_pack.get("search_space_prior", "") or "").strip().lower()
+        if search_space_prior not in {"coordinate", "operator_program", "hybrid"}:
+            search_space_prior = "operator_program" if policy_pack["operator_candidates"] else "hybrid"
+            autofill_used = True
+        policy_pack["search_space_prior"] = search_space_prior
+
+        runtime_knob_priors = policy_pack.get("runtime_knob_priors", {})
+        if not isinstance(runtime_knob_priors, dict):
+            runtime_knob_priors = {}
+            autofill_used = True
+        policy_pack["runtime_knob_priors"] = dict(runtime_knob_priors)
+
+        fidelity_plan = policy_pack.get("fidelity_plan", {})
+        if not isinstance(fidelity_plan, dict):
+            fidelity_plan = {}
+            autofill_used = True
+        policy_pack["fidelity_plan"] = dict(fidelity_plan)
+
+        expected_effects = policy_pack.get("expected_effects", {})
+        if not isinstance(expected_effects, dict):
+            expected_effects = {}
+            autofill_used = True
+        policy_pack["expected_effects"] = dict(expected_effects)
+
+        confidence = self._to_finite_float(policy_pack.get("confidence"), 0.0)
+        policy_pack["confidence"] = max(0.0, min(float(confidence or 0.0), 1.0))
+        policy_pack["rationale"] = str(
+            policy_pack.get("rationale")
+            or policy_pack.get("reasoning")
+            or normalized_wrapper.get("reason")
+            or ""
+        ).strip()
+
+        metadata = policy_pack.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+            autofill_used = True
+        metadata = dict(metadata)
+        metadata["real_llm_primary_round"] = True
+        metadata["policy_round_index"] = int(max(0, replan_round))
+        metadata["autofill_used"] = bool(autofill_used)
+        policy_pack["metadata"] = metadata
+
+        policy_source = str(
+            policy_pack.get("policy_source")
+            or normalized_wrapper.get("source")
+            or "llm_api"
+        ).strip().lower()
+        if not policy_source:
+            policy_source = "llm_api"
+        if autofill_used and policy_source == "llm_api":
+            policy_source = "llm_api_autofill"
+        policy_pack["policy_source"] = policy_source
+
+        normalized_wrapper["status"] = str(normalized_wrapper.get("status", "") or "ok")
+        normalized_wrapper["source"] = policy_source
+        normalized_wrapper["policy_pack"] = policy_pack
+        return normalized_wrapper
 
     def generate_strategic_plan(
         self,
         context: GlobalContextPack
     ) -> StrategicPlan:
         """
-        生成战略计划
+        生成战略计划。
 
         Args:
             context: 全局上下文包
 
         Returns:
             StrategicPlan: 战略计划
-
-        Raises:
-            LLMError: LLM调用失败
         """
         try:
-            # 构建消息
-            messages = [
-                {"role": "system", "content": self.system_prompt}
-            ]
-
-            # 添加Few-Shot示例
+            messages = [{"role": "system", "content": self.system_prompt}]
             for example in self.few_shot_examples:
-                messages.append({"role": "user", "content": example["user"]})
-                messages.append({"role": "assistant", "content": example["assistant"]})
+                if not isinstance(example, dict):
+                    continue
+                user_content = str(example.get("user", "") or "").strip()
+                assistant_content = str(example.get("assistant", "") or "").strip()
+                if user_content:
+                    messages.append({"role": "user", "content": user_content})
+                if assistant_content:
+                    messages.append({"role": "assistant", "content": assistant_content})
 
-            # 添加当前上下文
-            user_prompt = context.to_markdown_prompt()
-            messages.append({"role": "user", "content": user_prompt})
+            messages.append({"role": "user", "content": context.to_markdown_prompt()})
 
-            # 记录请求
             if self.logger:
                 self.logger.log_llm_interaction(
                     iteration=context.iteration,
                     role="meta_reasoner",
-                    request={"messages": messages, "model": self.model},
-                    response=None
+                    request=self._attach_llm_log_metadata(
+                        {"messages": messages, "model": self.model},
+                        self._current_llm_log_metadata(),
+                    ),
+                    response=None,
                 )
 
-            # 调用 DashScope API
-            response = dashscope.Generation.call(
-                model=self.model,
-                messages=messages,
-                result_format='message',  # 使用 message 格式
-                temperature=self.temperature,
-                response_format={'type': 'json_object'}  # 字典格式
+            response = self.llm_client.generate_text(
+                messages,
+                profile_name=self.llm_profile,
+                expects_json=True,
+                max_tokens=self._resolve_preferred_max_tokens(
+                    minimum_tokens=STRATEGIC_PLAN_MIN_MAX_TOKENS
+                ),
             )
+            response_text = response.content
+            response_json = json.loads(self._extract_json_object_text(response_text))
 
-            # 检查响应状态
-            if response.status_code != HTTPStatus.OK:
-                raise LLMError(f"DashScope API 调用失败: {response.code} - {response.message}")
-
-            # 解析响应
-            response_text = response.output.choices[0].message.content
-            response_json = json.loads(response_text)
-
-            # 记录响应
             if self.logger:
                 self.logger.log_llm_interaction(
                     iteration=context.iteration,
                     role="meta_reasoner",
                     request=None,
-                    response=response_json
+                    response=self._attach_llm_log_metadata(
+                        response_json,
+                        response.as_log_metadata(),
+                    ),
                 )
 
-            # 确保response_json包含iteration字段
-            if 'iteration' not in response_json:
-                response_json['iteration'] = context.iteration
+            if "iteration" not in response_json:
+                response_json["iteration"] = context.iteration
 
-            # 清洗模型输出（兼容 null/字符串/非法字段），避免单字段异常导致整轮中断
             response_json = self._sanitize_plan_payload(response_json, context)
 
-            # 验证并构建StrategicPlan
             try:
                 plan = StrategicPlan(**response_json)
             except Exception as validation_error:
@@ -453,32 +1149,31 @@ JSON schema guideline:
                 fallback_json = self._build_fallback_plan_payload(
                     context=context,
                     reason=f"validation_error: {validation_error}",
-                    raw_response=response_json
+                    raw_response=response_json,
                 )
                 plan = StrategicPlan(**fallback_json)
 
-            # 自动生成plan_id（如果LLM没有提供）
             if not plan.plan_id or plan.plan_id.startswith("PLAN_YYYYMMDD"):
                 plan.plan_id = f"PLAN_{datetime.now().strftime('%Y%m%d')}_{context.iteration:03d}"
 
             return plan
 
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError as exc:
             if self.logger:
-                self.logger.logger.warning(f"Meta-Reasoner JSON 解析失败，启用回退计划: {e}")
+                self.logger.logger.warning(f"Meta-Reasoner JSON 解析失败，启用回退计划: {exc}")
             fallback_json = self._build_fallback_plan_payload(
                 context=context,
-                reason=f"json_decode_error: {e}",
-                raw_response=None
+                reason=f"json_decode_error: {exc}",
+                raw_response=None,
             )
             return StrategicPlan(**fallback_json)
-        except Exception as e:
+        except Exception as exc:
             if self.logger:
-                self.logger.logger.warning(f"Meta-Reasoner 调用异常，启用回退计划: {e}")
+                self.logger.logger.warning(f"Meta-Reasoner 调用异常，启用回退计划: {exc}")
             fallback_json = self._build_fallback_plan_payload(
                 context=context,
-                reason=f"meta_reasoner_error: {e}",
-                raw_response=None
+                reason=f"meta_reasoner_error: {exc}",
+                raw_response=None,
             )
             return StrategicPlan(**fallback_json)
 
@@ -500,11 +1195,6 @@ JSON schema guideline:
         runtime_constraints: Optional[Dict[str, float]] = None,
         requirement_text: str = "",
     ) -> ModelingIntent:
-        """
-        生成 MaaS 建模意图（Phase A）。
-
-        注意：该方法只输出结构化建模 JSON，不生成求解代码。
-        """
         runtime_constraints = runtime_constraints or {}
         self._modeling_intent_autofill_used = False
         self._reset_modeling_intent_diagnostics()
@@ -513,10 +1203,31 @@ JSON schema guideline:
         self._modeling_intent_diagnostics["source"] = "pre_call"
 
         try:
+            component_catalog = self._extract_component_catalog_from_requirement_text(
+                requirement_text
+            )
+            component_ids = [
+                str(item.get("id", "") or "").strip()
+                for item in component_catalog
+                if str(item.get("id", "") or "").strip()
+            ]
+            component_section = ""
+            if component_ids:
+                component_section = (
+                    "## BOM Component IDs (reuse exactly)\n"
+                    + ", ".join(component_ids)
+                    + "\n\n"
+                )
+
             user_prompt = (
                 f"{context.to_markdown_prompt()}\n\n"
                 f"## Runtime Hard Limits\n"
                 f"{json.dumps(runtime_constraints, ensure_ascii=False, indent=2)}\n\n"
+                f"{component_section}"
+                "## Executable Metric Registry\n"
+                "- use only canonical metric keys: cg_offset, min_clearance, num_collisions, boundary_violation, max_temp, safety_factor, first_modal_freq, voltage_drop, power_margin, peak_power, mission_keepout_violation\n"
+                "- do not use runtime limit names as metric keys: max_temp_c, min_clearance_mm, max_cg_offset_mm, min_safety_factor, min_modal_freq_hz, max_voltage_drop_v, min_power_margin_pct, max_power_w, task_fov_violation\n"
+                "- include explicit hard constraints for collision, clearance, boundary, thermal, cg_limit, structural, power, and mission keepout when corresponding limits/metrics are available\n\n"
                 f"## Requirement Text\n"
                 f"{requirement_text or '未提供额外需求描述，请基于当前上下文生成建模要素。'}\n\n"
                 "请严格输出 ModelingIntent JSON。"
@@ -531,17 +1242,22 @@ JSON schema guideline:
                 self.logger.log_llm_interaction(
                     iteration=context.iteration,
                     role="model_agent",
-                    request={"messages": messages, "model": self.model},
+                    request=self._attach_llm_log_metadata(
+                        {"messages": messages, "model": self.model},
+                        self._current_llm_log_metadata(),
+                    ),
                     response=None,
                 )
 
             self._modeling_intent_diagnostics["api_call_attempted"] = True
-            response = dashscope.Generation.call(
-                model=self.model,
-                messages=messages,
-                result_format="message",
+            response = self.llm_client.generate_text(
+                messages,
+                profile_name=self.llm_profile,
+                expects_json=True,
                 temperature=min(self.temperature, 0.5),
-                response_format={"type": "json_object"},
+                max_tokens=self._resolve_preferred_max_tokens(
+                    minimum_tokens=MODELING_INTENT_MIN_MAX_TOKENS
+                ),
             )
             status_code = getattr(response, "status_code", None)
             if status_code is not None:
@@ -550,19 +1266,17 @@ JSON schema guideline:
                 except Exception:
                     self._modeling_intent_diagnostics["response_status_code"] = status_code
 
-            if response.status_code != HTTPStatus.OK:
-                self._modeling_intent_diagnostics["source"] = "llm_api_error"
-                self._modeling_intent_diagnostics["error"] = (
-                    f"{getattr(response, 'code', '')} - {getattr(response, 'message', '')}"
-                )
-                raise LLMError(f"DashScope API 调用失败: {response.code} - {response.message}")
-
             self._modeling_intent_diagnostics["api_call_succeeded"] = True
-            payload = json.loads(response.output.choices[0].message.content)
+            response_text = response.content
+            try:
+                payload = json.loads(response_text)
+            except json.JSONDecodeError:
+                payload = json.loads(self._extract_json_object_text(response_text))
             payload = self._sanitize_modeling_intent_payload(
                 payload=payload,
                 context=context,
                 runtime_constraints=runtime_constraints,
+                requirement_text=requirement_text,
             )
             intent = ModelingIntent(**payload)
             self._modeling_intent_diagnostics["source"] = (
@@ -582,7 +1296,10 @@ JSON schema guideline:
                     iteration=context.iteration,
                     role="model_agent",
                     request=None,
-                    response=intent.model_dump(),
+                    response=self._attach_llm_log_metadata(
+                        intent.model_dump(),
+                        response.as_log_metadata(),
+                    ),
                 )
 
             return intent
@@ -596,7 +1313,9 @@ JSON schema guideline:
                 self._modeling_intent_autofill_used
             )
             if self.logger:
-                self.logger.logger.warning(f"Modeling intent generation failed, fallback enabled: {exc}")
+                self.logger.logger.warning(
+                    f"Modeling intent generation failed, fallback enabled: {exc}"
+                )
 
             fallback_payload = self._build_fallback_modeling_intent_payload(
                 context=context,
@@ -605,11 +1324,171 @@ JSON schema guideline:
             )
             return ModelingIntent(**fallback_payload)
 
+    def generate_policy_program(
+        self,
+        *,
+        context: Any,
+        runtime_constraints: Optional[Dict[str, Any]] = None,
+        requirement_text: str = "",
+        mode: str = "vop_maas",
+        vop_graph: Optional[Dict[str, Any]] = None,
+        max_candidates: int = 3,
+        previous_policy_pack: Optional[Dict[str, Any]] = None,
+        policy_effect_summary: Optional[Dict[str, Any]] = None,
+        feedback_aware_fidelity_plan: Optional[Dict[str, Any]] = None,
+        feedback_aware_fidelity_reason: str = "",
+        replan_reason: str = "",
+        replan_round: int = 0,
+    ) -> Dict[str, Any]:
+        runtime_constraints = runtime_constraints or {}
+        graph_payload = dict(vop_graph or {})
+        previous_policy_payload = dict(previous_policy_pack or {})
+        policy_effect_payload = dict(policy_effect_summary or {})
+        feedback_aware_fidelity_payload = dict(feedback_aware_fidelity_plan or {})
+        try:
+            if hasattr(context, "to_markdown_prompt"):
+                context_prompt = context.to_markdown_prompt()
+            else:
+                context_prompt = json.dumps(context, ensure_ascii=False, indent=2)
+
+            graph_metadata = dict(graph_payload.get("metadata", {}) or {})
+            level_focus_hint = [
+                str(item).strip()
+                for item in list(graph_metadata.get("level_focus_hint", []) or [])
+                if str(item).strip()
+            ]
+            fidelity_floor_hint = dict(graph_metadata.get("fidelity_floor_hint", {}) or {})
+
+            reflective_replan_prompt = ""
+            if previous_policy_payload or policy_effect_payload or replan_reason:
+                reflective_replan_prompt = (
+                    f"\n\n## Reflective Replanning\n"
+                    f"- replan_round: {int(max(0, replan_round))}\n"
+                    f"- replan_reason: {replan_reason or 'not_provided'}\n"
+                    "- revise the previous policy only when the observed effect warrants it\n"
+                    "- keep pymoo/mass as the sole numeric executor"
+                )
+            previous_policy_section = ""
+            if previous_policy_payload:
+                previous_policy_section = (
+                    f"\n\n## Previous Policy Pack\n"
+                    f"{json.dumps(previous_policy_payload, ensure_ascii=False, indent=2)}"
+                )
+            policy_effect_section = ""
+            if policy_effect_payload:
+                policy_effect_section = (
+                    f"\n\n## Policy Effect Summary\n"
+                    f"{json.dumps(policy_effect_payload, ensure_ascii=False, indent=2)}"
+                )
+            feedback_aware_fidelity_section = ""
+            if feedback_aware_fidelity_payload:
+                feedback_aware_fidelity_section = (
+                    f"\n\n## Feedback-Aware Fidelity Recommendation\n"
+                    f"{json.dumps(feedback_aware_fidelity_payload, ensure_ascii=False, indent=2)}\n"
+                    f"- reason: {feedback_aware_fidelity_reason or 'not_provided'}\n"
+                    "- if you set fidelity_plan, keep it at least as strong as the bounded recommendation"
+                )
+            scenario_focus_section = ""
+            if level_focus_hint or fidelity_floor_hint:
+                scenario_focus_section = (
+                    f"\n\n## Scenario Focus Hints\n"
+                    f"- level_focus_hint: {json.dumps(level_focus_hint, ensure_ascii=False)}\n"
+                    f"- fidelity_floor_hint: {json.dumps(fidelity_floor_hint, ensure_ascii=False)}\n"
+                    "- if dominant_violation_family is empty, prefer level_focus_hint before mission/geometry defaults\n"
+                    "- do not weaken fidelity below fidelity_floor_hint"
+                )
+
+            user_prompt = (
+                f"{context_prompt}\n\n"
+                f"## Runtime Hard Limits\n"
+                f"{json.dumps(runtime_constraints, ensure_ascii=False, indent=2)}\n\n"
+                f"## VOP Graph\n"
+                f"{json.dumps(graph_payload, ensure_ascii=False, indent=2)}\n\n"
+                f"## Requirement Text\n"
+                f"{requirement_text or 'No extra requirement text provided.'}\n\n"
+                f"## Executable Operator DSL\n"
+                f"- allowed_actions: {', '.join(sorted(SUPPORTED_ACTIONS))}\n"
+                "- use exact action names only\n"
+                "- for mission/FOV/keepout violations, use fov_keepout_push\n"
+                "- do not invent aliases such as keepout_clear\n\n"
+                f"## Policy Bounds\n"
+                f"- max_candidates: {int(max(1, max_candidates))}\n"
+                f"- mode: {str(mode or 'vop_maas')}\n"
+                "- do not output coordinates\n"
+                "- do not output code\n"
+                "- emit a bounded policy pack JSON only"
+                f"{scenario_focus_section}"
+                f"{previous_policy_section}"
+                f"{policy_effect_section}"
+                f"{feedback_aware_fidelity_section}"
+                f"{reflective_replan_prompt}"
+            )
+
+            messages = [
+                {"role": "system", "content": self.vop_policy_system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+            if self.logger:
+                self.logger.log_llm_interaction(
+                    iteration=int(getattr(context, "iteration", 1) or 1),
+                    role="vop_policy_programmer",
+                    request=self._attach_llm_log_metadata(
+                        {"messages": messages, "model": self.model},
+                        self._current_llm_log_metadata(),
+                    ),
+                    response=None,
+                )
+
+            response = self.llm_client.generate_text(
+                messages,
+                profile_name=self.llm_profile,
+                expects_json=True,
+                temperature=min(self.temperature, 0.5),
+                max_tokens=self._resolve_preferred_max_tokens(
+                    minimum_tokens=POLICY_PROGRAM_MIN_MAX_TOKENS
+                ),
+            )
+            response_text = response.content
+            try:
+                payload = json.loads(response_text)
+            except json.JSONDecodeError:
+                payload = json.loads(self._extract_json_object_text(response_text))
+            if not isinstance(payload, dict):
+                raise LLMError("policy payload is not a JSON object")
+
+            payload = self._sanitize_vop_policy_payload(
+                payload,
+                max_candidates=max_candidates,
+                replan_round=replan_round,
+            )
+            if self.logger:
+                self.logger.log_llm_interaction(
+                    iteration=int(getattr(context, "iteration", 1) or 1),
+                    role="vop_policy_programmer",
+                    request=None,
+                    response=self._attach_llm_log_metadata(
+                        payload,
+                        response.as_log_metadata(),
+                    ),
+                )
+            return payload
+        except Exception as exc:
+            if self.logger:
+                self.logger.logger.warning(
+                    "VOP policy-program generation failed: %s", exc
+                )
+            return {
+                "status": "error",
+                "reason": str(exc),
+                "source": "error",
+            }
+
     def _sanitize_modeling_intent_payload(
         self,
         payload: Any,
         context: GlobalContextPack,
         runtime_constraints: Dict[str, float],
+        requirement_text: str = "",
     ) -> Dict[str, Any]:
         """清洗 ModelingIntent 输出，兼容大小写字段与弱类型字段。"""
         raw = payload if isinstance(payload, dict) else {}
@@ -636,17 +1515,21 @@ JSON schema guideline:
                     continue
                 lb = self._to_finite_float(item.get("lower_bound"), None)  # type: ignore[arg-type]
                 ub = self._to_finite_float(item.get("upper_bound"), None)  # type: ignore[arg-type]
+                unit, unit_repaired = self._normalize_modeling_unit(item.get("unit") or "mm")
+                if unit_repaired:
+                    self._modeling_intent_autofill_used = True
                 var = {
                     "name": str(item.get("name") or f"var_{idx}"),
                     "variable_type": str(item.get("variable_type") or "continuous"),
                     "lower_bound": lb,
                     "upper_bound": ub,
-                    "unit": str(item.get("unit") or "mm"),
+                    "unit": unit,
                     "component_id": (str(item.get("component_id")) if item.get("component_id") is not None else None),
                     "description": str(item.get("description") or ""),
                 }
                 if var["variable_type"] not in {"continuous", "integer", "binary", "categorical"}:
                     var["variable_type"] = "continuous"
+                    self._modeling_intent_autofill_used = True
                 clean["variables"].append(var)
 
         raw_objectives = raw.get("objectives", raw.get("Objectives", []))
@@ -657,10 +1540,22 @@ JSON schema guideline:
                 direction = str(item.get("direction") or "minimize")
                 if direction not in {"minimize", "maximize"}:
                     direction = "minimize"
+                    self._modeling_intent_autofill_used = True
                 weight = self._to_finite_float(item.get("weight"), 1.0) or 1.0
+                metric_key, metric_repaired = self._normalize_modeling_metric_key(
+                    item.get("metric_key") or f"metric_{idx}"
+                )
+                if metric_repaired:
+                    self._modeling_intent_autofill_used = True
+                metric_status = get_metric_status(metric_key)
+                if not bool(metric_status.get("is_known", False)) or not bool(
+                    metric_status.get("is_implemented", False)
+                ):
+                    self._modeling_intent_autofill_used = True
+                    continue
                 clean["objectives"].append({
                     "name": str(item.get("name") or f"obj_{idx}"),
-                    "metric_key": str(item.get("metric_key") or f"metric_{idx}"),
+                    "metric_key": metric_key,
                     "direction": direction,
                     "weight": float(weight),
                     "description": str(item.get("description") or ""),
@@ -678,6 +1573,13 @@ JSON schema guideline:
         assumptions = raw.get("assumptions", [])
         if isinstance(assumptions, list):
             clean["assumptions"] = [str(item) for item in assumptions if str(item).strip()]
+        if self._repair_modeling_variables(clean["variables"], requirement_text=requirement_text):
+            self._modeling_intent_autofill_used = True
+        if self._inject_missing_runtime_hard_constraints(
+            clean["hard_constraints"],
+            runtime_constraints=runtime_constraints,
+        ):
+            self._modeling_intent_autofill_used = True
 
         # 最低保障：缺失关键字段时补齐基础模板
         if not clean["variables"] or not clean["objectives"] or not clean["hard_constraints"]:
@@ -713,22 +1615,31 @@ JSON schema guideline:
             relation = str(item.get("relation") or "<=")
             if relation not in {"<=", ">=", "=="}:
                 relation = "<="
+                self._modeling_intent_autofill_used = True
 
             target_value = self._to_finite_float(item.get("target_value"), 0.0)
             if target_value is None:
                 target_value = 0.0
+                self._modeling_intent_autofill_used = True
 
             category = str(item.get("category") or "mission")
             if category not in {"geometry", "thermal", "structural", "power", "mission", "emc"}:
                 category = "mission"
+                self._modeling_intent_autofill_used = True
+            metric_key, metric_repaired = self._normalize_modeling_metric_key(
+                item.get("metric_key") or f"metric_{idx}"
+            )
+            unit, unit_repaired = self._normalize_modeling_unit(item.get("unit") or "")
+            if metric_repaired or unit_repaired:
+                self._modeling_intent_autofill_used = True
 
             clean_constraints.append({
                 "name": str(item.get("name") or f"{'hard' if default_hard else 'soft'}_constraint_{idx}"),
-                "metric_key": str(item.get("metric_key") or f"metric_{idx}"),
+                "metric_key": metric_key,
                 "category": category,
                 "relation": relation,
                 "target_value": float(target_value),
-                "unit": str(item.get("unit") or ""),
+                "unit": unit,
                 "expression": str(item.get("expression") or ""),
                 "latex": str(item.get("latex") or ""),
                 "physical_meaning": str(item.get("physical_meaning") or ""),
@@ -743,109 +1654,7 @@ JSON schema guideline:
         reason: str,
     ) -> Dict[str, Any]:
         """建模意图失败时的兜底模板。"""
-        max_temp = float(runtime_constraints.get("max_temp_c", 60.0))
-        min_clearance = float(runtime_constraints.get("min_clearance_mm", 3.0))
-        max_cg = float(runtime_constraints.get("max_cg_offset_mm", 20.0))
-        min_safety_factor = float(runtime_constraints.get("min_safety_factor", 2.0))
-        min_modal_freq_hz = float(runtime_constraints.get("min_modal_freq_hz", 55.0))
-        max_voltage_drop_v = float(runtime_constraints.get("max_voltage_drop_v", 0.5))
-        min_power_margin_pct = float(runtime_constraints.get("min_power_margin_pct", 10.0))
-        max_power_w = float(runtime_constraints.get("max_power_w", 500.0))
-        enforce_power_budget = bool(runtime_constraints.get("enforce_power_budget", False))
-
-        hard_constraints = [
-            {
-                "name": "g_clearance",
-                "metric_key": "min_clearance",
-                "category": "geometry",
-                "relation": ">=",
-                "target_value": min_clearance,
-                "unit": "mm",
-                "expression": f"min_clearance >= {min_clearance}",
-                "latex": f"g_1={min_clearance}-min\\_clearance\\le 0",
-                "physical_meaning": "minimum mechanical clearance",
-            },
-            {
-                "name": "g_temp",
-                "metric_key": "max_temp",
-                "category": "thermal",
-                "relation": "<=",
-                "target_value": max_temp,
-                "unit": "C",
-                "expression": f"max_temp <= {max_temp}",
-                "latex": f"g_2=max\\_temp-{max_temp}\\le 0",
-                "physical_meaning": "thermal safety limit",
-            },
-            {
-                "name": "g_cg",
-                "metric_key": "cg_offset",
-                "category": "geometry",
-                "relation": "<=",
-                "target_value": max_cg,
-                "unit": "mm",
-                "expression": f"cg_offset <= {max_cg}",
-                "latex": f"g_3=cg\\_offset-{max_cg}\\le 0",
-                "physical_meaning": "attitude controllability bound",
-            },
-            {
-                "name": "g_struct_sf",
-                "metric_key": "safety_factor",
-                "category": "structural",
-                "relation": ">=",
-                "target_value": min_safety_factor,
-                "unit": "dimensionless",
-                "expression": f"safety_factor >= {min_safety_factor}",
-                "latex": f"g_4={min_safety_factor}-safety\\_factor\\le 0",
-                "physical_meaning": "structural integrity margin",
-            },
-            {
-                "name": "g_struct_modal",
-                "metric_key": "first_modal_freq",
-                "category": "structural",
-                "relation": ">=",
-                "target_value": min_modal_freq_hz,
-                "unit": "Hz",
-                "expression": f"first_modal_freq >= {min_modal_freq_hz}",
-                "latex": f"g_5={min_modal_freq_hz}-f_1\\le 0",
-                "physical_meaning": "launch vibration survivability",
-            },
-            {
-                "name": "g_power_vdrop",
-                "metric_key": "voltage_drop",
-                "category": "power",
-                "relation": "<=",
-                "target_value": max_voltage_drop_v,
-                "unit": "V",
-                "expression": f"voltage_drop <= {max_voltage_drop_v}",
-                "latex": f"g_6=voltage\\_drop-{max_voltage_drop_v}\\le 0",
-                "physical_meaning": "bus quality constraint",
-            },
-            {
-                "name": "g_power_margin",
-                "metric_key": "power_margin",
-                "category": "power",
-                "relation": ">=",
-                "target_value": min_power_margin_pct,
-                "unit": "%",
-                "expression": f"power_margin >= {min_power_margin_pct}",
-                "latex": f"g_7={min_power_margin_pct}-power\\_margin\\le 0",
-                "physical_meaning": "power reserve constraint",
-            },
-        ]
-        if enforce_power_budget:
-            hard_constraints.append(
-                {
-                    "name": "g_power_peak",
-                    "metric_key": "peak_power",
-                    "category": "power",
-                    "relation": "<=",
-                    "target_value": max_power_w,
-                    "unit": "W",
-                    "expression": f"peak_power <= {max_power_w}",
-                    "latex": f"g_8=peak\\_power-{max_power_w}\\le 0",
-                    "physical_meaning": "peak power budget cap",
-                }
-            )
+        hard_constraints = self._build_runtime_hard_constraint_payloads(runtime_constraints)
 
         return {
             "intent_id": f"INTENT_FALLBACK_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
@@ -1174,18 +1983,12 @@ JSON schema guideline:
         ]
 
         try:
-            response = dashscope.Generation.call(
-                model=self.model,
-                messages=messages,
-                result_format='message',
-                temperature=self.temperature,
-                response_format={'type': 'json_object'}
+            response = self.llm_client.generate_text(
+                messages,
+                profile_name=self.llm_profile,
+                expects_json=True,
             )
-
-            if response.status_code != HTTPStatus.OK:
-                raise LLMError(f"DashScope API 调用失败: {response.code} - {response.message}")
-
-            response_json = json.loads(response.output.choices[0].message.content)
+            response_json = json.loads(self._extract_json_object_text(response.content))
             refined_plan = StrategicPlan(**response_json)
             refined_plan.plan_id = f"{plan.plan_id}_refined"
 

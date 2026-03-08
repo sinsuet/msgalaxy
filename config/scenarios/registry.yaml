@@ -53,3 +53,29 @@ stacks:
         max_iterations: 7
         deterministic_intent: false
 
+  vop_maas:
+    description: "Verified operator-policy MaaS experimental stack"
+    mode: "vop_maas"
+    base_config: "config/system/vop_maas/base.yaml"
+    levels:
+      L1:
+        runner: "run.vop_maas.run_L1"
+        bom: "config/bom/mass/level_L1_foundation_stack.json"
+        max_iterations: 4
+        deterministic_intent: false
+      L2:
+        runner: "run.vop_maas.run_L2"
+        bom: "config/bom/mass/level_L2_thermal_power_stack.json"
+        max_iterations: 5
+        deterministic_intent: false
+      L3:
+        runner: "run.vop_maas.run_L3"
+        bom: "config/bom/mass/level_L3_structural_mission_stack.json"
+        max_iterations: 6
+        deterministic_intent: false
+      L4:
+        runner: "run.vop_maas.run_L4"
+        bom: "config/bom/mass/level_L4_full_stack_operator.json"
+        max_iterations: 7
+        deterministic_intent: false
+

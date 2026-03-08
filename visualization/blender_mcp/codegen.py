@@ -19,6 +19,19 @@ OUTPUT_BLEND = __OUTPUT_BLEND__
 PROFILE_NAME = __PROFILE_NAME__
 RENDER_ENGINE = __RENDER_ENGINE__
 
+STATE_ORDER = ('initial', 'best', 'final')
+STATE_COLLECTION_NAMES = {
+    'initial': 'MSGA_State_Initial',
+    'best': 'MSGA_State_Best',
+    'final': 'MSGA_State_Final',
+}
+STATE_VISIBILITY = {
+    'initial': False,
+    'best': False,
+    'final': True,
+}
+MAX_MOVED_LABELS = 6
+
 
 def mm_to_m(value):
     return float(value) * 0.001
@@ -32,12 +45,19 @@ def radians(values):
     return tuple(math.radians(float(v)) for v in values)
 
 
-def ensure_collection(name):
+def ensure_collection(name, parent=None):
     collection = bpy.data.collections.get(name)
     if collection is None:
         collection = bpy.data.collections.new(name)
-        bpy.context.scene.collection.children.link(collection)
+    parent_collection = parent or bpy.context.scene.collection
+    if parent_collection.children.get(name) is None:
+        parent_collection.children.link(collection)
     return collection
+
+
+def set_collection_visibility(collection, visible):
+    collection.hide_viewport = not bool(visible)
+    collection.hide_render = not bool(visible)
 
 
 def move_object_to_collection(obj, collection):
@@ -47,20 +67,26 @@ def move_object_to_collection(obj, collection):
 
 
 def clear_scene():
+    root = bpy.context.scene.collection
+    for child in list(root.children):
+        if str(child.name).startswith('MSGA_'):
+            root.children.unlink(child)
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete(use_global=False)
-    for block in list(bpy.data.meshes):
-        if block.users == 0:
-            bpy.data.meshes.remove(block)
-    for block in list(bpy.data.materials):
-        if block.users == 0:
-            bpy.data.materials.remove(block)
-    for block in list(bpy.data.cameras):
-        if block.users == 0:
-            bpy.data.cameras.remove(block)
-    for block in list(bpy.data.lights):
-        if block.users == 0:
-            bpy.data.lights.remove(block)
+    for block_group in (
+        bpy.data.meshes,
+        bpy.data.materials,
+        bpy.data.cameras,
+        bpy.data.lights,
+        bpy.data.curves,
+        bpy.data.fonts,
+    ):
+        for block in list(block_group):
+            if block.users == 0:
+                block_group.remove(block)
+    for collection in list(bpy.data.collections):
+        if str(collection.name).startswith('MSGA_') and collection.users == 0:
+            bpy.data.collections.remove(collection)
 
 
 def ensure_material(name, base_color, metallic=0.0, roughness=0.45, alpha=1.0, emission_strength=0.0):
@@ -80,7 +106,7 @@ def ensure_material(name, base_color, metallic=0.0, roughness=0.45, alpha=1.0, e
     shader.inputs['Metallic'].default_value = metallic
     shader.inputs['Roughness'].default_value = roughness
     shader.inputs['Alpha'].default_value = alpha
-    if emission_strength > 0.0 and 'Emission Strength' in shader.inputs:
+    if 'Emission Strength' in shader.inputs:
         shader.inputs['Emission Strength'].default_value = emission_strength
     links.new(shader.outputs['BSDF'], output.inputs['Surface'])
     if hasattr(material, 'blend_method'):
@@ -90,7 +116,7 @@ def ensure_material(name, base_color, metallic=0.0, roughness=0.45, alpha=1.0, e
     return material
 
 
-def material_for_hint(hint):
+def _material_spec(hint):
     key = str(hint or '').strip().lower()
     mapping = {
         'spacecraft_gray': ((0.56, 0.58, 0.62, 1.0), 0.55, 0.32, 1.0, 0.0),
@@ -104,193 +130,376 @@ def material_for_hint(hint):
         'solar_panel_blue': ((0.06, 0.11, 0.19, 1.0), 0.05, 0.20, 1.0, 0.0),
         'gold_foil': ((0.76, 0.61, 0.17, 1.0), 0.80, 0.25, 1.0, 0.0),
         'glass_lens': ((0.07, 0.12, 0.18, 1.0), 0.00, 0.02, 0.55, 0.0),
-        'bus_shell': ((0.56, 0.60, 0.66, 1.0), 0.48, 0.32, 0.58, 0.0),
-        'ground_plane': ((0.07, 0.08, 0.10, 1.0), 0.0, 0.96, 1.0, 0.0),
+        'bus_shell': ((0.56, 0.60, 0.66, 1.0), 0.48, 0.32, 0.36, 0.0),
+        'keepout_zone': ((0.92, 0.18, 0.16, 1.0), 0.02, 0.18, 0.18, 1.2),
+        'attachment_proxy': ((0.98, 0.66, 0.16, 1.0), 0.12, 0.34, 0.48, 0.3),
+        'annotation_text': ((0.96, 0.97, 0.98, 1.0), 0.0, 0.42, 1.0, 0.0),
     }
-    color, metallic, roughness, alpha, emission_strength = mapping.get(key, mapping['spacecraft_gray'])
-    return ensure_material(key or 'spacecraft_gray', color, metallic, roughness, alpha, emission_strength)
+    return mapping.get(key, mapping['spacecraft_gray'])
 
 
-def create_cube(name, dimensions_m, location_m, rotation_rad=(0.0, 0.0, 0.0), material_hint='spacecraft_gray'):
+def _mix_color(color, tint, factor):
+    inv = 1.0 - float(factor)
+    return (
+        color[0] * inv + tint[0] * factor,
+        color[1] * inv + tint[1] * factor,
+        color[2] * inv + tint[2] * factor,
+        color[3],
+    )
+
+
+def material_for_component(hint, state_name='final', variant='component'):
+    color, metallic, roughness, alpha, emission = _material_spec(hint)
+    if variant == 'proxy':
+        color = _mix_color(color, (0.98, 0.64, 0.18, 1.0), 0.42)
+        alpha = min(alpha, 0.48)
+        roughness = max(roughness, 0.36)
+        emission = max(emission, 0.2)
+    elif variant == 'annotation':
+        color, metallic, roughness, alpha, emission = _material_spec('annotation_text')
+    elif variant == 'keepout':
+        color, metallic, roughness, alpha, emission = _material_spec('keepout_zone')
+    elif variant == 'envelope':
+        color, metallic, roughness, alpha, emission = _material_spec('bus_shell')
+
+    if state_name == 'initial':
+        color = _mix_color(color, (0.24, 0.54, 0.90, 1.0), 0.35)
+        alpha = min(alpha, 0.34)
+    elif state_name == 'best':
+        color = _mix_color(color, (0.96, 0.73, 0.24, 1.0), 0.28)
+        alpha = min(alpha, 0.42)
+
+    material_name = f"{str(hint or 'spacecraft_gray').lower()}__{state_name}__{variant}"
+    return ensure_material(material_name, color, metallic, roughness, alpha, emission)
+
+
+def assign_material(obj, material):
+    obj.data.materials.clear()
+    obj.data.materials.append(material)
+
+
+def tag_visualization_object(obj, *, state_name='', kind='', visualization_only=False):
+    obj['msgalaxy_state'] = str(state_name or '')
+    obj['msgalaxy_kind'] = str(kind or '')
+    obj['msgalaxy_visualization_only'] = bool(visualization_only)
+
+
+def create_cube(name, dimensions_m, location_m, rotation_rad=(0.0, 0.0, 0.0), material=None):
     bpy.ops.mesh.primitive_cube_add(location=location_m, rotation=rotation_rad)
     obj = bpy.context.active_object
     obj.name = name
     obj.scale = (dimensions_m[0] * 0.5, dimensions_m[1] * 0.5, dimensions_m[2] * 0.5)
-    obj.data.materials.clear()
-    obj.data.materials.append(material_for_hint(material_hint))
+    if material is not None:
+        assign_material(obj, material)
     bpy.ops.object.shade_smooth()
     return obj
 
 
-def create_cylinder(name, radius_m, depth_m, location_m, rotation_rad=(0.0, 0.0, 0.0), material_hint='spacecraft_gray', vertices=48):
-    bpy.ops.mesh.primitive_cylinder_add(vertices=vertices, radius=radius_m, depth=depth_m, location=location_m, rotation=rotation_rad)
+def create_cylinder(name, radius_m, depth_m, location_m, rotation_rad=(0.0, 0.0, 0.0), material=None, vertices=48):
+    bpy.ops.mesh.primitive_cylinder_add(
+        vertices=vertices,
+        radius=radius_m,
+        depth=depth_m,
+        location=location_m,
+        rotation=rotation_rad,
+    )
     obj = bpy.context.active_object
     obj.name = name
-    obj.data.materials.clear()
-    obj.data.materials.append(material_for_hint(material_hint))
+    if material is not None:
+        assign_material(obj, material)
     bpy.ops.object.shade_smooth()
+    return obj
+
+
+def create_text_label(name, text, location_m, collection, size_m=0.018):
+    bpy.ops.object.text_add(location=location_m)
+    obj = bpy.context.active_object
+    obj.name = name
+    obj.data.body = text
+    obj.data.align_x = 'CENTER'
+    obj.data.align_y = 'CENTER'
+    obj.data.size = size_m
+    assign_material(obj, material_for_component('annotation_text', 'final', 'annotation'))
+    tag_visualization_object(obj, kind='annotation', visualization_only=True)
+    move_object_to_collection(obj, collection)
     return obj
 
 
 def create_bus_shell(envelope_mm, collection):
     sx, sy, sz = [mm_to_m(v) for v in envelope_mm]
-    shell_thickness = max(min(sx, sy, sz) * 0.018, 0.004)
-    panels = [
-        ('BusPanel_PosX', (shell_thickness, sy, sz), (sx * 0.5 + shell_thickness * 0.5, 0.0, 0.0)),
-        ('BusPanel_NegX', (shell_thickness, sy, sz), (-sx * 0.5 - shell_thickness * 0.5, 0.0, 0.0)),
-        ('BusPanel_PosY', (sx, shell_thickness, sz), (0.0, sy * 0.5 + shell_thickness * 0.5, 0.0)),
-        ('BusPanel_NegY', (sx, shell_thickness, sz), (0.0, -sy * 0.5 - shell_thickness * 0.5, 0.0)),
-        ('BusPanel_PosZ', (sx, sy, shell_thickness), (0.0, 0.0, sz * 0.5 + shell_thickness * 0.5)),
-        ('BusPanel_NegZ', (sx, sy, shell_thickness), (0.0, 0.0, -sz * 0.5 - shell_thickness * 0.5)),
-    ]
-    for name, dims, loc in panels:
-        obj = create_cube(name, dims, loc, material_hint='bus_shell')
-        move_object_to_collection(obj, collection)
+    obj = create_cube(
+        'MSGA_EnvelopeShell',
+        (sx, sy, sz),
+        (0.0, 0.0, 0.0),
+        material=material_for_component('bus_shell', 'final', 'envelope'),
+    )
+    obj.display_type = 'SOLID'
+    tag_visualization_object(obj, kind='envelope', visualization_only=True)
+    move_object_to_collection(obj, collection)
+    return obj
+
+
+def create_keepout_zone(keepout, collection):
+    min_point = keepout.get('min_point_mm', [0.0, 0.0, 0.0])
+    max_point = keepout.get('max_point_mm', [0.0, 0.0, 0.0])
+    center_mm = [0.5 * (float(min_point[idx]) + float(max_point[idx])) for idx in range(3)]
+    size_mm = [max(float(max_point[idx]) - float(min_point[idx]), 1.0) for idx in range(3)]
+    obj = create_cube(
+        f"KEEP__{keepout.get('tag', 'zone')}",
+        vec_mm_to_m(size_mm),
+        vec_mm_to_m(center_mm),
+        material=material_for_component('keepout_zone', 'final', 'keepout'),
+    )
+    obj.display_type = 'WIRE'
+    obj.show_wire = True
+    tag_visualization_object(obj, kind='keepout', visualization_only=True)
+    move_object_to_collection(obj, collection)
+    return obj
 
 
 def nearest_face(position_mm, envelope_mm):
-    px, py, pz = [float(v) for v in position_mm]
     hx, hy, hz = [float(v) * 0.5 for v in envelope_mm]
-    scores = {
-        '+X': hx - px,
-        '-X': hx + px,
-        '+Y': hy - py,
-        '-Y': hy + py,
-        '+Z': hz - pz,
-        '-Z': hz + pz,
+    distances = {
+        '+X': hx - float(position_mm[0]),
+        '-X': hx + float(position_mm[0]),
+        '+Y': hy - float(position_mm[1]),
+        '-Y': hy + float(position_mm[1]),
+        '+Z': hz - float(position_mm[2]),
+        '-Z': hz + float(position_mm[2]),
     }
-    return min(scores.items(), key=lambda item: item[1])[0]
+    return min(distances, key=distances.get)
 
 
 def face_vector(face):
-    return {
+    mapping = {
         '+X': (1.0, 0.0, 0.0),
         '-X': (-1.0, 0.0, 0.0),
         '+Y': (0.0, 1.0, 0.0),
         '-Y': (0.0, -1.0, 0.0),
         '+Z': (0.0, 0.0, 1.0),
         '-Z': (0.0, 0.0, -1.0),
-    }[face]
+    }
+    return mapping.get(face, (0.0, 0.0, 1.0))
 
 
-def create_payload_lens(component, envelope_mm, collection):
-    dims = [mm_to_m(v) for v in component['dimensions_mm']]
-    pos = vec_mm_to_m(component['position_mm'])
+def create_component(component, state_name, collection):
+    location_m = vec_mm_to_m(component['position_mm'])
+    dimensions_m = vec_mm_to_m(component['dimensions_mm'])
+    rotation_rad = radians(component.get('rotation_deg', (0.0, 0.0, 0.0)))
+    material = material_for_component(component.get('material_hint', 'spacecraft_gray'), state_name, 'component')
+    if component.get('envelope_type') == 'cylinder':
+        radius_m = max(dimensions_m[0], dimensions_m[1]) * 0.5
+        obj = create_cylinder(
+            f"{state_name.upper()}__{component['id']}",
+            radius_m=radius_m,
+            depth_m=dimensions_m[2],
+            location_m=location_m,
+            rotation_rad=rotation_rad,
+            material=material,
+        )
+    else:
+        obj = create_cube(
+            f"{state_name.upper()}__{component['id']}",
+            dimensions_m=dimensions_m,
+            location_m=location_m,
+            rotation_rad=rotation_rad,
+            material=material,
+        )
+    tag_visualization_object(obj, state_name=state_name, kind='component', visualization_only=False)
+    obj['msgalaxy_component_id'] = str(component.get('id', ''))
+    move_object_to_collection(obj, collection)
+    return obj
+
+
+def create_payload_lens_proxy(component, envelope_mm, state_name, collection):
     face = nearest_face(component['position_mm'], envelope_mm)
-    direction = face_vector(face)
-    radius = max(min(dims[0], dims[1]) * 0.18, 0.015)
-    depth = max(min(dims[2] * 0.28, 0.08), 0.03)
-    offset = (
-        direction[0] * (dims[0] * 0.5 + depth * 0.35),
-        direction[1] * (dims[1] * 0.5 + depth * 0.35),
-        direction[2] * (dims[2] * 0.5 + depth * 0.35),
+    normal = face_vector(face)
+    dims_m = vec_mm_to_m(component['dimensions_mm'])
+    pos_m = vec_mm_to_m(component['position_mm'])
+    offset = max(dims_m) * 0.35
+    center = (
+        pos_m[0] + normal[0] * offset,
+        pos_m[1] + normal[1] * offset,
+        pos_m[2] + normal[2] * offset,
     )
-    location = (pos[0] + offset[0], pos[1] + offset[1], pos[2] + offset[2])
-    rotation = {
-        '+X': (0.0, math.radians(90.0), 0.0),
-        '-X': (0.0, math.radians(90.0), 0.0),
-        '+Y': (math.radians(90.0), 0.0, 0.0),
-        '-Y': (math.radians(90.0), 0.0, 0.0),
-        '+Z': (0.0, 0.0, 0.0),
-        '-Z': (0.0, 0.0, 0.0),
-    }[face]
-    obj = create_cylinder(component['id'] + '_lens', radius, depth, location, rotation, 'glass_lens')
+    obj = create_cylinder(
+        f"{state_name.upper()}__LENS__{component['id']}",
+        radius_m=max(min(dims_m[0], dims_m[1]) * 0.22, 0.004),
+        depth_m=max(min(dims_m) * 0.28, 0.004),
+        location_m=center,
+        rotation_rad=(math.radians(90.0), 0.0, 0.0) if face in {'+Y', '-Y'} else (0.0, math.radians(90.0), 0.0),
+        material=material_for_component('glass_lens', state_name, 'proxy'),
+    )
+    tag_visualization_object(obj, state_name=state_name, kind='attachment_proxy', visualization_only=True)
     move_object_to_collection(obj, collection)
 
 
-def create_radiator_fins(component, envelope_mm, collection):
-    dims = [mm_to_m(v) for v in component['dimensions_mm']]
-    pos = vec_mm_to_m(component['position_mm'])
+def create_radiator_fin_proxy(component, envelope_mm, state_name, collection):
     face = nearest_face(component['position_mm'], envelope_mm)
-    direction = face_vector(face)
-    fin_count = 6
-    span_a = max(dims[0], dims[1], dims[2]) * 0.75
-    fin_depth = max(min(dims[2] * 0.8, 0.025), 0.008)
-    fin_thickness = max(min(min(dims[0], dims[1]) * 0.08, 0.004), 0.002)
+    normal = face_vector(face)
+    dims_m = vec_mm_to_m(component['dimensions_mm'])
+    pos_m = vec_mm_to_m(component['position_mm'])
+    fin_count = 4
     for index in range(fin_count):
-        offset_axis = (-span_a * 0.5) + (index * span_a / max(fin_count - 1, 1))
-        if abs(direction[0]) == 1.0:
-            location = (pos[0] + direction[0] * (dims[0] * 0.5 + fin_depth * 0.5), pos[1] + offset_axis, pos[2])
-            size = (fin_depth, fin_thickness, dims[2] * 0.9)
-        elif abs(direction[1]) == 1.0:
-            location = (pos[0] + offset_axis, pos[1] + direction[1] * (dims[1] * 0.5 + fin_depth * 0.5), pos[2])
-            size = (fin_thickness, fin_depth, dims[2] * 0.9)
-        else:
-            location = (pos[0] + offset_axis, pos[1], pos[2] + direction[2] * (dims[2] * 0.5 + fin_depth * 0.5))
-            size = (fin_thickness, dims[1] * 0.9, fin_depth)
-        obj = create_cube(component['id'] + '_fin_' + str(index + 1), size, location, material_hint='brushed_aluminum')
+        lateral = (index - (fin_count - 1) * 0.5) * max(min(dims_m[0], dims_m[1]) * 0.14, 0.003)
+        center = (
+            pos_m[0] + normal[0] * (max(dims_m) * 0.3),
+            pos_m[1] + normal[1] * (max(dims_m) * 0.3),
+            pos_m[2] + normal[2] * (max(dims_m) * 0.3) + lateral,
+        )
+        obj = create_cube(
+            f"{state_name.upper()}__FIN_{index:02d}__{component['id']}",
+            (
+                max(dims_m[0] * 0.08, 0.002),
+                max(dims_m[1] * 0.7, 0.004),
+                max(dims_m[2] * 0.08, 0.002),
+            ),
+            center,
+            material=material_for_component('brushed_aluminum', state_name, 'proxy'),
+        )
+        tag_visualization_object(obj, state_name=state_name, kind='attachment_proxy', visualization_only=True)
         move_object_to_collection(obj, collection)
 
 
-def create_component(component, envelope_mm, internal_collection, external_collection):
-    dims = [mm_to_m(v) for v in component['dimensions_mm']]
-    pos = vec_mm_to_m(component['position_mm'])
-    rotation = radians(component.get('rotation_deg') or (0.0, 0.0, 0.0))
-    material_hint = component.get('material_hint') or 'spacecraft_gray'
-    role = component.get('render_role') or 'generic_box'
-    collection = external_collection if component.get('is_external') else internal_collection
+def create_component_attachment_proxies(component, state_name, collection):
+    attachments = component.get('attachments', {}) or {}
+    dims_m = vec_mm_to_m(component['dimensions_mm'])
+    pos_m = vec_mm_to_m(component['position_mm'])
+    proxy_material = material_for_component('attachment_proxy', state_name, 'proxy')
 
-    if component.get('envelope_type') == 'cylinder':
-        radius = max(dims[0], dims[1]) * 0.5
-        obj = create_cylinder(component['id'], radius, dims[2], pos, rotation, material_hint)
-    else:
-        obj = create_cube(component['id'], dims, pos, rotation, material_hint)
-    move_object_to_collection(obj, collection)
+    if attachments.get('heatsink') is not None:
+        obj = create_cube(
+            f"{state_name.upper()}__HEATSINK__{component['id']}",
+            (
+                max(dims_m[0] * 0.58, 0.004),
+                max(dims_m[1] * 0.58, 0.004),
+                max(dims_m[2] * 0.22, 0.003),
+            ),
+            (pos_m[0], pos_m[1], pos_m[2] + dims_m[2] * 0.62),
+            material=proxy_material,
+        )
+        tag_visualization_object(obj, state_name=state_name, kind='attachment_proxy', visualization_only=True)
+        move_object_to_collection(obj, collection)
 
-    if role == 'payload_optics':
-        create_payload_lens(component, envelope_mm, external_collection)
-    if role == 'radiator_panel':
-        create_radiator_fins(component, envelope_mm, external_collection)
+    if attachments.get('bracket') is not None:
+        obj = create_cube(
+            f"{state_name.upper()}__BRACKET__{component['id']}",
+            (
+                max(dims_m[0] * 0.72, 0.005),
+                max(dims_m[1] * 0.14, 0.003),
+                max(dims_m[2] * 0.72, 0.005),
+            ),
+            (pos_m[0], pos_m[1] - dims_m[1] * 0.62, pos_m[2]),
+            material=proxy_material,
+        )
+        tag_visualization_object(obj, state_name=state_name, kind='attachment_proxy', visualization_only=True)
+        move_object_to_collection(obj, collection)
 
 
-def create_solar_wings(envelope_mm, collection):
+def create_solar_wings(envelope_mm, state_name, collection):
     sx, sy, sz = [mm_to_m(v) for v in envelope_mm]
-    wing_span = max(sx, sy) * 0.95
-    wing_length = max(sz * 0.85, 0.24)
-    wing_thickness = max(min(sz * 0.04, 0.01), 0.003)
-    offset = sx * 0.5 + wing_span * 0.5 + 0.04
-    boom_length = max(wing_span * 0.18, 0.05)
+    wing_dims = (sx * 0.10, sy * 1.45, sz * 0.05)
+    offset_x = sx * 0.62
+    for side, sign in (('L', -1.0), ('R', 1.0)):
+        obj = create_cube(
+            f"{state_name.upper()}__SOLAR_{side}",
+            wing_dims,
+            (sign * offset_x, 0.0, 0.0),
+            material=material_for_component('solar_panel_blue', state_name, 'proxy'),
+        )
+        tag_visualization_object(obj, state_name=state_name, kind='attachment_proxy', visualization_only=True)
+        move_object_to_collection(obj, collection)
 
-    for side, sign in (('Port', -1.0), ('Starboard', 1.0)):
-        panel = create_cube(side + '_SolarWing', (wing_span, wing_thickness, wing_length), (sign * offset, 0.0, 0.0), material_hint='solar_panel_blue')
-        move_object_to_collection(panel, collection)
-        boom_center_x = sign * (sx * 0.5 + boom_length * 0.5 + 0.018)
-        boom = create_cube(side + '_SolarWing_Boom', (boom_length, wing_thickness * 0.8, wing_thickness * 1.35), (boom_center_x, 0.0, 0.0), material_hint='brushed_aluminum')
-        move_object_to_collection(boom, collection)
 
-
-def create_antenna(envelope_mm, payload_face, collection):
+def create_payload_face_marker(envelope_mm, payload_face, state_name, collection):
     sx, sy, sz = [mm_to_m(v) for v in envelope_mm]
-    direction = face_vector(payload_face)
-    base_offset = (
-        direction[0] * (sx * 0.5 + 0.035),
-        direction[1] * (sy * 0.5 + 0.035),
-        direction[2] * (sz * 0.5 + 0.035),
+    vec = face_vector(payload_face)
+    offset = max(sx, sy, sz) * 0.66
+    location = (vec[0] * offset, vec[1] * offset, vec[2] * offset)
+    marker = create_cylinder(
+        f"{state_name.upper()}__PAYLOAD_FACE_MARKER",
+        radius_m=max(min(sx, sy, sz) * 0.04, 0.004),
+        depth_m=max(min(sx, sy, sz) * 0.12, 0.008),
+        location_m=location,
+        rotation_rad=(math.radians(90.0), 0.0, 0.0) if abs(vec[1]) > 0.5 else (0.0, math.radians(90.0), 0.0),
+        material=material_for_component('gold_foil', state_name, 'proxy'),
     )
-    rotation = (math.radians(90.0), 0.0, 0.0) if abs(direction[1]) == 1.0 else (0.0, math.radians(90.0), 0.0) if abs(direction[0]) == 1.0 else (0.0, 0.0, 0.0)
-    stem = create_cylinder('Payload_Antenna_Stem', 0.008, 0.06, base_offset, rotation, 'gold_foil', 32)
-    move_object_to_collection(stem, collection)
-    dish_location = (
-        base_offset[0] + direction[0] * 0.045,
-        base_offset[1] + direction[1] * 0.045,
-        base_offset[2] + direction[2] * 0.045,
+    tag_visualization_object(marker, state_name=state_name, kind='attachment_proxy', visualization_only=True)
+    move_object_to_collection(marker, collection)
+
+
+def component_map(components):
+    mapping = {}
+    for component in list(components or []):
+        comp_id = str(component.get('id', '') or '').strip()
+        if comp_id:
+            mapping[comp_id] = component
+    return mapping
+
+
+def compute_displacements(reference_components, target_components):
+    ref_map = component_map(reference_components)
+    target_map = component_map(target_components)
+    rows = []
+    for comp_id in sorted(set(ref_map.keys()) & set(target_map.keys())):
+        ref = ref_map[comp_id]
+        target = target_map[comp_id]
+        delta = [float(target['position_mm'][idx]) - float(ref['position_mm'][idx]) for idx in range(3)]
+        dist = math.sqrt(sum(value * value for value in delta))
+        rows.append({'component_id': comp_id, 'dist': dist, 'target': target})
+    rows.sort(key=lambda item: item['dist'], reverse=True)
+    return rows
+
+
+def create_state_annotations(state_name, reference_components, target_components, collection):
+    if not reference_components or not target_components:
+        return
+    rows = compute_displacements(reference_components, target_components)
+    created = 0
+    for row in rows:
+        if row['dist'] <= 1e-6:
+            continue
+        target = row['target']
+        pos_m = vec_mm_to_m(target['position_mm'])
+        dims_m = vec_mm_to_m(target['dimensions_mm'])
+        label_location = (
+            pos_m[0],
+            pos_m[1],
+            pos_m[2] + max(dims_m[2] * 0.75, 0.016),
+        )
+        text = f"{target['id']} Δ{row['dist']:.1f} mm"
+        label = create_text_label(
+            f"{state_name.upper()}__LABEL__{target['id']}",
+            text,
+            label_location,
+            collection,
+        )
+        tag_visualization_object(label, state_name=state_name, kind='annotation', visualization_only=True)
+        created += 1
+        if created >= MAX_MOVED_LABELS:
+            break
+
+
+def create_scene_legend(envelope_mm, collection):
+    sx, sy, sz = [mm_to_m(v) for v in envelope_mm]
+    create_text_label(
+        'MSGA_Annotation_Legend',
+        'MSGA_Attachments = visualization-only proxies',
+        (0.0, -sy * 1.12, sz * 0.72),
+        collection,
+        size_m=max(min(sx, sy, sz) * 0.08, 0.016),
     )
-    dish = create_cylinder('Payload_Antenna_Dish', 0.028, 0.01, dish_location, rotation, 'gold_foil', 48)
-    move_object_to_collection(dish, collection)
 
 
 def setup_world():
     scene = bpy.context.scene
+    scene.render.engine = RENDER_ENGINE if RENDER_ENGINE in {'BLENDER_EEVEE', 'BLENDER_EEVEE_NEXT', 'CYCLES'} else 'BLENDER_EEVEE_NEXT'
+    scene.render.image_settings.file_format = 'PNG'
     scene.render.resolution_x = 1920
-    scene.render.resolution_y = 1440
-    scene.render.resolution_percentage = 100
-    try:
-        scene.render.engine = RENDER_ENGINE
-    except Exception:
-        try:
-            scene.render.engine = 'BLENDER_EEVEE'
-        except Exception:
-            scene.render.engine = 'CYCLES'
+    scene.render.resolution_y = 1080
+    scene.render.film_transparent = False
+    if scene.render.engine == 'CYCLES':
+        scene.cycles.samples = 64
     world = bpy.context.scene.world
     if world is None:
         world = bpy.data.worlds.new('World')
@@ -298,38 +507,38 @@ def setup_world():
     world.use_nodes = True
     background = world.node_tree.nodes.get('Background')
     if background is not None:
-        background.inputs[0].default_value = (0.016, 0.020, 0.026, 1.0)
-        background.inputs[1].default_value = 0.35
+        background.inputs[0].default_value = (0.018, 0.021, 0.028, 1.0)
+        background.inputs[1].default_value = 0.28
     if hasattr(scene, 'view_settings'):
-        scene.view_settings.exposure = -1.15
+        scene.view_settings.exposure = -1.05
 
 
 def setup_lights_and_camera(envelope_mm):
     sx, sy, sz = [mm_to_m(v) for v in envelope_mm]
     max_dim = max(sx, sy, sz)
-    dist = max_dim * 3.0
+    dist = max_dim * 3.2
 
-    bpy.ops.object.light_add(type='AREA', location=(dist, -dist, dist * 1.2))
+    bpy.ops.object.light_add(type='AREA', location=(dist, -dist * 0.9, dist * 1.1))
     key_light = bpy.context.active_object
-    key_light.data.energy = 480.0
+    key_light.data.energy = 360.0
     key_light.data.shape = 'RECTANGLE'
-    key_light.data.size = max_dim * 2.2
-    key_light.data.size_y = max_dim * 1.4
+    key_light.data.size = max_dim * 1.8
+    key_light.data.size_y = max_dim * 1.2
 
-    bpy.ops.object.light_add(type='AREA', location=(-dist * 0.7, dist * 0.6, dist * 0.8))
+    bpy.ops.object.light_add(type='AREA', location=(-dist * 0.8, dist * 0.7, dist * 0.9))
     fill_light = bpy.context.active_object
-    fill_light.data.energy = 160.0
-    fill_light.data.size = max_dim * 1.8
+    fill_light.data.energy = 110.0
+    fill_light.data.size = max_dim * 1.5
 
     bpy.ops.object.light_add(type='SUN', location=(0.0, 0.0, dist * 2.0))
     sun = bpy.context.active_object
-    sun.data.energy = 0.75
-    sun.rotation_euler = (math.radians(45.0), 0.0, math.radians(-35.0))
+    sun.data.energy = 0.55
+    sun.rotation_euler = (math.radians(42.0), 0.0, math.radians(-32.0))
 
-    bpy.ops.object.camera_add(location=(dist * 1.45, -dist * 1.28, dist * 0.92))
+    bpy.ops.object.camera_add(location=(dist * 1.42, -dist * 1.25, dist * 0.95))
     camera = bpy.context.active_object
     camera.name = 'MsGalaxyCamera'
-    camera.data.lens = 55
+    camera.data.lens = 58
     constraint = camera.constraints.new(type='TRACK_TO')
     bpy.ops.object.empty_add(type='PLAIN_AXES', location=(0.0, 0.0, 0.0))
     target = bpy.context.active_object
@@ -338,17 +547,6 @@ def setup_lights_and_camera(envelope_mm):
     constraint.track_axis = 'TRACK_NEGATIVE_Z'
     constraint.up_axis = 'UP_Y'
     bpy.context.scene.camera = camera
-
-
-def create_ground(envelope_mm, collection):
-    sx, sy, sz = [mm_to_m(v) for v in envelope_mm]
-    size = max(sx, sy, sz) * 5.5
-    bpy.ops.mesh.primitive_plane_add(size=size, location=(0.0, 0.0, -sz * 0.75))
-    plane = bpy.context.active_object
-    plane.name = 'GroundPlane'
-    plane.data.materials.clear()
-    plane.data.materials.append(material_for_hint('ground_plane'))
-    move_object_to_collection(plane, collection)
 
 
 def save_outputs():
@@ -363,29 +561,90 @@ def save_outputs():
         bpy.ops.wm.save_mainfile(filepath=str(blend_path))
 
 
+def build_scene_collections():
+    envelope_collection = ensure_collection('MSGA_Envelope')
+    keepout_collection = ensure_collection('MSGA_Keepouts')
+    attachments_root = ensure_collection('MSGA_Attachments')
+    annotations_root = ensure_collection('MSGA_Annotations')
+    set_collection_visibility(envelope_collection, True)
+    set_collection_visibility(keepout_collection, True)
+    set_collection_visibility(attachments_root, True)
+    set_collection_visibility(annotations_root, True)
+
+    state_collections = {}
+    attachment_collections = {}
+    annotation_collections = {}
+    for state_name in STATE_ORDER:
+        state_collection = ensure_collection(STATE_COLLECTION_NAMES[state_name])
+        state_collections[state_name] = state_collection
+        set_collection_visibility(state_collection, STATE_VISIBILITY[state_name])
+
+        attachment_collection = ensure_collection(f"MSGA_Attachments_{state_name.title()}", attachments_root)
+        annotation_collection = ensure_collection(f"MSGA_Annotations_{state_name.title()}", annotations_root)
+        attachment_collections[state_name] = attachment_collection
+        annotation_collections[state_name] = annotation_collection
+        set_collection_visibility(attachment_collection, STATE_VISIBILITY[state_name])
+        set_collection_visibility(annotation_collection, STATE_VISIBILITY[state_name])
+
+    return {
+        'envelope': envelope_collection,
+        'keepouts': keepout_collection,
+        'state_collections': state_collections,
+        'attachment_collections': attachment_collections,
+        'annotation_collections': annotation_collections,
+        'annotations_root': annotations_root,
+    }
+
+
 def main():
     bundle = json.loads(Path(BUNDLE_PATH).read_text(encoding='utf-8'))
     envelope_mm = bundle['envelope']['outer_size_mm']
+    key_states = dict(bundle.get('key_states', {}) or {})
+    heuristics = dict(bundle.get('heuristics', {}) or {})
+
     clear_scene()
     setup_world()
+    collections = build_scene_collections()
 
-    shell_collection = ensure_collection('MsGalaxy_Shell')
-    internal_collection = ensure_collection('MsGalaxy_Internal')
-    external_collection = ensure_collection('MsGalaxy_External')
-    support_collection = ensure_collection('MsGalaxy_Support')
+    create_bus_shell(envelope_mm, collections['envelope'])
+    for keepout in list(bundle.get('keepouts', []) or []):
+        create_keepout_zone(keepout, collections['keepouts'])
 
-    create_ground(envelope_mm, support_collection)
-    create_bus_shell(envelope_mm, shell_collection)
+    state_components = {}
+    for state_name in STATE_ORDER:
+        state_payload = dict(key_states.get(state_name, {}) or {})
+        components = list(state_payload.get('components', []) or [])
+        if state_name == 'final' and not components:
+            components = list(bundle.get('components', []) or [])
+        state_components[state_name] = components
+        state_collection = collections['state_collections'][state_name]
+        attachment_collection = collections['attachment_collections'][state_name]
+        annotation_collection = collections['annotation_collections'][state_name]
+        for component in components:
+            create_component(component, state_name, state_collection)
+            if component.get('render_role') == 'payload_optics':
+                create_payload_lens_proxy(component, envelope_mm, state_name, attachment_collection)
+            if component.get('render_role') == 'radiator_panel':
+                create_radiator_fin_proxy(component, envelope_mm, state_name, attachment_collection)
+            create_component_attachment_proxies(component, state_name, attachment_collection)
 
-    for component in bundle.get('components', []):
-        create_component(component, envelope_mm, internal_collection, external_collection)
+        if state_name == 'best':
+            create_state_annotations(state_name, state_components.get('initial', []), components, annotation_collection)
+        elif state_name == 'final':
+            reference_components = state_components.get('best', []) or state_components.get('initial', [])
+            create_state_annotations(state_name, reference_components, components, annotation_collection)
 
-    heuristics = bundle.get('heuristics', {})
     if heuristics.get('enable_solar_wings'):
-        create_solar_wings(envelope_mm, external_collection)
+        create_solar_wings(envelope_mm, 'final', collections['attachment_collections']['final'])
     if heuristics.get('enable_payload_lens'):
-        create_antenna(envelope_mm, heuristics.get('payload_face', '+Z'), external_collection)
+        create_payload_face_marker(
+            envelope_mm,
+            heuristics.get('payload_face', '+Z'),
+            'final',
+            collections['attachment_collections']['final'],
+        )
 
+    create_scene_legend(envelope_mm, collections['annotations_root'])
     setup_lights_and_camera(envelope_mm)
     save_outputs()
     print(json.dumps({
@@ -394,6 +653,8 @@ def main():
         'output_image': OUTPUT_IMAGE,
         'output_blend': OUTPUT_BLEND,
         'profile_name': PROFILE_NAME,
+        'scene_mode': 'phase2_three_state_engineering_scene',
+        'state_collections': STATE_COLLECTION_NAMES,
     }))
 
 

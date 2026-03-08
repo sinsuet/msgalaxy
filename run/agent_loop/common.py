@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path
 
 import yaml
+from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -29,6 +30,7 @@ if sys.platform == "win32":
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 
 from run.stack_contract import enforce_mode_stack_contract
+from run.mass.run_L1 import _load_openai_config_preview, _print_active_llm_profile
 
 
 def _load_workflow_orchestrator():
@@ -58,6 +60,7 @@ def _build_cli_parser(*, title: str, default_bom: str, default_iterations: int) 
         default=str(PROJECT_ROOT / "config" / "system" / "agent_loop" / "base.yaml"),
         help="base system config path",
     )
+    parser.add_argument("--llm-profile", default="", help="override openai.default_text_profile")
     parser.add_argument("--disable-semantic", action="store_true")
     parser.add_argument("--deterministic-intent", action="store_true")
     parser.add_argument("--disable-physics-audit", action="store_true")
@@ -95,6 +98,31 @@ def _derive_run_label_from_bom(bom_file: str) -> str:
     return compact
 
 
+def _resolve_llm_api_key(config_openai: dict | None = None) -> tuple[str, str]:
+    load_dotenv(PROJECT_ROOT / ".env", override=False)
+    openai_cfg = dict(config_openai or {})
+    try:
+        from optimization.llm.gateway import LLMProfileResolver
+
+        resolver = LLMProfileResolver(openai_cfg)
+        selected_profile = str(openai_cfg.get("default_text_profile", "") or "").strip()
+        profile = resolver.resolve_text_profile(selected_profile)
+        if str(getattr(profile, "api_key", "") or "").strip():
+            return str(profile.api_key), str(getattr(profile, "api_key_source", "") or "")
+    except Exception:
+        pass
+    candidates = [
+        ("config.openai.api_key", str(openai_cfg.get("api_key", "") or "").strip()),
+        ("OPENAI_RELAY_API_KEY", str(os.environ.get("OPENAI_RELAY_API_KEY", "") or "").strip()),
+        ("DASHSCOPE_API_KEY", str(os.environ.get("DASHSCOPE_API_KEY", "") or "").strip()),
+        ("OPENAI_API_KEY", str(os.environ.get("OPENAI_API_KEY", "") or "").strip()),
+    ]
+    for source, value in candidates:
+        if value:
+            return value, source
+    return "", ""
+
+
 def _write_runtime_config(args, tmp_dir: Path, *, context: str) -> Path:
     enforce_mode_stack_contract(
         mode=str(args.mode),
@@ -115,7 +143,16 @@ def _write_runtime_config(args, tmp_dir: Path, *, context: str) -> Path:
     config["optimization"]["mode"] = "agent_loop"
     config["optimization"]["max_iterations"] = int(args.max_iterations)
     config["simulation"]["backend"] = str(args.backend)
-    config["openai"]["model"] = "qwen3-max"
+    selected_profile = str(getattr(args, "llm_profile", "") or "").strip()
+    if selected_profile:
+        config["openai"]["default_text_profile"] = selected_profile
+    api_key, _api_key_source = _resolve_llm_api_key(config.get("openai", {}))
+    if _api_key_source == "config.openai.api_key" and api_key:
+        config["openai"]["api_key"] = api_key
+    else:
+        config["openai"].pop("api_key", None)
+    if not api_key and bool(getattr(args, "deterministic_intent", False)):
+        config["openai"]["api_key"] = "deterministic_local_placeholder"
     if bool(args.disable_semantic):
         config["knowledge"]["enable_semantic"] = False
     if args.log_base_dir:
@@ -182,11 +219,16 @@ def run_agent_loop_level(
     print("=" * 80)
     print()
 
-    api_key = os.environ.get("OPENAI_API_KEY")
+    openai_preview = _load_openai_config_preview(
+        str(getattr(args, "base_config", "")),
+        llm_profile=str(getattr(args, "llm_profile", "") or ""),
+    )
+    api_key, api_key_source = _resolve_llm_api_key(openai_preview)
     if api_key:
-        print(f"[OK] API key loaded: {api_key[:10]}...{api_key[-4:]}")
+        print(f"[OK] Active LLM key source preview: {api_key_source}")
     else:
-        print("[WARN] OPENAI_API_KEY not set")
+        print("[WARN] No active LLM API key resolved for selected profile")
+        print("       可检查 DASHSCOPE_API_KEY / OPENAI_RELAY_API_KEY / OPENAI_API_KEY")
     print()
 
     orchestrator = None
@@ -201,6 +243,11 @@ def run_agent_loop_level(
                 context=f"run/agent_loop/run_{level_label}",
             )
             orchestrator = workflow_orchestrator_cls(str(runtime_cfg))
+            print("[OK] Orchestrator initialized")
+            _print_active_llm_profile(orchestrator)
+            print(f"     - Optimization mode: {orchestrator.optimization_mode}")
+            print(f"     - Simulation backend: {orchestrator.config['simulation']['backend']}")
+            print()
             print("[START] running optimization...")
             final_state = orchestrator.run_optimization(
                 bom_file=str(args.bom_file),

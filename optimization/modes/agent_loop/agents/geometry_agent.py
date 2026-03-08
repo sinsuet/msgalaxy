@@ -1,475 +1,238 @@
 """
-Geometry Agent: 几何布局专家
-
-负责：
-1. 布局优化（组件位置、朝向）
-2. 干涉检测与避让
-3. 质心与转动惯量控制
+Geometry Agent.
 """
 
+from __future__ import annotations
+
+import json
 import os
-# 强制清空可能导致 10061 错误的本地代理环境变量
-for proxy_env in ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY']:
+from datetime import datetime
+from typing import Any, Dict, Optional
+
+from ..protocol import AgentTask, GeometryMetrics, GeometryProposal
+from core.exceptions import LLMError
+from core.logger import ExperimentLogger
+from core.protocol import DesignState
+from optimization.llm.gateway import LLMGateway, build_legacy_gateway
+from optimization.llm.runtime_client import extract_json_object_text
+
+for proxy_env in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"]:
     if proxy_env in os.environ:
         del os.environ[proxy_env]
 
-import dashscope
-from http import HTTPStatus
-from typing import List, Dict, Any, Optional
-from datetime import datetime
-import json
-
-from ..protocol import (
-    AgentTask,
-    GeometryProposal,
-    GeometryAction,
-    GeometryMetrics,
-)
-from core.protocol import DesignState
-from core.logger import ExperimentLogger
-from core.exceptions import LLMError
-
 
 class GeometryAgent:
-    """几何布局专家Agent"""
+    """Geometry layout specialist."""
 
     def __init__(
         self,
         api_key: str,
         model: str = "qwen-plus",
         temperature: float = 0.6,
-        base_url: Optional[str] = None,  # 保留兼容性
-        logger: Optional[ExperimentLogger] = None
+        logger: Optional[ExperimentLogger] = None,
+        base_url: Optional[str] = None,
+        llm_gateway: Optional[LLMGateway] = None,
+        llm_profile: str = "",
     ):
-        """
-        初始化Geometry Agent
-
-        Args:
-            api_key: DashScope API密钥
-            model: 使用的模型
-            temperature: 温度参数
-            logger: 实验日志记录器
-        """
-        dashscope.api_key = api_key
         self.model = model
         self.temperature = temperature
         self.logger = logger
-
+        self.llm_profile = str(llm_profile or "").strip()
+        self.llm_client = llm_gateway or build_legacy_gateway(
+            api_key=api_key,
+            model=model,
+            temperature=temperature,
+            base_url=base_url,
+        )
         self.system_prompt = self._load_system_prompt()
 
+    def _current_llm_log_metadata(self) -> Dict[str, Any]:
+        try:
+            profile = self.llm_client.resolve_text_profile(self.llm_profile)
+            return {
+                "profile": profile.name,
+                "provider": profile.provider,
+                "model": profile.model,
+                "api_style": profile.api_style,
+                "fallback_used": False,
+                "fallback_reason": "",
+                "key_source": profile.api_key_source,
+                "key_source_masked": profile.key_source_masked,
+            }
+        except Exception:
+            return {
+                "profile": str(self.llm_profile or ""),
+                "provider": "",
+                "model": str(self.model or ""),
+                "api_style": "",
+                "fallback_used": False,
+                "fallback_reason": "",
+                "key_source": "",
+                "key_source_masked": "",
+            }
+
+    @staticmethod
+    def _attach_llm_log_metadata(payload: Any, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        if isinstance(payload, dict):
+            result = dict(payload)
+        else:
+            result = {"payload": payload}
+        result["_llm"] = dict(metadata or {})
+        return result
+
     def _load_system_prompt(self) -> str:
-        """加载系统提示词（当前基线：完整几何动作集）"""
-        return """你是几何布局专家（Geometry Agent）。
-
-【专业能力】
-1. 3D空间推理：理解AABB碰撞检测、间隙计算、质心计算
-2. 布局优化：装箱算法、墙面安装、层切割策略
-3. 约束感知：理解几何约束对其他学科的影响
-4. 动态几何生成：支架、散热器、圆柱体包络
-
-【任务输入】
-Meta-Reasoner分配给你的任务，包含：
-- objective: 任务目标（如"解决Battery与Rib的干涉"）
-- constraints: 约束条件（如"质心偏移<10mm"）
-- context: 当前布局状态
-
-【当前可用操作 - 10类算子】
-
-=== 基础几何算子 ===
-
-1. **MOVE**: 移动组件
-   - 参数: {"axis": "X/Y/Z", "range": [min, max]}
-   - 示例: 将Battery沿+X移动50-80mm
-
-2. **ROTATE**: 旋转组件
-   - 参数: {"axis": "X/Y/Z", "angle_range": [min, max]}
-   - 示例: 将天线绕Z轴旋转0-90度
-
-3. **SWAP**: 交换两个组件的位置
-   - 参数: {"component_b": "payload_01"}
-   - 示例: 交换Battery和Payload的位置
-
-4. **DEFORM**: FFD自由变形（增加散热面积）
-   - 参数: {"deform_type": "stretch_z", "magnitude": 15.0}
-   - deform_type: "stretch_x" | "stretch_y" | "stretch_z" | "bulge"
-   - 示例: 将过热的Battery沿Z轴拉伸15mm
-
-5. **ALIGN**: 对齐组件（沿指定轴对齐到参考组件）
-   - 参数: {"axis": "Y", "reference_component": "radiator_panel"}
-   - 示例: 将所有电池沿Y轴对齐到散热板
-
-=== 包络与结构算子 ===
-
-6. **CHANGE_ENVELOPE**: 包络切换（Box → Cylinder）
-   - 参数: {"shape": "cylinder", "dimensions": {"radius": 50, "height": 60}}
-   - 原理: 圆柱体适合飞轮、反作用轮等旋转对称组件
-   - 示例: 将reaction_wheel改为圆柱体包络
-
-7. **ADD_BRACKET**: 添加结构支架（垫高组件、改变质心）
-   - 参数: {"height": 30.0, "shape": "cylinder", "diameter": 20.0, "attach_face": "-Z"}
-   - 原理: 支架可改变组件Z位置，调整质心分布
-   - 示例: 为payload_camera添加30mm高的圆柱支架
-
-=== 热学辅助算子（可协同使用）===
-
-8. **ADD_HEATSINK**: 添加散热器（几何层面）
-   - 参数: {"face": "+Y", "thickness": 3.0, "conductivity": 400.0}
-   - 原理: 在组件表面附加高导热薄板
-   - 示例: 为transmitter_01在+Y面添加铜散热板
-
-【输出格式】
-你必须输出JSON格式的GeometryProposal：
-
-```json
-{
-  "proposal_id": "GEOM_PROP_001",
-  "task_id": "TASK_001",
-  "reasoning": "详细的推理过程：\\n1. 当前问题分析\\n2. 为什么选择这个操作\\n3. 预期效果",
-  "actions": [
-    {
-      "action_id": "ACT_001",
-      "op_type": "MOVE",
-      "component_id": "Battery_01",
-      "parameters": {
-        "axis": "Z",
-        "range": [80.0, 100.0]
-      },
-      "rationale": "将电池上移以平衡质心Z分量"
-    },
-    {
-      "action_id": "ACT_002",
-      "op_type": "ADD_BRACKET",
-      "component_id": "payload_camera",
-      "parameters": {
-        "height": 30.0,
-        "shape": "cylinder",
-        "diameter": 20.0
-      },
-      "rationale": "添加支架垫高相机，改善质心分布"
-    },
-    {
-      "action_id": "ACT_003",
-      "op_type": "CHANGE_ENVELOPE",
-      "component_id": "reaction_wheel_01",
-      "parameters": {
-        "shape": "cylinder"
-      },
-      "rationale": "飞轮是旋转对称组件，圆柱体包络更准确"
-    }
-  ],
-  "predicted_metrics": {
-    "min_clearance": 8.0,
-    "com_offset": [1.2, -0.2, 0.1],
-    "moment_of_inertia": [1.2, 1.3, 1.1],
-    "packing_efficiency": 75.0,
-    "num_collisions": 0
-  },
-  "side_effects": [
-    "支架增加约50g质量",
-    "质心Z分量上移约15mm"
-  ],
-  "confidence": 0.85
-}
-```
-
-【推理原则】
-1. **空间推理**: 明确说明移动方向和距离的几何依据
-2. **约束检查**: 确保操作不违反几何约束
-3. **影响预测**: 预测对质心、转动惯量、热分布的影响
-4. **置信度评估**: 根据问题复杂度和历史经验给出置信度
-
-【几何知识】
-1. 质心计算: CoM = Σ(m_i * r_i) / Σm_i
-2. AABB碰撞: 两个AABB相交当且仅当所有轴上的投影都重叠
-3. 间隙计算: clearance = min(|A.max - B.min|, |B.max - A.min|) for each axis
-4. 转动惯量: I = Σm_i * r_i²（简化）
-
-【关键策略：探索步长与可行性优先】
-- **当遇到几何重叠/间隙违规风险时**：
-  * 优先恢复几何可行性（num_collisions=0 且 min_clearance 达标）
-  * MOVE 可使用较大步长 **40mm-100mm** 快速脱困，但必须说明不会引入新碰撞
-- **当仿真成功且主要矛盾是温度或质心时**：
-  * 使用分级步长（先中步再小步），避免一次过冲导致候选态被拒绝
-  * 可配合 DEFORM / ADD_BRACKET 做结构化微调
-- **当接近阈值时**：
-  * 明确采用小步长精调，不要继续给出激进大跳跃
-
-【质心配平策略 - 平衡杠杆配平】
-**当前状态**: 质心偏移必须压入“当前任务给定阈值”以内！
-（阈值以 task.constraints/task.context 中的硬约束为准，例如 max_cg_offset_limit_mm）
-
-**平衡策略**:
-1. **识别重型组件**: payload_camera (12kg), battery_01 (8kg), battery_02 (8kg)
-2. **杠杆配平原理**: 质心偏移 = Σ(m_i * r_i) / Σm_i
-   - 要快速修正质心，必须移动重型组件！
-   - 移动 8kg 电池 100mm 的效果 = 移动 1kg 组件 800mm
-
-**具体操作指南（按超限量 exceeds_by = cg_offset - limit）**:
-- **exceeds_by > 30mm**:
-  * 优先移动重型组件，建议 **40mm~100mm**
-  * 先做方向性纠偏，再观察是否需要二次微调
-
-- **10mm < exceeds_by <= 30mm**:
-  * 建议 **15mm~40mm** 中步长
-  * 目标是在不破坏间隙约束前提下稳定压低质心偏移
-
-- **0mm < exceeds_by <= 10mm（近阈值阶段）**:
-  * 建议 **5mm~15mm** 小步长
-  * 可结合 ADD_BRACKET 做精细配平，避免大步长过冲
-
-- **使用 ADD_BRACKET 精确调整 Z 轴**:
-  * 为重型组件添加 30mm~50mm 高的支架
-  * 这可以精确调整 Z 方向的质心分量
-
-- **使用 SWAP 快速交换位置**:
-  * 如果两个重型组件位置不合理，直接 SWAP 交换
-  * 这比多次 MOVE 更高效
-
-**禁止策略**:
-- ❌ 在接近阈值阶段继续使用 >40mm 的大步长
-- ❌ 仅移动轻型组件（<2kg）而忽略重型组件杠杆效应
-- ❌ 连续提出大步长动作却不给出可行性论证（间隙/碰撞）
-
-**目标**: 在 2-3 次迭代内将质心偏移压入当前任务阈值以内，并保留安全裕度。
-
-【重要提醒】
-- 系统底层已全面升级！你现在可以自由使用上述所有算子！
-- 遇到质心偏移问题，请大胆使用ADD_BRACKET调整！
-- 飞轮、反作用轮等组件请使用CHANGE_ENVELOPE切换为圆柱体！
-"""
+        return (
+            "You are the Geometry Agent for spacecraft layout optimization.\n"
+            "Return a valid GeometryProposal JSON object only.\n"
+            "Use only component IDs provided in the prompt.\n"
+            "Keep actions physically plausible and geometry-focused."
+        )
 
     def generate_proposal(
         self,
         task: AgentTask,
         current_state: DesignState,
         current_metrics: GeometryMetrics,
-        iteration: int = 0
+        iteration: int = 0,
     ) -> GeometryProposal:
-        """
-        生成几何优化提案
-
-        Args:
-            task: Meta-Reasoner分配的任务
-            current_state: 当前设计状态
-            current_metrics: 当前几何指标
-            iteration: 当前迭代次数
-
-        Returns:
-            GeometryProposal: 几何优化提案
-        """
         try:
-            # 构建提示
-            try:
-                if self.logger:
-                    self.logger.logger.debug(f"[GeometryAgent] Building prompt for task {task.task_id}")
-                user_prompt = self._build_prompt(task, current_state, current_metrics)
-                if self.logger:
-                    self.logger.logger.debug(f"[GeometryAgent] Prompt built successfully, length: {len(user_prompt)}")
-            except Exception as prompt_error:
-                import traceback
-                error_details = traceback.format_exc()
-                if self.logger:
-                    self.logger.logger.error(f"[GeometryAgent] Failed to build prompt:\n{error_details}")
-                raise LLMError(f"Failed to build prompt: {prompt_error}")
-
+            user_prompt = self._build_prompt(task, current_state, current_metrics)
             messages = [
                 {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": user_prompt}
+                {"role": "user", "content": user_prompt},
             ]
 
-            # 记录请求
             if self.logger:
-                self.logger.logger.debug(f"[GeometryAgent] Logging LLM request for task {task.task_id}")
                 self.logger.log_llm_interaction(
                     iteration=iteration,
                     role="geometry_agent",
-                    request={"messages": messages},
-                    response=None
+                    request=self._attach_llm_log_metadata(
+                        {"messages": messages},
+                        self._current_llm_log_metadata(),
+                    ),
+                    response=None,
                 )
 
-            # 调用LLM
-            if self.logger:
-                self.logger.logger.debug(f"[GeometryAgent] Calling LLM API")
-            response = dashscope.Generation.call(
-                model=self.model,
-                messages=messages,
-                result_format='message',
-                temperature=self.temperature,
-                response_format={'type': 'json_object'}
+            response = self.llm_client.generate_text(
+                messages,
+                profile_name=self.llm_profile,
+                expects_json=True,
             )
-            if self.logger:
-                self.logger.logger.debug(f"[GeometryAgent] LLM API call successful")
+            try:
+                response_json = json.loads(response.content)
+            except json.JSONDecodeError:
+                response_json = json.loads(extract_json_object_text(response.content))
 
-            # 检查响应状态
-            if response.status_code != HTTPStatus.OK:
-                raise LLMError(f"DashScope API 调用失败: {response.code} - {response.message}")
-
-            response_text = response.output.choices[0].message.content
             if self.logger:
-                self.logger.logger.debug(f"[GeometryAgent] Response text length: {len(response_text)}")
-
-            response_json = json.loads(response_text)
-            if self.logger:
-                self.logger.logger.debug(f"[GeometryAgent] JSON parsed successfully")
-
-            # 记录响应
-            if self.logger:
-                self.logger.logger.debug(f"[GeometryAgent] Logging LLM response")
                 self.logger.log_llm_interaction(
                     iteration=iteration,
                     role="geometry_agent",
                     request=None,
-                    response=response_json
+                    response=self._attach_llm_log_metadata(
+                        response_json,
+                        response.as_log_metadata(),
+                    ),
                 )
 
-            # 构建Proposal
-            if self.logger:
-                self.logger.logger.debug(f"[GeometryAgent] Creating GeometryProposal from JSON")
             proposal = GeometryProposal(**response_json)
-            if self.logger:
-                self.logger.logger.debug(f"[GeometryAgent] GeometryProposal created successfully")
-
-            # 自动生成ID
             if not proposal.proposal_id or proposal.proposal_id.startswith("GEOM_PROP"):
                 proposal.proposal_id = f"GEOM_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-
             proposal.task_id = task.task_id
-
             return proposal
-
-        except Exception as e:
-            raise LLMError(f"Geometry Agent failed: {e}")
+        except Exception as exc:
+            raise LLMError(f"Geometry Agent failed: {exc}") from exc
 
     def _build_prompt(
         self,
         task: AgentTask,
         current_state: DesignState,
-        current_metrics: GeometryMetrics
+        current_metrics: GeometryMetrics,
     ) -> str:
-        """构建用户提示"""
-        prompt = f"""# 几何优化任务
+        prompt = f"""# Geometry Optimization Task
 
-## 任务信息
-- 任务ID: {task.task_id}
-- 目标: {task.objective}
-- 优先级: {task.priority}
+## Task
+- task_id: {task.task_id}
+- objective: {task.objective}
+- priority: {task.priority}
 
-## 约束条件
+## Constraints
 """
-        for i, constraint in enumerate(task.constraints, 1):
-            prompt += f"{i}. {constraint}\n"
+        for index, constraint in enumerate(task.constraints, 1):
+            prompt += f"{index}. {constraint}\n"
 
         prompt += f"""
-## 当前几何状态
-- 最小间隙: {float(current_metrics.min_clearance):.2f} mm
-- 质心偏移: [{', '.join(f'{float(x):.2f}' for x in current_metrics.com_offset)}] mm
-- 转动惯量: [{', '.join(f'{float(x):.2f}' for x in current_metrics.moment_of_inertia)}] kg·m²
-- 装填率: {float(current_metrics.packing_efficiency):.1f}%
-- 碰撞数量: {int(current_metrics.num_collisions)}
+## Current Geometry Metrics
+- min_clearance_mm: {float(current_metrics.min_clearance):.2f}
+- com_offset_mm: [{', '.join(f'{float(x):.2f}' for x in current_metrics.com_offset)}]
+- inertia: [{', '.join(f'{float(x):.2f}' for x in current_metrics.moment_of_inertia)}]
+- packing_efficiency_pct: {float(current_metrics.packing_efficiency):.1f}
+- num_collisions: {int(current_metrics.num_collisions)}
 
-## 组件布局
+## Layout Snapshot
 """
-        # 添加组件位置信息
-        for comp in current_state.components[:5]:  # 只显示前5个组件
-            prompt += f"- {comp.id}: 位置 {comp.position}, 尺寸 {comp.dimensions}\n"
-
+        for comp in current_state.components[:5]:
+            prompt += f"- {comp.id}: position={comp.position}, dimensions={comp.dimensions}\n"
         if len(current_state.components) > 5:
-            prompt += f"... (共{len(current_state.components)}个组件)\n"
+            prompt += f"- ... total_components={len(current_state.components)}\n"
 
-        # 添加完整的可用组件列表（防止幻觉）
-        prompt += "\n## 可用组件列表（仅可引用以下组件ID）\n"
+        prompt += "\n## Available Component IDs\n"
         for comp in current_state.components:
-            prompt += f"- {comp.id} (类别: {comp.category})\n"
-        prompt += "\n⚠️ 重要：在所有操作中，target_components 参数必须是上述列表中的组件ID，不能使用不存在的组件名称！\n"
+            prompt += f"- {comp.id} ({comp.category})\n"
 
-        # 添加任务上下文
         if task.context:
-            prompt += "\n## 额外上下文\n"
+            prompt += "\n## Extra Context\n"
             for key, value in task.context.items():
                 prompt += f"- {key}: {value}\n"
 
-        prompt += "\n请生成几何优化提案（JSON格式）。"
-
+        prompt += "\nReturn a valid GeometryProposal JSON object only."
         return prompt
 
     def validate_proposal(
         self,
         proposal: GeometryProposal,
-        current_state: DesignState
+        current_state: DesignState,
     ) -> Dict[str, Any]:
-        """
-        验证提案的可行性
-
-        Args:
-            proposal: 几何提案
-            current_state: 当前设计状态
-
-        Returns:
-            验证结果
-        """
         issues = []
         warnings = []
+        component_ids = {c.id for c in current_state.components}
 
-        # 检查操作的有效性
         for action in proposal.actions:
-            # 检查组件是否存在
-            component_ids = [c.id for c in current_state.components]
+            component_id = getattr(action, "component_id", "")
+            if component_id and component_id not in component_ids:
+                issues.append(f"unknown component: {component_id}")
 
-            if action.op_type in ["MOVE", "ROTATE"]:
-                if action.component_id not in component_ids:
-                    issues.append(f"组件 {action.component_id} 不存在")
+            for comp_id in list(getattr(action, "target_components", []) or []):
+                if comp_id not in component_ids:
+                    issues.append(f"unknown component: {comp_id}")
 
-            elif action.op_type == "SWAP":
+            if action.op_type == "SWAP":
                 comp_a = action.parameters.get("component_a")
                 comp_b = action.parameters.get("component_b")
-                if comp_a not in component_ids:
-                    issues.append(f"组件 {comp_a} 不存在")
-                if comp_b not in component_ids:
-                    issues.append(f"组件 {comp_b} 不存在")
+                if comp_a and comp_a not in component_ids:
+                    issues.append(f"unknown component: {comp_a}")
+                if comp_b and comp_b not in component_ids:
+                    issues.append(f"unknown component: {comp_b}")
 
-            # 检查参数合理性
             if action.op_type == "MOVE":
                 range_param = action.parameters.get("range", [])
                 if len(range_param) != 2:
-                    issues.append(f"MOVE操作的range参数必须是2个数字")
+                    issues.append("MOVE.range must contain exactly two values")
                 elif range_param[0] > range_param[1]:
-                    issues.append(f"MOVE操作的range参数顺序错误: {range_param}")
+                    issues.append(f"invalid MOVE.range order: {range_param}")
 
-        # 检查预测指标的合理性
         if proposal.predicted_metrics.min_clearance < 0:
-            issues.append("预测的最小间隙为负数，不合理")
-
+            issues.append("predicted min_clearance is negative")
         if proposal.predicted_metrics.packing_efficiency > 100:
-            issues.append("预测的装填率>100%，不合理")
-
-        # 检查置信度
+            issues.append("predicted packing_efficiency exceeds 100%")
         if proposal.confidence < 0.3:
-            warnings.append(f"置信度过低 ({proposal.confidence:.2f})，建议谨慎执行")
+            warnings.append(f"low confidence proposal ({proposal.confidence:.2f})")
 
         return {
             "is_valid": len(issues) == 0,
             "issues": issues,
-            "warnings": warnings
+            "warnings": warnings,
         }
 
 
 if __name__ == "__main__":
-    print("Testing Geometry Agent...")
-
-    # 创建示例任务
-    task = AgentTask(
-        task_id="TASK_001",
-        agent_type="geometry",
-        objective="将Battery_01沿+X方向移动，使其与Rib_01的间隙达到5-8mm",
-        constraints=[
-            "移动后质心偏移不得超过±10mm",
-            "不得与其他组件产生新的干涉"
-        ],
-        priority=1,
-        context={
-            "current_position": 13.0,
-            "target_clearance": 6.0
-        }
-    )
-
-    print(f"✓ Task created: {task.objective}")
+    print("Geometry Agent module created")

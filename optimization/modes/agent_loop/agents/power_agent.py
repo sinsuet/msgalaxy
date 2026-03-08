@@ -1,37 +1,28 @@
 """
-Power Agent: 电源专家
-
-负责：
-1. 功率预算管理
-2. 电源线路优化
-3. 电磁兼容性检查
+Power Agent.
 """
 
+from __future__ import annotations
+
+import json
 import os
-# 强制清空可能导致 10061 错误的本地代理环境变量
-for proxy_env in ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY']:
+from datetime import datetime
+from typing import Any, Dict, Optional
+
+from ..protocol import AgentTask, PowerMetrics, PowerProposal
+from core.exceptions import LLMError
+from core.logger import ExperimentLogger
+from core.protocol import DesignState
+from optimization.llm.gateway import LLMGateway, build_legacy_gateway
+from optimization.llm.runtime_client import extract_json_object_text
+
+for proxy_env in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"]:
     if proxy_env in os.environ:
         del os.environ[proxy_env]
 
-import dashscope
-from http import HTTPStatus
-from typing import List, Dict, Any, Optional
-from datetime import datetime
-import json
-
-from ..protocol import (
-    AgentTask,
-    PowerProposal,
-    PowerAction,
-    PowerMetrics,
-)
-from core.protocol import DesignState
-from core.logger import ExperimentLogger
-from core.exceptions import LLMError
-
 
 class PowerAgent:
-    """电源专家Agent"""
+    """Power system specialist."""
 
     def __init__(
         self,
@@ -39,222 +30,190 @@ class PowerAgent:
         model: str = "qwen-plus",
         temperature: float = 0.6,
         base_url: Optional[str] = None,
-        logger: Optional[ExperimentLogger] = None
+        logger: Optional[ExperimentLogger] = None,
+        llm_gateway: Optional[LLMGateway] = None,
+        llm_profile: str = "",
     ):
-        dashscope.api_key = api_key
         self.model = model
         self.temperature = temperature
         self.logger = logger
+        self.llm_profile = str(llm_profile or "").strip()
+        self.llm_client = llm_gateway or build_legacy_gateway(
+            api_key=api_key,
+            model=model,
+            temperature=temperature,
+            base_url=base_url,
+        )
         self.system_prompt = self._load_system_prompt()
 
+    def _current_llm_log_metadata(self) -> Dict[str, Any]:
+        try:
+            profile = self.llm_client.resolve_text_profile(self.llm_profile)
+            return {
+                "profile": profile.name,
+                "provider": profile.provider,
+                "model": profile.model,
+                "api_style": profile.api_style,
+                "fallback_used": False,
+                "fallback_reason": "",
+                "key_source": profile.api_key_source,
+                "key_source_masked": profile.key_source_masked,
+            }
+        except Exception:
+            return {
+                "profile": str(self.llm_profile or ""),
+                "provider": "",
+                "model": str(self.model or ""),
+                "api_style": "",
+                "fallback_used": False,
+                "fallback_reason": "",
+                "key_source": "",
+                "key_source_masked": "",
+            }
+
+    @staticmethod
+    def _attach_llm_log_metadata(payload: Any, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        if isinstance(payload, dict):
+            result = dict(payload)
+        else:
+            result = {"payload": payload}
+        result["_llm"] = dict(metadata or {})
+        return result
+
     def _load_system_prompt(self) -> str:
-        return """你是电源专家（Power Agent）。
-
-【专业能力】
-1. 电源系统：功率预算、电压调节、电流分配
-2. 线路设计：布线优化、压降计算、EMC设计
-3. 能量管理：充放电策略、功耗优化
-
-【可用操作】
-1. **OPTIMIZE_ROUTING**: 优化电源线路
-   - 参数: source, targets, routing_strategy (shortest/balanced/emc)
-   - 原理: 减少线路长度和压降
-   - 示例: 优化电池到负载的供电路径
-
-2. **ADJUST_VOLTAGE**: 调整电压等级
-   - 参数: target_components, voltage_level
-   - 原理: 使用合适的电压等级减少损耗
-   - 示例: 高功耗设备使用高电压（减小电流）
-
-3. **LOAD_BALANCING**: 负载均衡
-   - 参数: power_sources, load_distribution
-   - 原理: 平衡各电源模块负载，提高效率
-   - 示例: 将负载分配到多个电源模块
-
-【输出格式】
-```json
-{
-  "proposal_id": "POWER_PROP_001",
-  "task_id": "TASK_001",
-  "reasoning": "电源分析推理：\\n1. 功率预算分析\\n2. 压降/效率问题诊断\\n3. 方案选择依据\\n4. 预期电气性能",
-  "actions": [
-    {
-      "action_id": "ACT_001",
-      "op_type": "OPTIMIZE_ROUTING",
-      "target_components": ["Battery_01", "PowerModule_02"],
-      "parameters": {
-        "routing_strategy": "shortest",
-        "max_length": 500
-      },
-      "rationale": "缩短线路长度可减少压降和功耗"
-    }
-  ],
-  "predicted_metrics": {
-    "total_power": 120.0,
-    "peak_power": 145.0,
-    "power_margin": 28.0,
-    "voltage_drop": 0.25
-  },
-  "side_effects": [
-    "线路重新布置可能影响布局",
-    "需要Geometry Agent确认空间"
-  ],
-  "confidence": 0.80
-}
-```
-
-【电源知识】
-1. **欧姆定律**: V = IR, P = VI = I²R
-   - 压降：ΔV = I·R·L/A (R=电阻率, L=长度, A=截面积)
-   - 铜线电阻率：1.7×10⁻⁸ Ω·m
-
-2. **功率损耗**: P_loss = I²R
-   - 高电压低电流可减少损耗（P=VI，提高V降低I）
-   - 线径增大可减少电阻
-
-3. **电源效率**: η = P_out/P_in
-   - DC-DC转换器效率：85-95%
-   - 线路损耗应<5%
-
-4. **工程经验**:
-   - 压降应<电压的5%（如28V系统压降<1.4V）
-   - 功率裕度应≥20%（应对峰值负载）
-   - 高频信号线与电源线保持距离>10mm（EMC）
-   - 电池到负载距离应尽量短
-
-【推理原则】
-1. **效率优先**: 最小化功率损耗
-2. **可靠性**: 避免单点故障，考虑冗余
-3. **EMC**: 防止电磁干扰
-4. **热管理**: 大电流线路会发热
-"""
+        return (
+            "You are the Power Agent for spacecraft layout optimization.\n"
+            "Return a valid PowerProposal JSON object only.\n"
+            "Use only component IDs provided in the prompt.\n"
+            "Focus on power routing, margin, and voltage drop."
+        )
 
     def generate_proposal(
         self,
         task: AgentTask,
         current_state: DesignState,
         current_metrics: PowerMetrics,
-        iteration: int = 0
+        iteration: int = 0,
     ) -> PowerProposal:
         try:
             user_prompt = self._build_prompt(task, current_state, current_metrics)
             messages = [
                 {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": user_prompt}
+                {"role": "user", "content": user_prompt},
             ]
 
             if self.logger:
                 self.logger.log_llm_interaction(
                     iteration=iteration,
                     role="power_agent",
-                    request={"messages": messages},
-                    response=None
+                    request=self._attach_llm_log_metadata(
+                        {"messages": messages},
+                        self._current_llm_log_metadata(),
+                    ),
+                    response=None,
                 )
 
-            response = dashscope.Generation.call(
-                model=self.model,
-                messages=messages,
-                result_format='message',
-                temperature=self.temperature,
-                response_format={'type': 'json_object'}
+            response = self.llm_client.generate_text(
+                messages,
+                profile_name=self.llm_profile,
+                expects_json=True,
             )
-            
-            # 检查响应状态
-            if response.status_code != HTTPStatus.OK:
-                raise LLMError(f"DashScope API 调用失败: {response.code} - {response.message}")
-
-            response_json = json.loads(response.output.choices[0].message.content)
+            try:
+                response_json = json.loads(response.content)
+            except json.JSONDecodeError:
+                response_json = json.loads(extract_json_object_text(response.content))
 
             if self.logger:
                 self.logger.log_llm_interaction(
                     iteration=iteration,
                     role="power_agent",
                     request=None,
-                    response=response_json
+                    response=self._attach_llm_log_metadata(
+                        response_json,
+                        response.as_log_metadata(),
+                    ),
                 )
 
             proposal = PowerProposal(**response_json)
             if not proposal.proposal_id or proposal.proposal_id.startswith("POWER_PROP"):
                 proposal.proposal_id = f"POWER_{datetime.now().strftime('%Y%m%d%H%M%S')}"
             proposal.task_id = task.task_id
-
             return proposal
-
-        except Exception as e:
-            raise LLMError(f"Power Agent failed: {e}")
+        except Exception as exc:
+            raise LLMError(f"Power Agent failed: {exc}") from exc
 
     def _build_prompt(
         self,
         task: AgentTask,
         current_state: DesignState,
-        current_metrics: PowerMetrics
+        current_metrics: PowerMetrics,
     ) -> str:
-        prompt = f"""# 电源优化任务
+        prompt = f"""# Power Optimization Task
 
-## 任务信息
-- 任务ID: {task.task_id}
-- 目标: {task.objective}
-- 优先级: {task.priority}
+## Task
+- task_id: {task.task_id}
+- objective: {task.objective}
+- priority: {task.priority}
 
-## 约束条件
+## Constraints
 """
-        for i, constraint in enumerate(task.constraints, 1):
-            prompt += f"{i}. {constraint}\n"
+        for index, constraint in enumerate(task.constraints, 1):
+            prompt += f"{index}. {constraint}\n"
 
         prompt += f"""
-## 当前电源状态
-- 总功耗: {current_metrics.total_power:.1f} W
-- 峰值功耗: {current_metrics.peak_power:.1f} W
-- 功率裕度: {current_metrics.power_margin:.1f}%
-- 最大压降: {current_metrics.voltage_drop:.2f} V
+## Current Power Metrics
+- total_power_w: {current_metrics.total_power:.1f}
+- peak_power_w: {current_metrics.peak_power:.1f}
+- power_margin_pct: {current_metrics.power_margin:.1f}
+- voltage_drop_v: {current_metrics.voltage_drop:.2f}
 
-## 组件功耗信息
+## Powered Components
 """
         for comp in current_state.components[:5]:
             if comp.power > 0:
-                prompt += f"- {comp.id}: {comp.power:.1f}W\n"
+                prompt += f"- {comp.id}: power={comp.power:.1f}W\n"
 
-        # 添加完整的可用组件列表（防止幻觉）
-        prompt += "\n## 可用组件列表（仅可引用以下组件ID）\n"
+        prompt += "\n## Available Component IDs\n"
         for comp in current_state.components:
-            prompt += f"- {comp.id} (类别: {comp.category})\n"
-        prompt += "\n⚠️ 重要：在所有操作中，target_components 参数必须是上述列表中的组件ID，不能使用不存在的组件名称！\n"
+            prompt += f"- {comp.id} ({comp.category})\n"
 
         if task.context:
-            prompt += "\n## 额外上下文\n"
+            prompt += "\n## Extra Context\n"
             for key, value in task.context.items():
                 prompt += f"- {key}: {value}\n"
 
-        prompt += "\n请生成电源优化提案（JSON格式）。"
+        prompt += "\nReturn a valid PowerProposal JSON object only."
         return prompt
 
     def validate_proposal(
         self,
         proposal: PowerProposal,
-        current_state: DesignState
+        current_state: DesignState,
     ) -> Dict[str, Any]:
         issues = []
         warnings = []
-
-        component_ids = [c.id for c in current_state.components]
+        component_ids = {c.id for c in current_state.components}
 
         for action in proposal.actions:
             for comp_id in action.target_components:
                 if comp_id not in component_ids:
-                    issues.append(f"组件 {comp_id} 不存在")
+                    issues.append(f"unknown component: {comp_id}")
 
         if proposal.predicted_metrics.power_margin < 15:
-            warnings.append(f"预测功率裕度过低 ({proposal.predicted_metrics.power_margin:.1f}%)")
-
+            warnings.append(
+                f"low predicted power_margin ({proposal.predicted_metrics.power_margin:.1f}%)"
+            )
         if proposal.predicted_metrics.voltage_drop > 1.0:
-            warnings.append(f"预测压降过大 ({proposal.predicted_metrics.voltage_drop:.2f}V)")
+            warnings.append(
+                f"high predicted voltage_drop ({proposal.predicted_metrics.voltage_drop:.2f}V)"
+            )
 
         return {
             "is_valid": len(issues) == 0,
             "issues": issues,
-            "warnings": warnings
+            "warnings": warnings,
         }
 
 
 if __name__ == "__main__":
-    print("✓ Power Agent module created")
+    print("Power Agent module created")

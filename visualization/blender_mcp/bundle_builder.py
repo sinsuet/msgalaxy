@@ -6,64 +6,35 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Sequence
 
 from core.path_policy import serialize_repo_path, serialize_run_path
 from core.protocol import DesignState
+from core.visualization import _parse_operator_actions
 from geometry.cad_export_occ import export_design_occ
 from visualization.blender_mcp.contracts import (
+    RenderArtifactLinks,
     RenderBundle,
     RenderComponent,
     RenderEnvelope,
     RenderHeuristics,
+    RenderManifest,
     RenderProfile,
     RenderSource,
+    RenderState,
+    ReviewPayload,
+)
+from visualization.review_package import (
+    DEFAULT_KEY_STATES,
+    build_review_package_artifact_links,
+    build_review_payload,
+    build_state_selection,
+    planned_review_package_paths,
 )
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _iter_snapshot_files(run_dir: Path) -> Iterable[Path]:
-    snapshots_dir = run_dir / "snapshots"
-    if not snapshots_dir.is_dir():
-        return []
-    return sorted(snapshots_dir.glob("*.json"))
-
-
-def _snapshot_sort_key(path: Path) -> Tuple[int, int, str]:
-    name = path.stem
-    parts = name.split("_")
-    sequence = 0
-    iteration = 0
-    if len(parts) >= 2 and parts[0] == "seq":
-        try:
-            sequence = int(parts[1])
-        except Exception:
-            sequence = 0
-    if "iter" in parts:
-        try:
-            iteration = int(parts[parts.index("iter") + 1])
-        except Exception:
-            iteration = 0
-    return sequence, iteration, name
-
-
-def _select_snapshot(run_dir: Path) -> Tuple[Path, Dict[str, Any]]:
-    candidates = list(_iter_snapshot_files(run_dir))
-    if not candidates:
-        raise FileNotFoundError(f"No snapshot files found in {run_dir}")
-
-    payloads = [(path, _load_json(path)) for path in candidates]
-    final_selected = [
-        item
-        for item in payloads
-        if str(item[1].get("stage", "") or "").strip().lower() == "final_selected"
-    ]
-    if final_selected:
-        return sorted(final_selected, key=lambda item: _snapshot_sort_key(item[0]))[-1]
-    return sorted(payloads, key=lambda item: _snapshot_sort_key(item[0]))[-1]
 
 
 def _to_vector_list(obj: Any) -> list[float]:
@@ -155,7 +126,9 @@ def _preferred_payload_face(design_state: DesignState) -> str:
 def _build_heuristics(design_state: DesignState, components: list[RenderComponent]) -> RenderHeuristics:
     total_power = sum(float(getattr(component, "power", 0.0) or 0.0) for component in design_state.components)
     roles = {component.render_role for component in components}
-    notes: list[str] = []
+    notes: list[str] = [
+        "Visualization-only heuristics must not be interpreted as solver or physics truth.",
+    ]
 
     enable_solar = total_power >= 60.0 and "solar_panel" not in roles
     if enable_solar:
@@ -206,6 +179,8 @@ def _build_metrics(summary: Dict[str, Any]) -> Dict[str, Any]:
     metrics["best_cv_min"] = float(summary.get("best_cv_min", 0.0) or 0.0)
     metrics["status"] = str(summary.get("status", "") or "")
     metrics["diagnosis_status"] = str(summary.get("diagnosis_status", "") or "")
+    metrics["final_audit_status"] = str(summary.get("final_audit_status", "") or "")
+    metrics["dominant_violation"] = str(summary.get("dominant_violation", "") or "")
     metrics.update(dict(summary.get("best_candidate_metrics", {}) or {}))
     return metrics
 
@@ -220,12 +195,74 @@ def _export_step_if_requested(design_state: DesignState, output_path: Path, enab
     return str(output_path.resolve()), ""
 
 
+def _normalize_key_states(key_states: str | Sequence[str] | None) -> list[str]:
+    if key_states is None:
+        return list(DEFAULT_KEY_STATES)
+    if isinstance(key_states, str):
+        values = [item.strip().lower() for item in key_states.split(",")]
+    else:
+        values = [str(item).strip().lower() for item in list(key_states)]
+    normalized = [item for item in values if item]
+    return list(dict.fromkeys(normalized or list(DEFAULT_KEY_STATES)))
+
+
+def _record_to_render_state(state_name: str, record: Dict[str, Any]) -> RenderState:
+    event = dict(record.get("event", {}) or {})
+    snapshot = dict(record.get("snapshot", {}) or {})
+    design_state = DesignState(**dict(snapshot.get("design_state", {}) or {}))
+    components = [_component_to_render(component) for component in design_state.components]
+    metadata = dict(snapshot.get("metadata", {}) or {})
+    metadata.update(
+        {
+            "moved_components": list(event.get("moved_components", []) or []),
+            "added_heatsinks": list(event.get("added_heatsinks", []) or []),
+            "added_brackets": list(event.get("added_brackets", []) or []),
+            "changed_contacts": list(event.get("changed_contacts", []) or []),
+            "changed_coatings": list(event.get("changed_coatings", []) or []),
+            "component_count": len(components),
+        }
+    )
+    return RenderState(
+        name=state_name,
+        snapshot_path=str(record.get("persisted_snapshot_path", "") or ""),
+        stage=str(event.get("stage", snapshot.get("stage", "")) or ""),
+        thermal_source=str(event.get("thermal_source", snapshot.get("thermal_source", "")) or ""),
+        diagnosis_status=str(event.get("diagnosis_status", snapshot.get("diagnosis_status", "")) or ""),
+        diagnosis_reason=str(event.get("diagnosis_reason", snapshot.get("diagnosis_reason", "")) or ""),
+        metrics=dict(snapshot.get("metrics", event.get("metrics", {})) or {}),
+        operator_actions=_parse_operator_actions(event.get("operator_actions", snapshot.get("operator_actions", []))),
+        components=components,
+        metadata=metadata,
+    )
+
+
+def _select_keepouts(states: Dict[str, RenderState]) -> list[Dict[str, Any]]:
+    for state_name in ("final", "best", "initial"):
+        state = states.get(state_name)
+        if state is None:
+            continue
+        for component in state.components:
+            _ = component
+        break
+
+    keepouts: list[Dict[str, Any]] = []
+    for state_name in ("final", "best", "initial"):
+        state = states.get(state_name)
+        if state is None:
+            continue
+        design_state = state.metadata.get("design_state_keepouts")
+        if isinstance(design_state, list) and design_state:
+            return list(design_state)
+    return keepouts
+
+
 def build_render_bundle_from_run(
     run_dir: str | Path,
     *,
     output_dir: str | Path | None = None,
-    profile_name: str = "showcase",
+    profile_name: str = "engineering",
     export_step: bool = False,
+    key_states: str | Sequence[str] | None = None,
 ) -> Dict[str, Any]:
     run_path = Path(run_dir).resolve()
     summary_path = run_path / "summary.json"
@@ -233,78 +270,168 @@ def build_render_bundle_from_run(
         raise FileNotFoundError(f"summary.json not found in {run_path}")
 
     summary = _load_json(summary_path)
-    snapshot_path, snapshot_payload = _select_snapshot(run_path)
-    design_state = DesignState(**dict(snapshot_payload.get("design_state", {}) or {}))
-
     output_root = Path(output_dir).resolve() if output_dir else (run_path / "visualizations" / "blender").resolve()
     output_root.mkdir(parents=True, exist_ok=True)
 
-    render_components = [_component_to_render(component) for component in design_state.components]
-    heuristics = _build_heuristics(design_state, render_components)
+    selected_states = build_state_selection(run_path, _normalize_key_states(key_states))
+    all_records = list(selected_states["records"])
+    selected_records = dict(selected_states["selected"])
+    render_states = {name: _record_to_render_state(name, record) for name, record in selected_records.items()}
+
+    final_state = render_states.get("final") or next(iter(render_states.values()))
+    final_record = selected_records.get("final") or next(iter(selected_records.values()))
+    final_design_state = DesignState(**dict(dict(final_record.get("snapshot", {}) or {}).get("design_state", {}) or {}))
 
     step_output_path = output_root / "final_layout.step"
-    step_path, step_error = _export_step_if_requested(design_state, step_output_path, export_step)
-    persisted_run_dir = serialize_repo_path(run_path)
-    persisted_snapshot_path = serialize_run_path(run_path, snapshot_path)
-    persisted_summary_path = serialize_run_path(run_path, summary_path)
-    persisted_final_mph_path = serialize_repo_path(summary.get("final_mph_path", "") or "")
-    persisted_step_path = serialize_repo_path(step_path)
+    step_path, step_error = _export_step_if_requested(final_design_state, step_output_path, export_step)
 
-    bundle = RenderBundle(
-        run_id=str(summary.get("run_id", run_path.name) or run_path.name),
-        run_label=str(summary.get("run_label", "") or ""),
-        source=RenderSource(
-            run_dir=persisted_run_dir,
-            snapshot_path=persisted_snapshot_path,
-            summary_path=persisted_summary_path,
-            final_mph_path=persisted_final_mph_path,
-            step_path=persisted_step_path,
-        ),
-        envelope=RenderEnvelope(
-            outer_size_mm=_to_vector_list(design_state.envelope.outer_size),
-            origin=str(getattr(design_state.envelope, "origin", "center") or "center"),
-            thickness_mm=float(getattr(design_state.envelope, "thickness", 0.0) or 0.0),
-        ),
-        components=render_components,
-        keepouts=[
+    planned_paths = planned_review_package_paths(output_root)
+    artifact_links = build_review_package_artifact_links(
+        run_dir=run_path,
+        output_root=output_root,
+        step_path=serialize_repo_path(step_path),
+    )
+
+    source = RenderSource(
+        run_dir=serialize_repo_path(run_path),
+        snapshot_path=str(final_state.snapshot_path or ""),
+        summary_path=serialize_run_path(run_path, summary_path),
+        report_path=str(artifact_links.get("report_path", "") or ""),
+        layout_events_path=str(artifact_links.get("layout_events_path", "") or ""),
+        release_audit_path=str(artifact_links.get("release_audit_path", "") or ""),
+        final_mph_path=serialize_repo_path(summary.get("final_mph_path", "") or ""),
+        step_path=serialize_repo_path(step_path),
+    )
+
+    keepouts: list[Dict[str, Any]] = []
+    for state_name in ("final", "best", "initial"):
+        record = selected_records.get(state_name)
+        if record is None:
+            continue
+        design_state = DesignState(**dict(dict(record.get("snapshot", {}) or {}).get("design_state", {}) or {}))
+        keepouts = [
             {
                 "tag": str(zone.tag),
                 "min_point_mm": _to_vector_list(zone.min_point),
                 "max_point_mm": _to_vector_list(zone.max_point),
             }
             for zone in list(design_state.keepouts or [])
-        ],
+        ]
+        if keepouts:
+            break
+
+    bundle = RenderBundle(
+        run_id=str(summary.get("run_id", run_path.name) or run_path.name),
+        run_label=str(summary.get("run_label", "") or ""),
+        source=source,
+        envelope=RenderEnvelope(
+            outer_size_mm=_to_vector_list(final_design_state.envelope.outer_size),
+            origin=str(getattr(final_design_state.envelope, "origin", "center") or "center"),
+            thickness_mm=float(getattr(final_design_state.envelope, "thickness", 0.0) or 0.0),
+        ),
+        keepouts=keepouts,
+        key_states=render_states,
+        components=list(final_state.components),
         metrics=_build_metrics(summary),
         render_profile=RenderProfile(profile_name=profile_name),
-        heuristics=heuristics,
+        heuristics=_build_heuristics(final_design_state, list(final_state.components)),
+        artifact_links=RenderArtifactLinks(**artifact_links),
         metadata={
-            "component_count": len(render_components),
-            "snapshot_stage": str(snapshot_payload.get("stage", "") or ""),
+            "component_count": len(final_state.components),
+            "snapshot_stage": str(final_state.stage or ""),
             "step_export_error": step_error,
             "layout_state_hash": str(summary.get("layout_state_hash", "") or ""),
+            "run_mode": str(summary.get("run_mode", summary.get("optimization_mode", "")) or ""),
+            "execution_mode": str(summary.get("execution_mode", "") or ""),
+            "runtime_feature_fingerprint_path": str(
+                artifact_links.get("runtime_feature_fingerprint_path", "") or ""
+            ),
+            "llm_final_summary_zh_path": str(
+                artifact_links.get("llm_final_summary_zh_path", "") or ""
+            ),
+            "key_state_order": list(render_states.keys()),
+            "scene_contract_status": "phase1_final_state_render_only",
+            "visualization_only": True,
+            "legacy_components_alias_state": "final",
         },
     )
 
-    bundle_path = output_root / "render_bundle.json"
-    bundle_path.write_text(bundle.model_dump_json(indent=2), encoding="utf-8")
+    payload = ReviewPayload(
+        **build_review_payload(
+            run_dir=run_path,
+            output_root=output_root,
+            bundle_payload=bundle.model_dump(mode="json"),
+            state_records=selected_records,
+            all_records=all_records,
+            summary=summary,
+            notes=list(bundle.heuristics.notes),
+        )
+    )
 
-    manifest = {
-        "status": "success",
-        "bundle_path": serialize_repo_path(bundle_path),
-        "run_dir": persisted_run_dir,
-        "snapshot_path": persisted_snapshot_path,
-        "summary_path": persisted_summary_path,
-        "step_path": persisted_step_path,
-        "step_export_error": step_error,
-        "profile_name": profile_name,
-        "component_count": len(render_components),
-    }
-    manifest_path = output_root / "render_manifest.json"
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    manifest = RenderManifest(
+        run_dir=serialize_repo_path(run_path),
+        bundle_path=serialize_repo_path(planned_paths["bundle_path"]),
+        scene_script_path=serialize_repo_path(planned_paths["scene_script_path"]),
+        brief_path=serialize_repo_path(planned_paths["brief_path"]),
+        review_payload_path=serialize_repo_path(planned_paths["review_payload_path"]),
+        review_dashboard_path="",
+        source_snapshot_paths={name: state.snapshot_path for name, state in render_states.items()},
+        output_image_path=serialize_repo_path(planned_paths["output_image_path"]),
+        output_image_paths=[serialize_repo_path(planned_paths["output_image_path"])],
+        output_blend_path=serialize_repo_path(planned_paths["output_blend_path"]),
+        profile_name=profile_name,
+        key_states={
+            name: {
+                "snapshot_path": state.snapshot_path,
+                "stage": state.stage,
+                "diagnosis_status": state.diagnosis_status,
+                "thermal_source": state.thermal_source,
+            }
+            for name, state in render_states.items()
+        },
+        direct_render_status="skipped",
+        metadata={
+            "schema_phase": "phase1",
+            "visualization_only": True,
+            "scene_contract_status": "phase1_final_state_render_only",
+            "run_mode": str(summary.get("run_mode", summary.get("optimization_mode", "")) or ""),
+            "execution_mode": str(summary.get("execution_mode", "") or ""),
+            "runtime_feature_fingerprint_path": str(
+                artifact_links.get("runtime_feature_fingerprint_path", "") or ""
+            ),
+            "llm_final_summary_zh_path": str(
+                artifact_links.get("llm_final_summary_zh_path", "") or ""
+            ),
+            "output_exists": {
+                "bundle": True,
+                "review_payload": True,
+                "scene_script": False,
+                "brief": False,
+                "output_image": False,
+                "output_blend": False,
+            },
+        },
+        summary_path=source.summary_path,
+        snapshot_path=source.snapshot_path,
+        step_path=source.step_path,
+        step_export_error=step_error,
+        component_count=len(final_state.components),
+    )
+
+    bundle_path = planned_paths["bundle_path"]
+    review_payload_path = planned_paths["review_payload_path"]
+    manifest_path = planned_paths["manifest_path"]
+    bundle_path.write_text(bundle.model_dump_json(indent=2), encoding="utf-8")
+    review_payload_path.write_text(payload.model_dump_json(indent=2), encoding="utf-8")
+    manifest_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
 
     return {
         "bundle": bundle.model_dump(mode="json"),
+        "review_payload": payload.model_dump(mode="json"),
+        "manifest": manifest.model_dump(mode="json"),
         "bundle_path": str(bundle_path),
+        "review_payload_path": str(review_payload_path),
         "manifest_path": str(manifest_path),
         "output_dir": str(output_root),
+        "key_states": list(render_states.keys()),
     }

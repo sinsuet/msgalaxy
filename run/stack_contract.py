@@ -12,6 +12,7 @@ from pathlib import Path
 STACK_MODE_BINDINGS = {
     "mass": "mass",
     "agent_loop": "agent_loop",
+    "vop_maas": "vop_maas",
 }
 
 MODE_STACK_BINDINGS = {value: key for key, value in STACK_MODE_BINDINGS.items()}
@@ -32,6 +33,8 @@ def _normalize_path_for_compare(*, project_root: Path, path_value: str) -> str:
 def _expected_bom_prefix(*, project_root: Path, stack: str) -> Path:
     if stack == "agent_loop":
         return (project_root / "config" / "bom" / "agent_loop").resolve()
+    if stack == "vop_maas":
+        return (project_root / "config" / "bom" / "mass").resolve()
     return (project_root / "config" / "bom" / "mass").resolve()
 
 

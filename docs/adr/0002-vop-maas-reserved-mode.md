@@ -3,6 +3,7 @@
 - status: accepted
 - date: 2026-03-05
 - deciders: msgalaxy-core
+- superseded_by: `0007-vop-maas-verified-operator-policy-experimental-mode`
 
 ## Context
 
@@ -36,4 +37,3 @@ Introduce `optimization.mode = "vop_maas"` as a reserved mode:
 ### Neutral / Constraints
 - `vop_maas` is not evidence that new neural guidance is implemented.
 - Publication claims must still treat M4 as not started.
-
