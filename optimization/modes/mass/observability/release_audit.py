@@ -27,6 +27,7 @@ from core.path_policy import serialize_repo_path, serialize_run_path
 from optimization.modes.mass.observability.materialize import (
     materialize_observability_tables,
 )
+from visualization.review_summary_bridge import load_iteration_review_summary_for_run
 
 _RELEASE_AUDIT_FEASIBLE_STATUSES = {"feasible", "feasible_but_stalled"}
 
@@ -405,6 +406,22 @@ def rebuild_run_release_audit_artifacts(
 
     observability_tables = materialize_observability_tables(run_dir)
     summary["observability_tables"] = dict(observability_tables or {})
+    iteration_review_summary = load_iteration_review_summary_for_run(run_dir, summary=summary)
+    if str(iteration_review_summary.get("status", "") or "") == "available":
+        summary["iteration_review_index_path"] = str(iteration_review_summary.get("root_index_path", "") or "")
+        summary["iteration_review_teacher_demo_index_path"] = str(
+            dict(dict(iteration_review_summary.get("profiles", {}) or {}).get("teacher_demo", {}) or {}).get(
+                "index_path", ""
+            )
+            or ""
+        )
+        summary["iteration_review_research_fast_index_path"] = str(
+            dict(dict(iteration_review_summary.get("profiles", {}) or {}).get("research_fast", {}) or {}).get(
+                "index_path", ""
+            )
+            or ""
+        )
+        summary["iteration_review_summary"] = dict(iteration_review_summary or {})
     _write_json(summary_path, summary)
 
     manifest_path = run_path / "events" / "run_manifest.json"

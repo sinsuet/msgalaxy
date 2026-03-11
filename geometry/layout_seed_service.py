@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional
 import numpy as np
 
 from core.protocol import ComponentGeometry, DesignState, Envelope, Vector3D
+from geometry.catalog_geometry import extract_catalog_component_specs_from_layout_config
 from geometry.layout_engine import LayoutEngine
 from geometry.schema import EnvelopeGeometry, PackingResult
 
@@ -87,6 +88,7 @@ def packing_result_to_design_state(
     iteration: int = 0,
     state_id: str = "state_iter_00_init",
     parent_id: Optional[str] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
 ) -> DesignState:
     components = [
         _component_from_part(
@@ -100,6 +102,7 @@ def packing_result_to_design_state(
         iteration=int(iteration),
         components=components,
         envelope=_envelope_from_geometry(envelope_geom),
+        metadata=copy.deepcopy(dict(metadata or {})),
         state_id=str(state_id),
         parent_id=parent_id,
     )
@@ -169,6 +172,21 @@ def _state_position_fingerprint(state: DesignState) -> tuple:
     )
 
 
+def _merge_metadata(
+    base_metadata: Optional[Mapping[str, Any]],
+    extra_metadata: Optional[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    merged = copy.deepcopy(dict(base_metadata or {}))
+    for key, value in dict(extra_metadata or {}).items():
+        if isinstance(value, Mapping) and isinstance(merged.get(key), Mapping):
+            nested = copy.deepcopy(dict(merged.get(key) or {}))
+            nested.update(copy.deepcopy(dict(value)))
+            merged[key] = nested
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
 class LayoutSeedService:
     """
     Generate deterministic layout-derived seeds for the MaaS coordinate search.
@@ -185,6 +203,24 @@ class LayoutSeedService:
 
         source_config = layout_engine.config if layout_engine is not None else layout_config
         self.layout_config: Dict[str, Any] = copy.deepcopy(dict(source_config or {}))
+
+    def _catalog_component_metadata(self) -> Dict[str, Any]:
+        specs = extract_catalog_component_specs_from_layout_config(self.layout_config)
+        if not specs:
+            return {}
+        return {
+            "catalog_components": {
+                comp_id: spec.model_dump() if hasattr(spec, "model_dump") else spec.dict()
+                for comp_id, spec in specs.items()
+            }
+        }
+
+    def _shell_metadata(self) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {}
+        for key in ("shell_spec", "shell_spec_file", "shell_spec_path"):
+            if self.layout_config.get(key) is not None:
+                metadata[key] = copy.deepcopy(self.layout_config.get(key))
+        return metadata
 
     def generate_seed_states(
         self,
@@ -205,6 +241,9 @@ class LayoutSeedService:
         attempts = max(requested, int(requested) * max(1, int(attempts_multiplier)))
         seeds: List[DesignState] = []
         fingerprints: set[tuple] = set()
+        seed_metadata = {}
+        seed_metadata.update(self._catalog_component_metadata())
+        seed_metadata.update(self._shell_metadata())
 
         for offset in range(attempts):
             random_seed = int(seed_start) + offset
@@ -221,6 +260,7 @@ class LayoutSeedService:
                         envelope_geom=engine.envelope,
                         clearance_mm=float(clearance_mm),
                         component_props_by_id=component_props_by_id,
+                        metadata=seed_metadata,
                         state_id=f"{state_id_prefix}_{random_seed}",
                     )
                 else:
@@ -231,6 +271,8 @@ class LayoutSeedService:
                         state_id=f"{state_id_prefix}_{random_seed}",
                         parent_id=str(reference_state.state_id),
                     )
+                    if seed_metadata:
+                        state.metadata = _merge_metadata(state.metadata, seed_metadata)
             except ValueError:
                 continue
 
@@ -247,4 +289,3 @@ class LayoutSeedService:
                 break
 
         return seeds
-

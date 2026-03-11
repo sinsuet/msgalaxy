@@ -1,0 +1,35 @@
+{
+  "shell_id": "box_shell_camera_window_v1",
+  "outer_profile": {
+    "kind": "box",
+    "size_mm": [400.0, 300.0, 260.0]
+  },
+  "thickness_mm": 8.0,
+  "panels": [
+    {
+      "panel_id": "panel_pz",
+      "face": "+Z",
+      "span_mm": [400.0, 300.0],
+      "surface_semantics": ["payload_side"]
+    },
+    {
+      "panel_id": "panel_nz",
+      "face": "-Z",
+      "span_mm": [400.0, 300.0],
+      "surface_semantics": ["bus_mount"]
+    }
+  ],
+  "aperture_sites": [
+    {
+      "aperture_id": "camera_window",
+      "panel_id": "panel_pz",
+      "shape": "rectangular_cutout",
+      "center_mm": [0.0, 0.0],
+      "size_mm": [90.0, 70.0],
+      "through_shell": true,
+      "allowed_component_families": ["payload"],
+      "impact_tags": ["thermal", "structural", "fov"]
+    }
+  ],
+  "material": "aluminum_6061"
+}

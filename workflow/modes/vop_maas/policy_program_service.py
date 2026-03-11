@@ -33,7 +33,11 @@ from .contracts import (
     VOPReflectiveReplanReport,
     validate_vop_policy_pack,
 )
-from .policy_compiler import build_mock_policy_pack, screen_policy_pack
+from .policy_compiler import (
+    build_mock_policy_pack,
+    build_policy_candidate_report,
+    screen_policy_pack,
+)
 from .policy_context import build_vop_graph
 
 if TYPE_CHECKING:
@@ -805,9 +809,13 @@ class VOPPolicyProgramService:
 
         policy_pack_payload: Dict[str, Any] = dict(raw_policy_payload or {})
         if raw_policy_payload:
+            v4_object_catalog = dict(
+                dict(vop_graph.metadata or {}).get("binding_catalog_hint", {}) or {}
+            )
             policy_validation = validate_vop_policy_pack(
                 raw_policy_payload,
                 component_ids=self._collect_component_ids(current_state),
+                object_catalog=v4_object_catalog,
                 strict=strict_validation,
             )
             if policy_validation.get("is_valid", False):
@@ -824,16 +832,12 @@ class VOPPolicyProgramService:
                 policy_pack_payload = dict(policy_pack.model_dump())
                 policy_applied = bool(runtime_policy_priors)
                 if not screening_report:
-                    screening_report = {
-                        "dominant_family": str(vop_graph.dominant_violation_family or ""),
-                        "requested_top_k": int(screening_top_k),
-                        "candidate_count": int(len(list(policy_pack.operator_candidates or []))),
-                        "selected_candidate_ids": [
-                            str(item.candidate_id or "")
-                            for item in list(policy_pack.operator_candidates or [])
-                        ],
-                        "candidate_scores": [],
-                    }
+                    screening_report = build_policy_candidate_report(
+                        policy_pack,
+                        graph=vop_graph,
+                        requested_top_k=screening_top_k,
+                        selected_candidates=list(policy_pack.operator_candidates or []),
+                    )
             else:
                 fallback_reason = (
                     " | ".join(list(policy_validation.get("errors", []) or []))
@@ -1107,7 +1111,9 @@ class VOPPolicyProgramService:
         for key in (
             "final_audit_status",
             "operator_family_gate_passed",
+            "operator_family_gate_strict_blocked",
             "operator_realization_gate_passed",
+            "operator_realization_gate_strict_blocked",
             "thermal_evaluator_mode",
             "online_comsol_attempt_budget",
             "physics_audit",
@@ -1228,6 +1234,16 @@ class VOPPolicyProgramService:
                 or policy_signature.get("selected_operator_actions", [])
                 or []
             ),
+            selected_semantic_program_id=str(
+                effect_summary.get("selected_semantic_program_id", "")
+                or policy_signature.get("selected_semantic_program_id", "")
+                or ""
+            ),
+            selected_semantic_actions=list(
+                effect_summary.get("selected_semantic_actions", [])
+                or policy_signature.get("selected_semantic_actions", [])
+                or []
+            ),
             diagnosis_status=str(solver_diagnosis.get("status", "") or ""),
             diagnosis_reason=str(solver_diagnosis.get("reason", "") or ""),
             feasible_rate=trace_features.get("feasible_rate"),
@@ -1310,7 +1326,28 @@ class VOPPolicyProgramService:
             "selected_operator_program_id": str(
                 decision_summary.get("selected_operator_program_id", "") or ""
             ),
+            "selected_candidate_dsl_version": str(
+                decision_summary.get("selected_candidate_dsl_version", "") or ""
+            ),
+            "selected_candidate_scoring_basis": str(
+                decision_summary.get("selected_candidate_scoring_basis", "") or ""
+            ),
+            "selected_candidate_realization_status": str(
+                decision_summary.get("selected_candidate_realization_status", "") or ""
+            ),
+            "selected_candidate_has_stub_realization": self._parse_boolish(
+                decision_summary.get("selected_candidate_has_stub_realization", False)
+            ),
             "operator_actions": list(decision_summary.get("operator_actions", []) or []),
+            "selected_candidate_stubbed_actions": list(
+                decision_summary.get("selected_candidate_stubbed_actions", []) or []
+            ),
+            "selected_semantic_program_id": str(
+                decision_summary.get("selected_semantic_program_id", "") or ""
+            ),
+            "semantic_operator_actions": list(
+                decision_summary.get("semantic_operator_actions", []) or []
+            ),
             "search_space_override": str(
                 decision_summary.get("search_space_override", "") or ""
             ),
@@ -1421,7 +1458,7 @@ class VOPPolicyProgramService:
                     ),
                     "final_policy_id": str(record.get("final_policy_id", "") or ""),
                     "trigger_reason": str(record.get("trigger_reason", "") or ""),
-                    "feedback_aware_fidelity_plan": cls._to_jsonable(
+                    "feedback_aware_fidelity_plan": cls._parse_jsonish(
                         record.get("feedback_aware_fidelity_plan", {})
                     ),
                     "feedback_aware_fidelity_reason": str(
@@ -1430,33 +1467,58 @@ class VOPPolicyProgramService:
                     "selected_operator_program_id": str(
                         record.get("selected_operator_program_id", "") or ""
                     ),
+                    "selected_candidate_dsl_version": str(
+                        record.get("selected_candidate_dsl_version", "") or ""
+                    ),
+                    "selected_candidate_scoring_basis": str(
+                        record.get("selected_candidate_scoring_basis", "") or ""
+                    ),
+                    "selected_candidate_realization_status": str(
+                        record.get("selected_candidate_realization_status", "") or ""
+                    ),
+                    "selected_candidate_has_stub_realization": cls._parse_boolish(
+                        record.get("selected_candidate_has_stub_realization", False)
+                    ),
+                    "selected_semantic_program_id": str(
+                        record.get("selected_semantic_program_id", "") or ""
+                    ),
+                    "selected_candidate_stubbed_actions": cls._parse_jsonish(
+                        record.get("selected_candidate_stubbed_actions", [])
+                    ),
+                    "semantic_operator_actions": cls._parse_jsonish(
+                        record.get("semantic_operator_actions", [])
+                    ),
                     "search_space_override": str(
                         record.get("search_space_override", "") or ""
                     ),
                     "decision_rationale": str(
                         record.get("decision_rationale", "") or ""
                     ),
-                    "change_summary": cls._to_jsonable(
+                    "change_summary": cls._parse_jsonish(
                         record.get("change_summary", {})
                     ),
-                    "runtime_overrides": cls._to_jsonable(
+                    "runtime_overrides": cls._parse_jsonish(
                         record.get("runtime_overrides", {})
                     ),
-                    "fidelity_plan": cls._to_jsonable(
+                    "fidelity_plan": cls._parse_jsonish(
                         record.get("fidelity_plan", {})
                     ),
-                    "expected_effects": cls._to_jsonable(
+                    "expected_effects": cls._parse_jsonish(
                         record.get("expected_effects", {})
                     ),
-                    "observed_effects": cls._to_jsonable(
+                    "observed_effects": cls._parse_jsonish(
                         record.get("observed_effects", {})
                     ),
-                    "effectiveness_summary": cls._to_jsonable(
+                    "effectiveness_summary": cls._parse_jsonish(
                         record.get("effectiveness_summary", {})
                     ),
                     "confidence": record.get("confidence", None),
-                    "policy_applied": bool(record.get("policy_applied", False)),
-                    "mass_rerun_executed": bool(record.get("mass_rerun_executed", False)),
+                    "policy_applied": cls._parse_boolish(
+                        record.get("policy_applied", False)
+                    ),
+                    "mass_rerun_executed": cls._parse_boolish(
+                        record.get("mass_rerun_executed", False)
+                    ),
                     "skipped_reason": str(record.get("skipped_reason", "") or ""),
                 }
             )
@@ -1582,6 +1644,15 @@ class VOPPolicyProgramService:
             for item in list(decision.get("operator_actions", []) or [])
             if str(item).strip()
         ]
+        semantic_actions = [
+            str(item).strip()
+            for item in list(
+                decision.get("semantic_operator_actions", [])
+                or decision.get("selected_candidate_semantic_actions", [])
+                or []
+            )
+            if str(item).strip()
+        ]
         block = "\n".join(
             [
                 "<!-- VOP_ROUND_AUDIT:START -->",
@@ -1602,6 +1673,25 @@ class VOPPolicyProgramService:
                     f"- Selected operator program: "
                     f"`{str(decision.get('selected_operator_program_id', '') or 'n/a')}`"
                 ),
+                (
+                    f"- Selected semantic program: "
+                    f"`{str(decision.get('selected_semantic_program_id', '') or 'n/a')}`"
+                ),
+                (
+                    f"- Candidate DSL / scoring basis: "
+                    f"`{str(decision.get('selected_candidate_dsl_version', '') or 'n/a')}`"
+                    f" / `{str(decision.get('selected_candidate_scoring_basis', '') or 'n/a')}`"
+                ),
+                (
+                    f"- Realization status / stubbed: "
+                    f"`{str(decision.get('selected_candidate_realization_status', '') or 'n/a')}`"
+                    f" / `{self._parse_boolish(decision.get('selected_candidate_has_stub_realization', False))}`"
+                ),
+                (
+                    "- Stubbed semantic actions: "
+                    f"`{', '.join(list(decision.get('selected_candidate_stubbed_actions', []) or [])) or 'n/a'}`"
+                ),
+                f"- Semantic actions: `{', '.join(semantic_actions) or 'n/a'}`",
                 f"- Operator actions: `{', '.join(operator_actions) or 'n/a'}`",
                 (
                     "- Reflective replan: "
@@ -1694,6 +1784,21 @@ class VOPPolicyProgramService:
         except Exception:
             return text
 
+    @staticmethod
+    def _parse_boolish(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        if isinstance(value, (int, float)):
+            return bool(value)
+        text = str(value or "").strip().lower()
+        if text in {"", "0", "false", "no", "n", "off", "none", "null", "nan"}:
+            return False
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+        return bool(text)
+
     @classmethod
     def _compact_text(cls, value: Any) -> str:
         if value is None:
@@ -1721,8 +1826,29 @@ class VOPPolicyProgramService:
             "search_space_override": str(
                 decision_summary.get("search_space_override", "") or ""
             ),
+            "selected_candidate_dsl_version": str(
+                decision_summary.get("selected_candidate_dsl_version", "") or ""
+            ),
+            "selected_candidate_scoring_basis": str(
+                decision_summary.get("selected_candidate_scoring_basis", "") or ""
+            ),
+            "selected_candidate_realization_status": str(
+                decision_summary.get("selected_candidate_realization_status", "") or ""
+            ),
+            "selected_candidate_has_stub_realization": cls._parse_boolish(
+                decision_summary.get("selected_candidate_has_stub_realization", False)
+            ),
+            "selected_semantic_program_id": str(
+                decision_summary.get("selected_semantic_program_id", "") or ""
+            ),
             "operator_actions": list(
                 decision_summary.get("operator_actions", []) or []
+            ),
+            "selected_candidate_stubbed_actions": list(
+                decision_summary.get("selected_candidate_stubbed_actions", []) or []
+            ),
+            "semantic_operator_actions": list(
+                decision_summary.get("semantic_operator_actions", []) or []
             ),
             "intent_changes": cls._to_jsonable(
                 decision_summary.get("intent_changes", {})
@@ -1820,16 +1946,63 @@ class VOPPolicyProgramService:
         if not list(merged.get("vop_round_audit_digest", []) or []):
             merged["vop_round_audit_digest"] = self._build_round_audit_digest(ordered)
 
+        def _parse_action_list(value: Any) -> list[str]:
+            parsed = self._parse_jsonish(value)
+            if isinstance(parsed, list):
+                return [
+                    str(item).strip()
+                    for item in list(parsed or [])
+                    if str(item).strip()
+                ]
+            if isinstance(parsed, str):
+                token = str(parsed).strip()
+                return [token] if token else []
+            return []
+
         decision = dict(merged.get("vop_decision_summary", {}) or {})
+        change_summary = self._parse_jsonish(latest.get("change_summary", {}))
+        change_summary = (
+            dict(change_summary or {}) if isinstance(change_summary, dict) else {}
+        )
+        latest_semantic_actions = _parse_action_list(
+            latest.get("semantic_operator_actions", [])
+        )
+        latest_stubbed_actions = _parse_action_list(
+            latest.get("selected_candidate_stubbed_actions", [])
+        )
+        latest_has_stub_realization = self._parse_boolish(
+            latest.get("selected_candidate_has_stub_realization", False)
+        )
         if not decision:
-            change_summary = self._parse_jsonish(latest.get("change_summary", {}))
-            change_summary = dict(change_summary or {}) if isinstance(change_summary, dict) else {}
             decision = {
                 "policy_id": str(latest.get("policy_id", "") or ""),
                 "selected_operator_program_id": str(
                     latest.get("selected_operator_program_id", "") or ""
                 ),
                 "operator_actions": list(change_summary.get("operator_actions", []) or []),
+                "selected_candidate_dsl_version": str(
+                    latest.get("selected_candidate_dsl_version", "")
+                    or change_summary.get("selected_candidate_dsl_version", "")
+                    or ""
+                ),
+                "selected_candidate_scoring_basis": str(
+                    latest.get("selected_candidate_scoring_basis", "")
+                    or change_summary.get("selected_candidate_scoring_basis", "")
+                    or ""
+                ),
+                "selected_candidate_realization_status": str(
+                    latest.get("selected_candidate_realization_status", "")
+                    or change_summary.get("selected_candidate_realization_status", "")
+                    or ""
+                ),
+                "selected_candidate_has_stub_realization": latest_has_stub_realization,
+                "selected_semantic_program_id": str(
+                    latest.get("selected_semantic_program_id", "")
+                    or change_summary.get("selected_semantic_program_id", "")
+                    or ""
+                ),
+                "selected_candidate_stubbed_actions": latest_stubbed_actions,
+                "semantic_operator_actions": latest_semantic_actions,
                 "search_space_override": str(
                     latest.get("search_space_override", "")
                     or change_summary.get("search_space_override", "")
@@ -1852,7 +2025,50 @@ class VOPPolicyProgramService:
                 "decision_rationale": str(latest.get("decision_rationale", "") or ""),
                 "confidence": latest.get("confidence", None),
             }
-            merged["vop_decision_summary"] = self._to_jsonable(decision)
+        if not str(decision.get("selected_candidate_dsl_version", "") or "").strip():
+            decision["selected_candidate_dsl_version"] = str(
+                latest.get("selected_candidate_dsl_version", "")
+                or change_summary.get("selected_candidate_dsl_version", "")
+                or ""
+            )
+        if not str(decision.get("selected_candidate_scoring_basis", "") or "").strip():
+            decision["selected_candidate_scoring_basis"] = str(
+                latest.get("selected_candidate_scoring_basis", "")
+                or change_summary.get("selected_candidate_scoring_basis", "")
+                or ""
+            )
+        if not str(decision.get("selected_candidate_realization_status", "") or "").strip():
+            decision["selected_candidate_realization_status"] = str(
+                latest.get("selected_candidate_realization_status", "")
+                or change_summary.get("selected_candidate_realization_status", "")
+                or ""
+            )
+        decision["selected_candidate_has_stub_realization"] = self._parse_boolish(
+            decision.get(
+                "selected_candidate_has_stub_realization",
+                latest_has_stub_realization,
+            )
+        )
+        if not str(decision.get("selected_semantic_program_id", "") or "").strip():
+            decision["selected_semantic_program_id"] = str(
+                latest.get("selected_semantic_program_id", "")
+                or change_summary.get("selected_semantic_program_id", "")
+                or ""
+            )
+        decision["operator_actions"] = _parse_action_list(
+            decision.get("operator_actions", change_summary.get("operator_actions", []))
+        )
+        decision["selected_candidate_stubbed_actions"] = _parse_action_list(
+            decision.get("selected_candidate_stubbed_actions", latest_stubbed_actions)
+        )
+        if not decision["selected_candidate_stubbed_actions"]:
+            decision["selected_candidate_stubbed_actions"] = latest_stubbed_actions
+        decision["semantic_operator_actions"] = _parse_action_list(
+            decision.get("semantic_operator_actions", latest_semantic_actions)
+        )
+        if not decision["semantic_operator_actions"]:
+            decision["semantic_operator_actions"] = latest_semantic_actions
+        merged["vop_decision_summary"] = self._to_jsonable(decision)
 
         delegated = dict(merged.get("vop_delegated_effect_summary", {}) or {})
         if not delegated:
@@ -1871,6 +2087,15 @@ class VOPPolicyProgramService:
                     "comsol_calls_to_first_feasible", None
                 ),
                 "audit_status": str(effectiveness.get("audit_status", "") or ""),
+                "selected_semantic_program_id": str(
+                    effectiveness.get("selected_semantic_program_id", "")
+                    or latest.get("selected_semantic_program_id", "")
+                    or ""
+                ),
+                "selected_semantic_actions": list(
+                    effectiveness.get("selected_semantic_actions", [])
+                    or latest_semantic_actions
+                ),
                 "effectiveness_verdict": str(
                     effectiveness.get("effectiveness_verdict", "") or ""
                 ),
@@ -1878,7 +2103,12 @@ class VOPPolicyProgramService:
                     latest.get("observed_effects", {})
                 ),
             }
-            merged["vop_delegated_effect_summary"] = self._to_jsonable(delegated)
+        delegated["selected_semantic_actions"] = _parse_action_list(
+            delegated.get("selected_semantic_actions", latest_semantic_actions)
+        )
+        if not delegated["selected_semantic_actions"]:
+            delegated["selected_semantic_actions"] = latest_semantic_actions
+        merged["vop_delegated_effect_summary"] = self._to_jsonable(delegated)
         return merged
 
     def _refresh_vop_round_observability(
@@ -1941,7 +2171,28 @@ class VOPPolicyProgramService:
                     "selected_operator_program_id": str(
                         record.get("selected_operator_program_id", "") or ""
                     ),
+                    "selected_candidate_dsl_version": str(
+                        record.get("selected_candidate_dsl_version", "") or ""
+                    ),
+                    "selected_candidate_scoring_basis": str(
+                        record.get("selected_candidate_scoring_basis", "") or ""
+                    ),
+                    "selected_candidate_realization_status": str(
+                        record.get("selected_candidate_realization_status", "") or ""
+                    ),
+                    "selected_candidate_has_stub_realization": self._parse_boolish(
+                        record.get("selected_candidate_has_stub_realization", False)
+                    ),
+                    "selected_semantic_program_id": str(
+                        record.get("selected_semantic_program_id", "") or ""
+                    ),
                     "operator_actions": list(record.get("operator_actions", []) or []),
+                    "selected_candidate_stubbed_actions": list(
+                        record.get("selected_candidate_stubbed_actions", []) or []
+                    ),
+                    "semantic_operator_actions": list(
+                        record.get("semantic_operator_actions", []) or []
+                    ),
                     "search_space_override": str(
                         record.get("search_space_override", "") or ""
                     ),
@@ -1967,8 +2218,12 @@ class VOPPolicyProgramService:
                         record.get("effectiveness_summary", {})
                     ),
                     "confidence": record.get("confidence", None),
-                    "policy_applied": bool(record.get("policy_applied", False)),
-                    "mass_rerun_executed": bool(record.get("mass_rerun_executed", False)),
+                    "policy_applied": self._parse_boolish(
+                        record.get("policy_applied", False)
+                    ),
+                    "mass_rerun_executed": self._parse_boolish(
+                        record.get("mass_rerun_executed", False)
+                    ),
                     "skipped_reason": str(record.get("skipped_reason", "") or ""),
                     "run_mode": "vop_maas",
                     "producer_mode": "vop_maas",
@@ -2292,6 +2547,7 @@ class VOPPolicyProgramService:
         priors = dict(runtime_policy_priors or {})
         selected_candidate = dict(priors.get("selected_operator_candidate", {}) or {})
         selected_program = dict(selected_candidate.get("program", {}) or {})
+        selected_program_v4 = dict(selected_candidate.get("program_v4", {}) or {})
         selected_actions = []
         selected_action_payloads = []
         for action_payload in list(selected_program.get("actions", []) or []):
@@ -2305,6 +2561,31 @@ class VOPPolicyProgramService:
                         "action": action_name,
                         "params": VOPPolicyProgramService._to_jsonable(
                             dict(action_payload.get("params", {}) or {})
+                        ),
+                    }
+                )
+        semantic_actions = []
+        semantic_action_payloads = []
+        for action_payload in list(selected_program_v4.get("actions", []) or []):
+            if not isinstance(action_payload, dict):
+                continue
+            action_name = str(action_payload.get("action", "") or "").strip().lower()
+            if action_name:
+                semantic_actions.append(action_name)
+                semantic_action_payloads.append(
+                    {
+                        "action": action_name,
+                        "targets": VOPPolicyProgramService._to_jsonable(
+                            list(action_payload.get("targets", []) or [])
+                        ),
+                        "params": VOPPolicyProgramService._to_jsonable(
+                            dict(action_payload.get("params", {}) or {})
+                        ),
+                        "hard_rules": VOPPolicyProgramService._to_jsonable(
+                            list(action_payload.get("hard_rules", []) or [])
+                        ),
+                        "soft_preferences": VOPPolicyProgramService._to_jsonable(
+                            list(action_payload.get("soft_preferences", []) or [])
                         ),
                     }
                 )
@@ -2324,6 +2605,14 @@ class VOPPolicyProgramService:
             ).strip(),
             "selected_operator_actions": selected_actions,
             "selected_operator_action_payloads": selected_action_payloads,
+            "selected_semantic_program_id": str(
+                selected_program_v4.get("program_id", "")
+                or selected_program.get("program_id", "")
+                or selected_candidate.get("candidate_id", "")
+                or ""
+            ).strip(),
+            "selected_semantic_actions": semantic_actions,
+            "selected_semantic_action_payloads": semantic_action_payloads,
         }
 
     @classmethod
@@ -2335,6 +2624,20 @@ class VOPPolicyProgramService:
     ) -> Dict[str, Any]:
         priors = dict(policy_round.runtime_policy_priors or {})
         pack = dict(policy_round.policy_pack_payload or {})
+        screening = dict(policy_round.screening or {})
+        selected_candidate = dict(priors.get("selected_operator_candidate", {}) or {})
+        selected_candidate_id = str(
+            selected_candidate.get("candidate_id", "")
+            or selected_candidate.get("program", {}).get("program_id", "")
+            or selected_candidate.get("program_v4", {}).get("program_id", "")
+            or ""
+        ).strip()
+        selected_candidate_report: Dict[str, Any] = {}
+        for item in list(screening.get("candidate_scores", []) or []):
+            candidate_id = str(dict(item or {}).get("candidate_id", "") or "").strip()
+            if candidate_id and candidate_id == selected_candidate_id:
+                selected_candidate_report = dict(item or {})
+                break
         signature = cls._policy_material_signature(priors)
         metadata = dict(pack.get("metadata", {}) or {})
         raw_change_set = dict(pack.get("change_set", {}) or metadata.get("change_set", {}) or {})
@@ -2354,6 +2657,18 @@ class VOPPolicyProgramService:
         expected_effects = dict(pack.get("expected_effects", {}) or {})
         confidence = float(pack.get("confidence", priors.get("confidence", 0.0)) or 0.0)
         previous_policy_id = str(dict(previous_policy_pack or {}).get("policy_id", "") or "")
+        selected_candidate_score: Optional[float] = None
+        try:
+            if selected_candidate_report.get("score", None) is not None:
+                selected_candidate_score = float(selected_candidate_report.get("score"))
+        except Exception:
+            selected_candidate_score = None
+        selected_candidate_realization = dict(selected_candidate.get("realization", {}) or {})
+        selected_candidate_stubbed_actions = list(
+            selected_candidate_realization.get("stubbed_actions", [])
+            or selected_candidate_report.get("stubbed_actions", [])
+            or []
+        )
         return {
             "policy_id": str(policy_round.policy_id or ""),
             "policy_source": str(
@@ -2362,8 +2677,56 @@ class VOPPolicyProgramService:
                 or policy_round.generation.get("source", "")
                 or ""
             ),
+            "selected_candidate_id": selected_candidate_id,
+            "selected_candidate_dsl_version": str(
+                selected_candidate.get("dsl_version", "")
+                or selected_candidate_report.get("dsl_version", "")
+                or ""
+            ),
+            "selected_candidate_scoring_basis": str(
+                selected_candidate_report.get("scoring_basis", "") or ""
+            ),
+            "selected_candidate_score": selected_candidate_score,
+            "selected_candidate_realization_status": str(
+                selected_candidate_realization.get("realization_status", "")
+                or selected_candidate_report.get("realization_status", "")
+                or ""
+            ),
+            "selected_candidate_has_stub_realization": bool(
+                selected_candidate_report.get("has_stub_realization", False)
+                or bool(selected_candidate_stubbed_actions)
+            ),
             "selected_operator_program_id": str(signature.get("selected_operator_program_id", "") or ""),
             "operator_actions": list(signature.get("selected_operator_actions", []) or []),
+            "selected_semantic_program_id": str(signature.get("selected_semantic_program_id", "") or ""),
+            "selected_candidate_stubbed_actions": [
+                str(item).strip().lower()
+                for item in selected_candidate_stubbed_actions
+                if str(item).strip()
+            ],
+            "semantic_operator_actions": list(signature.get("selected_semantic_actions", []) or []),
+            "selected_candidate_semantic_actions": list(
+                selected_candidate_report.get("semantic_actions", []) or []
+            ),
+            "screening_candidate_count": int(
+                screening.get("candidate_count", len(list(screening.get("candidate_scores", []) or [])))
+                or 0
+            ),
+            "screening_selected_candidate_ids": list(
+                screening.get("selected_candidate_ids", []) or []
+            ),
+            "screening_selected_operator_program_ids": list(
+                screening.get("selected_operator_program_ids", []) or []
+            ),
+            "screening_selected_semantic_program_ids": list(
+                screening.get("selected_semantic_program_ids", []) or []
+            ),
+            "screening_selected_operator_actions": list(
+                screening.get("selected_operator_actions", []) or []
+            ),
+            "screening_selected_semantic_actions": list(
+                screening.get("selected_semantic_actions", []) or []
+            ),
             "search_space_override": str(priors.get("search_space_prior", "") or ""),
             "intent_changes": cls._to_jsonable(intent_changes),
             "runtime_overrides": cls._to_jsonable(runtime_overrides),
@@ -2421,6 +2784,10 @@ class VOPPolicyProgramService:
             "diagnosis_status": str(policy_feedback.diagnosis_status or ""),
             "diagnosis_reason": str(policy_feedback.diagnosis_reason or ""),
             "search_space_effect": cls._derive_search_space_effect(policy_feedback),
+            "selected_semantic_program_id": str(
+                policy_feedback.selected_semantic_program_id or ""
+            ),
+            "selected_semantic_actions": list(policy_feedback.selected_semantic_actions or []),
             "first_feasible_eval": policy_feedback.first_feasible_eval,
             "comsol_calls_to_first_feasible": policy_feedback.comsol_calls_to_first_feasible,
             "audit_status": str(final_audit_status or ""),
@@ -2430,6 +2797,10 @@ class VOPPolicyProgramService:
                 "runtime_overrides": cls._to_jsonable(policy_feedback.runtime_overrides),
                 "fidelity_overrides": cls._to_jsonable(policy_feedback.fidelity_overrides),
                 "effective_fidelity": cls._to_jsonable(policy_feedback.effective_fidelity),
+                "selected_semantic_program_id": str(
+                    policy_feedback.selected_semantic_program_id or ""
+                ),
+                "selected_semantic_actions": list(policy_feedback.selected_semantic_actions or []),
                 "trace_alerts": list(policy_feedback.trace_alerts or []),
             },
         }

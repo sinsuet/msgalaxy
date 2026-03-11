@@ -7,6 +7,8 @@ AABB六面切分算法 - Keep-out区域处理
 from typing import List, Dict, Any
 import numpy as np
 from geometry.schema import AABB, EnvelopeGeometry, Part
+from geometry.geometry_proxy import shell_interior_proxy_entries_from_shell_spec
+from geometry.shell_spec import aperture_proxy_plans, resolve_shell_spec_from_mapping
 
 
 def boxes_overlap(A: AABB, B: AABB) -> bool:
@@ -133,7 +135,10 @@ def build_envelope(cfg: Dict[str, Any], parts: List[Part]) -> EnvelopeGeometry:
         EnvelopeGeometry对象
     """
     env_cfg = cfg.get('envelope', {})
-    thickness = float(env_cfg.get('shell_thickness_mm', 1.0))
+    shell_spec = resolve_shell_spec_from_mapping(cfg)
+    shell_outer_size = shell_spec.outer_size_mm() if shell_spec is not None else None
+    thickness_default = float(shell_spec.thickness_mm) if shell_spec is not None else 1.0
+    thickness = float(env_cfg.get('shell_thickness_mm', thickness_default))
     fill_ratio = float(env_cfg.get('fill_ratio', 0.6))
     ratio = np.array(env_cfg.get('size_ratio', [1.0, 1.0, 1.0]), dtype=float)
     auto = bool(env_cfg.get('auto_envelope', False))
@@ -147,7 +152,12 @@ def build_envelope(cfg: Dict[str, Any], parts: List[Part]) -> EnvelopeGeometry:
         size = ratio * scale
         env_cfg['size_mm'] = size.tolist()
     else:
-        size = np.array(env_cfg['size_mm'], dtype=float)
+        if 'size_mm' in env_cfg:
+            size = np.array(env_cfg['size_mm'], dtype=float)
+        elif shell_outer_size is not None:
+            size = np.array(shell_outer_size, dtype=float)
+        else:
+            raise KeyError("envelope.size_mm")
 
     # 计算内部尺寸
     inner_size = size - 2 * thickness
@@ -197,4 +207,20 @@ def create_keepout_aabbs(cfg: Dict[str, Any]) -> List[AABB]:
                 min_pt = np.array(ko['min_mm'], dtype=float)
                 max_pt = np.array(ko['max_mm'], dtype=float)
                 keepouts.append(AABB(min=min_pt, max=max_pt))
+
+    shell_spec = resolve_shell_spec_from_mapping(cfg)
+    if shell_spec is not None:
+        for entry in shell_interior_proxy_entries_from_shell_spec(shell_spec):
+            keepouts.append(
+                AABB(
+                    min=np.array(entry["min_mm"], dtype=float),
+                    max=np.array(entry["max_mm"], dtype=float),
+                )
+            )
+        for plan in aperture_proxy_plans(shell_spec):
+            center = np.array(plan["center_mm"], dtype=float)
+            size = np.array(plan["size_mm"], dtype=float)
+            min_pt = center - size / 2.0
+            max_pt = center + size / 2.0
+            keepouts.append(AABB(min=min_pt, max=max_pt))
     return keepouts

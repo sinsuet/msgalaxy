@@ -1,0 +1,90 @@
+{
+  "shell_id": "optical_camera_bus_teacher_demo_v1",
+  "outer_profile": {
+    "kind": "box",
+    "size_mm": [420.0, 320.0, 300.0]
+  },
+  "thickness_mm": 10.0,
+  "panels": [
+    {
+      "panel_id": "panel_pz",
+      "face": "+Z",
+      "span_mm": [420.0, 320.0],
+      "active_variant": "optical_baffle_hood",
+      "surface_semantics": ["payload_face", "payload_side"],
+      "metadata": {
+        "variant_definitions": {
+          "optical_baffle_hood": {
+            "kind": "frustum_pad",
+            "center_mm": [0.0, 0.0],
+            "profile": {
+              "kind": "frustum",
+              "bottom_radius_mm": 74.0,
+              "top_radius_mm": 42.0,
+              "height_mm": 68.0
+            }
+          }
+        }
+      }
+    },
+    {
+      "panel_id": "panel_py",
+      "face": "+Y",
+      "span_mm": [420.0, 300.0],
+      "active_variant": "solar_wing_port",
+      "surface_semantics": ["solar_array_mount"],
+      "metadata": {
+        "variant_definitions": {
+          "solar_wing_port": {
+            "kind": "box_pad",
+            "center_mm": [0.0, 0.0],
+            "size_mm": [300.0, 140.0],
+            "depth_mm": 8.0
+          }
+        }
+      }
+    },
+    {
+      "panel_id": "panel_ny",
+      "face": "-Y",
+      "span_mm": [420.0, 300.0],
+      "active_variant": "solar_wing_starboard",
+      "surface_semantics": ["solar_array_mount"],
+      "metadata": {
+        "variant_definitions": {
+          "solar_wing_starboard": {
+            "kind": "box_pad",
+            "center_mm": [0.0, 0.0],
+            "size_mm": [300.0, 140.0],
+            "depth_mm": 8.0
+          }
+        }
+      }
+    },
+    {
+      "panel_id": "panel_nz",
+      "face": "-Z",
+      "span_mm": [420.0, 320.0],
+      "surface_semantics": ["radiator_face", "bus_mount"]
+    }
+  ],
+  "aperture_sites": [
+    {
+      "aperture_id": "camera_window",
+      "panel_id": "panel_pz",
+      "shape": "circular_cutout",
+      "center_mm": [0.0, 0.0],
+      "size_mm": [88.0, 88.0],
+      "proxy_depth_mm": 110.0,
+      "through_shell": true,
+      "allowed_component_families": ["payload"],
+      "impact_tags": ["thermal", "structural", "fov"]
+    }
+  ],
+  "material": "aluminum_6061",
+  "mount_base_face": "-Z",
+  "metadata": {
+    "shell_variant": "camera_bus",
+    "demo_case": "single_archetype_teacher_demo"
+  }
+}

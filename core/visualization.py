@@ -30,11 +30,11 @@ from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import numpy as np
 import pandas as pd
-from typing import List, Dict, Any, Optional, Tuple
+import logging
+from typing import List, Dict, Any, Optional, Tuple, Mapping
 from pathlib import Path
 from core.artifact_index import load_artifact_index
 from core.exceptions import VisualizationError
-from core.logger import get_logger
 from core.mode_contract import is_mass_mode, normalize_observability_mode
 from core.path_policy import serialize_run_path
 from core.runtime_feature_fingerprint import (
@@ -44,8 +44,64 @@ from core.runtime_feature_fingerprint import (
 from core.modes.agent_loop.visualization_dispatch import render_agent_loop_artifacts
 from core.modes.mass.visualization_dispatch import render_mass_artifacts
 from core.modes.vop_maas.visualization_dispatch import render_vop_maas_artifacts
+from visualization.review_summary_bridge import (
+    format_iteration_review_visualization_block,
+    load_iteration_review_summary_for_run,
+)
 
-logger = get_logger("visualization")
+_OPERATOR_ACTION_FAMILY_MAP_V4_FALLBACK: Dict[str, str] = {
+    "place_on_panel": "geometry",
+    "align_payload_to_aperture": "aperture",
+    "reorient_to_allowed_face": "aperture",
+    "mount_to_bracket_site": "structural",
+    "move_heat_source_to_radiator_zone": "thermal",
+    "separate_hot_pair": "thermal",
+    "add_heatstrap": "thermal",
+    "add_thermal_pad": "thermal",
+    "add_mount_bracket": "structural",
+    "rebalance_cg_by_group_shift": "geometry",
+    "shorten_power_bus": "power",
+    "protect_fov_keepout": "mission",
+    "activate_aperture_site": "aperture",
+}
+
+try:
+    from optimization.modes.mass.operator_program_v4 import (
+        OPERATOR_ACTION_FAMILY_MAP_V4,
+    )
+except Exception:
+    OPERATOR_ACTION_FAMILY_MAP_V4 = dict(_OPERATOR_ACTION_FAMILY_MAP_V4_FALLBACK)
+
+# Avoid importing core.logger here; core.logger already reaches into review_package,
+# which imports this module during package initialization.
+logger = logging.getLogger("visualization")
+
+
+_LEGACY_OPERATOR_ACTION_FAMILY_MAP: Dict[str, str] = {
+    "group_move": "geometry",
+    "cg_recenter": "geometry",
+    "hot_spread": "thermal",
+    "swap": "geometry",
+    "add_heatstrap": "thermal",
+    "set_thermal_contact": "thermal",
+    "add_bracket": "structural",
+    "stiffener_insert": "structural",
+    "bus_proximity_opt": "power",
+    "fov_keepout_push": "mission",
+}
+_OPERATOR_ACTION_FAMILY_MAP: Dict[str, str] = {
+    **_LEGACY_OPERATOR_ACTION_FAMILY_MAP,
+    **dict(OPERATOR_ACTION_FAMILY_MAP_V4 or {}),
+}
+_OPERATOR_FAMILY_DISPLAY_ORDER: Tuple[str, ...] = (
+    "geometry",
+    "aperture",
+    "thermal",
+    "structural",
+    "power",
+    "mission",
+    "other",
+)
 
 
 def _component_min_corner(comp) -> List[float]:
@@ -262,40 +318,84 @@ def _parse_bool_series(df: pd.DataFrame, column: str) -> np.ndarray:
     )
 
 
-def _parse_operator_actions(raw_value: Any) -> List[str]:
+def _normalize_operator_action_name(raw_action: Any) -> str:
+    if raw_action is None:
+        return ""
+    if isinstance(raw_action, float) and not np.isfinite(raw_action):
+        return ""
+    if isinstance(raw_action, Mapping):
+        for key in ("action", "type", "operator", "name"):
+            candidate = _normalize_operator_action_name(raw_action.get(key))
+            if candidate:
+                return candidate
+        return ""
+    text = str(raw_action or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if lowered in {"nan", "none", "null"}:
+        return ""
+    if text.startswith("{") and text.endswith("}"):
+        parsed = None
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            try:
+                parsed = ast.literal_eval(text)
+            except Exception:
+                parsed = None
+        if isinstance(parsed, Mapping):
+            return _normalize_operator_action_name(parsed)
+    return text.strip("'\"[]() ").lower()
+
+
+def _coerce_operator_action_values(raw_value: Any) -> List[Any]:
     if raw_value is None:
         return []
     if isinstance(raw_value, float) and not np.isfinite(raw_value):
         return []
-
     if isinstance(raw_value, list):
-        values = raw_value
-    else:
-        text = str(raw_value or "").strip()
-        if not text:
-            return []
-        if text.lower() in {"nan", "none", "null", "[]"}:
-            return []
-        values = []
-        if text.startswith("[") and text.endswith("]"):
-            parsed = None
+        return list(raw_value)
+    if isinstance(raw_value, tuple):
+        return list(raw_value)
+    if isinstance(raw_value, set):
+        return list(raw_value)
+    if isinstance(raw_value, Mapping):
+        return [raw_value]
+
+    text = str(raw_value or "").strip()
+    if not text or text.lower() in {"nan", "none", "null", "[]", "{}"}:
+        return []
+
+    parsed = None
+    if (
+        (text.startswith("[") and text.endswith("]"))
+        or (text.startswith("{") and text.endswith("}"))
+    ):
+        try:
+            parsed = json.loads(text)
+        except Exception:
             try:
-                parsed = json.loads(text)
+                parsed = ast.literal_eval(text)
             except Exception:
-                try:
-                    parsed = ast.literal_eval(text)
-                except Exception:
-                    parsed = None
-            if isinstance(parsed, list):
-                values = list(parsed)
-        if not values:
-            values = [item for item in text.split(",") if str(item).strip()]
+                parsed = None
+    if isinstance(parsed, list):
+        return list(parsed)
+    if isinstance(parsed, tuple):
+        return list(parsed)
+    if isinstance(parsed, set):
+        return list(parsed)
+    if isinstance(parsed, Mapping):
+        return [parsed]
+    return [item for item in text.split(",") if str(item).strip()]
+
+
+def _parse_operator_actions(raw_value: Any) -> List[str]:
+    values = _coerce_operator_action_values(raw_value)
     actions: List[str] = []
     seen = set()
     for item in values:
-        action = str(item or "").strip().strip("'\"[]() ").lower()
-        if action in {"nan", "none", "null"}:
-            continue
+        action = _normalize_operator_action_name(item)
         if not action or action in seen:
             continue
         seen.add(action)
@@ -303,19 +403,38 @@ def _parse_operator_actions(raw_value: Any) -> List[str]:
     return actions
 
 
+def _merge_operator_actions(*raw_values: Any) -> List[str]:
+    actions: List[str] = []
+    seen = set()
+    for raw_value in raw_values:
+        for action in _parse_operator_actions(raw_value):
+            if action in seen:
+                continue
+            seen.add(action)
+            actions.append(action)
+    return actions
+
+
+def _resolve_record_operator_actions(
+    event: Mapping[str, Any],
+    snapshot: Optional[Mapping[str, Any]] = None,
+) -> List[str]:
+    snapshot_payload = dict(snapshot or {})
+    snapshot_metadata = dict(snapshot_payload.get("metadata", {}) or {})
+    event_payload = dict(event or {})
+    event_metadata = dict(event_payload.get("metadata", {}) or {})
+    return _merge_operator_actions(
+        snapshot_metadata.get("semantic_operator_actions", []),
+        event_metadata.get("semantic_operator_actions", []),
+        event_payload.get("operator_actions", snapshot_payload.get("operator_actions", [])),
+        snapshot_metadata.get("selected_candidate_stubbed_actions", []),
+        event_metadata.get("selected_candidate_stubbed_actions", []),
+    )
+
+
 def _operator_action_family(action: str) -> str:
-    name = str(action or "").strip().lower()
-    if name in {"group_move", "cg_recenter", "hot_spread", "swap"}:
-        return "geometry"
-    if name in {"add_heatstrap", "set_thermal_contact"}:
-        return "thermal"
-    if name in {"add_bracket", "stiffener_insert"}:
-        return "structural"
-    if name in {"bus_proximity_opt"}:
-        return "power"
-    if name in {"fov_keepout_push"}:
-        return "mission"
-    return "other"
+    name = _normalize_operator_action_name(action)
+    return str(_OPERATOR_ACTION_FAMILY_MAP.get(name, "other"))
 
 
 def _detect_optimization_mode(experiment_dir: str) -> str:
@@ -615,7 +734,7 @@ def _build_mass_visualization_summary(mass_csv_path: str) -> str:
                 family = _operator_action_family(action)
                 family_counts[family] += 1
         if family_counts:
-            ordering = ["geometry", "thermal", "structural", "power", "mission", "other"]
+            ordering = list(_OPERATOR_FAMILY_DISPLAY_ORDER)
             family_desc = ", ".join(
                 f"{name}={int(family_counts.get(name, 0))}"
                 for name in ordering
@@ -727,7 +846,7 @@ def _build_mass_tables_summary(tables_dir: str) -> str:
             for action in _parse_operator_actions(raw_actions):
                 family_counts[_operator_action_family(action)] += 1
         if family_counts:
-            ordering = ["geometry", "thermal", "structural", "power", "mission", "other"]
+            ordering = list(_OPERATOR_FAMILY_DISPLAY_ORDER)
             family_desc = ", ".join(
                 f"{name}={int(family_counts.get(name, 0))}"
                 for name in ordering
@@ -818,9 +937,11 @@ def _build_vop_controller_summary(
                 "selected_operator_program_id": str(
                     latest_round_dict.get("selected_operator_program_id", "") or ""
                 ),
-                "operator_actions": list(
-                    change_summary.get("operator_actions", [])
-                    or _parse_operator_actions(latest_round_dict.get("operator_actions", []))
+                "operator_actions": _merge_operator_actions(
+                    change_summary.get("operator_actions", []),
+                    latest_round_dict.get("semantic_operator_actions", []),
+                    latest_round_dict.get("operator_actions", []),
+                    latest_round_dict.get("selected_candidate_stubbed_actions", []),
                 ),
                 "search_space_override": str(
                     latest_round_dict.get("search_space_override", "")
@@ -1365,7 +1486,7 @@ def _plot_layout_timeline_frame(
     bracket_ids = set(str(item) for item in list(event.get("added_brackets", delta.get("added_brackets", [])) or []))
     contact_ids = set(str(item) for item in list(event.get("changed_contacts", delta.get("changed_contacts", [])) or []))
     coating_ids = set(str(item) for item in list(event.get("changed_coatings", delta.get("changed_coatings", [])) or []))
-    operator_actions = _parse_operator_actions(event.get("operator_actions", []))
+    operator_actions = _resolve_record_operator_actions(event, snapshot)
     operator_family_counts: Dict[str, int] = defaultdict(int)
     for action in operator_actions:
         operator_family_counts[_operator_action_family(action)] += 1
@@ -1534,7 +1655,7 @@ def _plot_layout_timeline_frame(
         fontsize=9,
     )
     if operator_family_counts:
-        family_order = ["geometry", "thermal", "structural", "power", "mission", "other"]
+        family_order = list(_OPERATOR_FAMILY_DISPLAY_ORDER)
         family_desc = ", ".join(
             f"{name}={int(operator_family_counts.get(name, 0))}"
             for name in family_order
@@ -1996,7 +2117,7 @@ def plot_mass_storyboard(tables_dir: str, output_path: str) -> None:
                 for action in _parse_operator_actions(raw_actions):
                     family_counts[_operator_action_family(action)] += 1
             if family_counts:
-                family_order = ["geometry", "thermal", "structural", "power", "mission", "other"]
+                family_order = list(_OPERATOR_FAMILY_DISPLAY_ORDER)
                 family_desc = ", ".join(
                     f"{name}:{int(family_counts.get(name, 0))}"
                     for name in family_order
@@ -3134,6 +3255,13 @@ def generate_visualizations(experiment_dir: str):
                 final_state=final_state,
                 thermal_data=thermal_data if thermal_data else None,
             )
+        iteration_review_summary = load_iteration_review_summary_for_run(
+            experiment_dir,
+            summary=_load_summary_safely(experiment_dir),
+        )
+        iteration_review_block = format_iteration_review_visualization_block(iteration_review_summary)
+        if iteration_review_block:
+            summary_text = summary_text + "\n" + iteration_review_block
         summary_text = f"Optimization mode: {optimization_mode}\n" + summary_text
         summary_path = os.path.join(viz_dir, "visualization_summary.txt")
         with open(summary_path, "w", encoding="utf-8") as f:

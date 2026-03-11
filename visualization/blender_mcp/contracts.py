@@ -106,6 +106,10 @@ class RenderArtifactLinks(BaseModel):
     output_image_paths: List[str] = Field(default_factory=list)
     output_blend_path: str = ""
     step_path: str = ""
+    iteration_review_root: str = ""
+    iteration_review_index_path: str = ""
+    teacher_demo_review_index_path: str = ""
+    research_fast_review_index_path: str = ""
 
 
 class RenderBundle(BaseModel):
@@ -135,6 +139,7 @@ class RenderBundle(BaseModel):
 
 class ReviewPayload(BaseModel):
     schema_version: str = "blender_review_payload/v1"
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     run: Dict[str, Any] = Field(default_factory=dict)
     summary: Dict[str, Any] = Field(default_factory=dict)
     release_audit: Dict[str, Any] = Field(default_factory=dict)
@@ -144,6 +149,7 @@ class ReviewPayload(BaseModel):
     operator_coverage: Dict[str, Any] = Field(default_factory=dict)
     layout_displacement: Dict[str, Any] = Field(default_factory=dict)
     timeline: Dict[str, Any] = Field(default_factory=dict)
+    iteration_review: Dict[str, Any] = Field(default_factory=dict)
     artifacts: Dict[str, Any] = Field(default_factory=dict)
     notes: List[str] = Field(default_factory=list)
 

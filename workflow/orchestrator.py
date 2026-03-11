@@ -60,6 +60,10 @@ from optimization.modes.agent_loop import (
     ThermalAgent,
 )
 from optimization.knowledge.mass import MassRAGSystem
+from domain.satellite.runtime import (
+    evaluate_satellite_likeness_for_design_state,
+    resolve_satellite_bom_context,
+)
 from workflow.modes.agent_loop import AgentLoopService
 from workflow.modes.agent_loop.runtime_support import AgentLoopRuntimeSupport
 from workflow.modes.mass.pipeline_service import MaaSPipelineService
@@ -809,6 +813,33 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
                                     "BOM组件ID(必须原样复用): "
                                     + ", ".join(component_ids)
                                 )
+                        satellite_context = resolve_satellite_bom_context(
+                            bom_file,
+                            default_gate_mode=str(
+                                dict(self.config.get("optimization", {}) or {}).get(
+                                    "satellite_likeness_gate_mode",
+                                    "off",
+                                )
+                            ),
+                        )
+                        if bool(satellite_context.get("enabled", False)):
+                            lines.append(
+                                "Satellite task type: "
+                                + str(satellite_context.get("task_type", "") or "")
+                            )
+                            lines.append(
+                                "Satellite archetype: "
+                                + str(satellite_context.get("archetype_id", "") or "")
+                            )
+                            lines.append(
+                                "Satellite mission class: "
+                                + str(satellite_context.get("mission_class", "") or "")
+                            )
+                        elif str(satellite_context.get("task_type", "") or "").strip():
+                            lines.append(
+                                "Satellite task type inference only: "
+                                + str(satellite_context.get("task_type", "") or "")
+                            )
                 except Exception as exc:
                     lines.append(f"BOM解析失败: {exc}")
 
@@ -826,6 +857,85 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
         )
 
         return "\n".join(lines)
+
+    def _apply_satellite_case_context(
+        self,
+        design_state: DesignState,
+        bom_file: Optional[str],
+    ) -> DesignState:
+        if not str(bom_file or "").strip():
+            return design_state
+
+        opt_cfg = dict(self.config.get("optimization", {}) or {})
+        satellite_context = evaluate_satellite_likeness_for_design_state(
+            design_state,
+            bom_file=bom_file,
+            default_gate_mode=str(opt_cfg.get("satellite_likeness_gate_mode", "off") or "off"),
+        )
+
+        metadata = dict(design_state.metadata or {})
+        metadata["satellite_context"] = dict(satellite_context or {})
+        archetype_id = str(satellite_context.get("archetype_id", "") or "").strip()
+        if archetype_id:
+            metadata["satellite_archetype_id"] = archetype_id
+            metadata["satellite_mission_class"] = str(
+                satellite_context.get("mission_class", "") or ""
+            )
+            metadata["satellite_task_type"] = str(
+                satellite_context.get("task_type", "") or ""
+            )
+            metadata["satellite_default_rule_profile"] = str(
+                satellite_context.get("default_rule_profile", "") or ""
+            )
+            metadata["satellite_reference_baseline_id"] = str(
+                satellite_context.get("baseline_id", "") or ""
+            )
+            metadata["satellite_reference_baseline_version"] = str(
+                satellite_context.get("baseline_version", "") or ""
+            )
+            metadata["satellite_baseline_reference_boundary"] = str(
+                satellite_context.get("baseline_reference_boundary", "") or ""
+            )
+            metadata["satellite_archetype_reference_boundary"] = str(
+                satellite_context.get("archetype_reference_boundary", "") or ""
+            )
+            metadata["satellite_public_reference_notes"] = list(
+                satellite_context.get("public_reference_notes", []) or []
+            )
+        if satellite_context.get("gate_report"):
+            metadata["satellite_likeness_gate"] = dict(
+                satellite_context.get("gate_report", {}) or {}
+            )
+        if satellite_context.get("gate_passed") is not None:
+            metadata["satellite_likeness_gate_passed"] = bool(
+                satellite_context.get("gate_passed", False)
+            )
+        metadata["satellite_likeness_gate_mode"] = str(
+            satellite_context.get("gate_mode", "off") or "off"
+        )
+        design_state.metadata = metadata
+
+        gate_mode = str(satellite_context.get("gate_mode", "off") or "off")
+        gate_passed = satellite_context.get("gate_passed", None)
+        self.logger.logger.info(
+            "Satellite context resolved: archetype=%s source=%s gate_mode=%s gate_passed=%s",
+            str(satellite_context.get("archetype_id", "") or ""),
+            str(satellite_context.get("archetype_source", "") or ""),
+            gate_mode,
+            gate_passed,
+        )
+
+        if gate_mode == "strict" and gate_passed is False:
+            gate_report = dict(satellite_context.get("gate_report", {}) or {})
+            failed_rule_ids = [
+                str(item.get("rule_id", "") or "")
+                for item in list(gate_report.get("checks", []) or [])
+                if not bool(item.get("passed", False))
+            ]
+            failed_text = ",".join([item for item in failed_rule_ids if item]) or "unknown"
+            raise SatelliteDesignError(f"satellite_likeness_gate_failed:{failed_text}")
+
+        return design_state
 
     def _initialize_design_state(self, bom_file: Optional[str]) -> DesignState:
         """初始化设计状态。"""
@@ -921,7 +1031,8 @@ class WorkflowOrchestrator(AgentLoopRuntimeSupport, MassRuntimeSupport):
         )
 
         design_state = self._recenter_initial_layout_to_cg(design_state)
-        return self._repair_initial_mission_keepout(design_state)
+        design_state = self._repair_initial_mission_keepout(design_state)
+        return self._apply_satellite_case_context(design_state, bom_file)
 
     def _evaluate_design(
         self,

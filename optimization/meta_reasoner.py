@@ -33,6 +33,11 @@ from core.logger import ExperimentLogger
 from core.exceptions import LLMError
 from optimization.llm.gateway import LLMGateway, build_legacy_gateway
 from optimization.modes.mass.operator_program import SUPPORTED_ACTIONS
+from optimization.modes.mass.operator_program_v4 import (
+    SUPPORTED_ACTIONS_V4,
+    normalize_operator_program_v4_payload,
+    validate_operator_program_v4,
+)
 from optimization.modes.mass.metric_registry import get_metric_status, normalize_metric_key
 from optimization.modes.mass.maas_compiler import _build_component_aliases, _resolve_component_id
 
@@ -352,6 +357,7 @@ JSON schema guideline:
     def _load_vop_policy_system_prompt(self) -> str:
         """Load the VOP-MaaS policy-program system prompt."""
         allowed_actions = ", ".join(sorted(SUPPORTED_ACTIONS))
+        semantic_actions = ", ".join(sorted(SUPPORTED_ACTIONS_V4))
         return (
             "Role: You are the Verified Operator-Policy programmer for MsGalaxy VOP-MaaS.\n\n"
             "Task:\n"
@@ -365,11 +371,12 @@ JSON schema guideline:
             "3. operator_candidates MUST be executable OP-MaaS DSL programs only.\n"
             "4. Runtime knobs MUST stay bounded and advisory.\n"
             "5. If evidence is weak, reduce confidence instead of inventing aggressive actions.\n"
-            f"6. Use exact operator action names from this allowlist only: {allowed_actions}.\n"
-            "7. If the dominant violation is mission/FOV/keepout, use `fov_keepout_push`; do not invent synonyms such as `keepout_clear`.\n"
-            "8. For `fov_keepout_push`, prefer params: `component_ids`, `axis`, `keepout_center_mm`, `min_separation_mm`, `preferred_side`, `focus_ratio`.\n"
-            "9. Do NOT weaken runtime fidelity already requested by the system/profile; if `VOP Graph.metadata.fidelity_floor_hint` requires online COMSOL, keep or strengthen it.\n"
-            "10. If `dominant_violation_family` is empty, prefer `VOP Graph.metadata.level_focus_hint` and bounded fidelity hints before falling back to mission/geometry.\n\n"
+            f"6. Prefer semantic DSL v4 action names from this allowlist: {semantic_actions}.\n"
+            f"7. Legacy DSL v3 actions are still accepted for compatibility: {allowed_actions}.\n"
+            "8. For semantic DSL v4, each action should include explicit `targets`, `hard_rules`, and `soft_preferences` when applicable.\n"
+            "9. If the dominant violation is mission/FOV/keepout, prefer `protect_fov_keepout` in v4 or `fov_keepout_push` in legacy v3; do not invent unrelated aliases.\n"
+            "10. Do NOT weaken runtime fidelity already requested by the system/profile; if `VOP Graph.metadata.fidelity_floor_hint` requires online COMSOL, keep or strengthen it.\n"
+            "11. If `dominant_violation_family` is empty, prefer `VOP Graph.metadata.level_focus_hint` and bounded fidelity hints before falling back to mission/geometry.\n\n"
             "Required JSON shape:\n"
             "{\n"
             '  "policy_id": "VOP_POLICY_YYYYMMDD_NNN",\n'
@@ -380,19 +387,29 @@ JSON schema guideline:
             '      "candidate_id": "cand_01",\n'
             '      "priority": 1.0,\n'
             '      "note": "why this branch is useful",\n'
-            '      "program": {\n'
+            '      "program_v4": {\n'
             '        "program_id": "op_prog_01",\n'
+            '        "version": "opmaas-r4",\n'
             '        "rationale": "structured explanation",\n'
             '        "actions": [\n'
             "          {\n"
-            '            "action": "hot_spread",\n'
-            '            "params": {\n'
-            '              "component_ids": ["battery_main", "payload_camera"],\n'
-            '              "axis": "y",\n'
-            '              "min_pair_distance_mm": 12.0,\n'
-            '              "spread_strength": 0.6,\n'
-            '              "focus_ratio": 0.6\n'
-            "            }\n"
+            '            "action": "move_heat_source_to_radiator_zone",\n'
+            '            "targets": [\n'
+            '              {\n'
+            '                "object_type": "component_group",\n'
+            '                "object_id": "hot_cluster",\n'
+            '                "role": "subject",\n'
+            '                "attributes": {"component_ids": ["battery_main", "payload_camera"]}\n'
+            '              },\n'
+            '              {\n'
+            '                "object_type": "zone",\n'
+            '                "object_id": "radiator_zone_nadir",\n'
+            '                "role": "target"\n'
+            '              }\n'
+            '            ],\n'
+            '            "hard_rules": ["thermal_boundary"],\n'
+            '            "soft_preferences": ["heat_source_to_radiator"],\n'
+            '            "params": {"axis": "y", "delta_mm": 8.0, "focus_ratio": 0.6}\n'
             "          }\n"
             "        ]\n"
             "      }\n"
@@ -458,6 +475,52 @@ JSON schema guideline:
         if note:
             normalized_action["note"] = note
         return normalized_action, autofill_used
+
+    def _looks_like_v4_program_payload(self, payload: Any) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        version = str(
+            payload.get("version")
+            or payload.get("dsl_version")
+            or payload.get("semantic_version")
+            or ""
+        ).strip().lower()
+        if version.endswith("r4") or version.endswith("v4"):
+            return True
+        for action in list(payload.get("actions", []) or []):
+            if not isinstance(action, dict):
+                continue
+            if "targets" in action or "hard_rules" in action or "soft_preferences" in action:
+                return True
+            if any(
+                key in action
+                for key in (
+                    "panel_id",
+                    "aperture_id",
+                    "zone_id",
+                    "mount_site_id",
+                    "component_group_id",
+                )
+            ):
+                return True
+        return False
+
+    def _normalize_vop_program_v4_payload(
+        self,
+        program_payload: Any,
+    ) -> Tuple[Optional[Dict[str, Any]], bool]:
+        if not isinstance(program_payload, dict):
+            return None, True
+
+        normalized = normalize_operator_program_v4_payload(program_payload)
+        validation = validate_operator_program_v4(normalized)
+        autofill_used = normalized != program_payload
+        if not validation.get("is_valid", False):
+            return None, True
+        normalized_payload = validation.get("normalized_payload")
+        if not isinstance(normalized_payload, dict):
+            return None, True
+        return dict(normalized_payload), bool(autofill_used or validation.get("warnings"))
 
     def _normalize_fov_keepout_push_params(
         self,
@@ -925,11 +988,11 @@ JSON schema guideline:
                 autofill_used = True
 
         legacy_programs: List[Any] = []
-        for key in ("program", "operator_program"):
+        for key in ("program", "operator_program", "program_v4", "operator_program_v4"):
             candidate_program = policy_pack.get(key)
             if isinstance(candidate_program, dict):
                 legacy_programs.append(candidate_program)
-        for key in ("programs", "operator_programs"):
+        for key in ("programs", "operator_programs", "programs_v4", "operator_programs_v4"):
             candidate_programs = policy_pack.get(key)
             if isinstance(candidate_programs, list):
                 legacy_programs.extend(candidate_programs)
@@ -937,13 +1000,15 @@ JSON schema guideline:
             raw_candidates = list(legacy_programs)
             autofill_used = True
         if not raw_candidates and isinstance(policy_pack.get("actions"), list):
-            raw_candidates = [
-                {
-                    "program_id": str(policy_pack.get("program_id", "") or "").strip(),
-                    "actions": list(policy_pack.get("actions", []) or []),
-                    "rationale": str(policy_pack.get("rationale", "") or "").strip(),
-                }
-            ]
+            inline_program = {
+                "program_id": str(policy_pack.get("program_id", "") or "").strip(),
+                "actions": list(policy_pack.get("actions", []) or []),
+                "rationale": str(policy_pack.get("rationale", "") or "").strip(),
+            }
+            if self._looks_like_v4_program_payload(inline_program):
+                raw_candidates = [{"program_v4": inline_program}]
+            else:
+                raw_candidates = [inline_program]
             autofill_used = True
 
         normalized_candidates: List[Dict[str, Any]] = []
@@ -951,6 +1016,72 @@ JSON schema guideline:
             if not isinstance(candidate, dict):
                 autofill_used = True
                 continue
+            candidate_id = str(candidate.get("candidate_id", "") or "").strip()
+            if not candidate_id:
+                candidate_id = f"cand_{index:02d}"
+                autofill_used = True
+            candidate_priority = float(
+                self._to_finite_float(candidate.get("priority"), 1.0) or 1.0
+            )
+            candidate_note = str(candidate.get("note", "") or "").strip()
+
+            program_payload_v4 = candidate.get("program_v4")
+            if not isinstance(program_payload_v4, dict):
+                program_payload_v4 = None
+            if program_payload_v4 is None and self._looks_like_v4_program_payload(candidate):
+                program_payload_v4 = dict(candidate)
+                autofill_used = True
+            if program_payload_v4 is None:
+                candidate_program = candidate.get("program")
+                if self._looks_like_v4_program_payload(candidate_program):
+                    program_payload_v4 = dict(candidate_program or {})
+                    autofill_used = True
+            if program_payload_v4 is None and any(
+                key in candidate
+                for key in (
+                    "targets",
+                    "hard_rules",
+                    "soft_preferences",
+                    "panel_id",
+                    "aperture_id",
+                    "zone_id",
+                    "mount_site_id",
+                    "component_group_id",
+                )
+            ):
+                program_payload_v4 = {
+                    "program_id": candidate.get("program_id"),
+                    "version": candidate.get("version") or candidate.get("dsl_version") or "opmaas-r4",
+                    "rationale": candidate.get("rationale"),
+                    "actions": [dict(candidate)],
+                }
+                autofill_used = True
+
+            if isinstance(program_payload_v4, dict):
+                normalized_program_v4, v4_autofill_used = self._normalize_vop_program_v4_payload(
+                    program_payload_v4
+                )
+                autofill_used = autofill_used or v4_autofill_used
+                if normalized_program_v4 is None:
+                    continue
+                program_id = str(normalized_program_v4.get("program_id", "") or "").strip()
+                if not program_id:
+                    normalized_program_v4 = dict(normalized_program_v4)
+                    normalized_program_v4["program_id"] = (
+                        f"op_prog_r{int(max(0, replan_round))}_{index:02d}"
+                    )
+                    autofill_used = True
+                normalized_candidates.append(
+                    {
+                        "candidate_id": candidate_id,
+                        "priority": candidate_priority,
+                        "note": candidate_note,
+                        "program_v4": dict(normalized_program_v4),
+                        "dsl_version": "v4",
+                    }
+                )
+                continue
+
             program_payload = candidate.get("program")
             if not isinstance(program_payload, dict):
                 if any(key in candidate for key in ("actions", "program_id", "rationale")):
@@ -994,10 +1125,6 @@ JSON schema guideline:
                 program_metadata["llm_dropped_actions"] = list(dropped_actions)
                 program_payload["metadata"] = program_metadata
 
-            candidate_id = str(candidate.get("candidate_id", "") or "").strip()
-            if not candidate_id:
-                candidate_id = f"cand_{index:02d}"
-                autofill_used = True
             program_id = str(program_payload.get("program_id", "") or "").strip()
             if not program_id:
                 program_payload = dict(program_payload)
@@ -1006,11 +1133,10 @@ JSON schema guideline:
             normalized_candidates.append(
                 {
                     "candidate_id": candidate_id,
-                    "priority": float(
-                        self._to_finite_float(candidate.get("priority"), 1.0) or 1.0
-                    ),
-                    "note": str(candidate.get("note", "") or "").strip(),
+                    "priority": candidate_priority,
+                    "note": candidate_note,
                     "program": dict(program_payload),
+                    "dsl_version": "v3",
                 }
             )
         policy_pack["operator_candidates"] = normalized_candidates[: max(1, int(max_candidates))]
@@ -1407,9 +1533,11 @@ JSON schema guideline:
                 f"## Requirement Text\n"
                 f"{requirement_text or 'No extra requirement text provided.'}\n\n"
                 f"## Executable Operator DSL\n"
-                f"- allowed_actions: {', '.join(sorted(SUPPORTED_ACTIONS))}\n"
+                f"- preferred_semantic_actions_v4: {', '.join(sorted(SUPPORTED_ACTIONS_V4))}\n"
+                f"- legacy_actions_v3: {', '.join(sorted(SUPPORTED_ACTIONS))}\n"
+                "- prefer semantic DSL v4 with explicit targets / hard_rules / soft_preferences\n"
                 "- use exact action names only\n"
-                "- for mission/FOV/keepout violations, use fov_keepout_push\n"
+                "- for mission/FOV/keepout violations, prefer protect_fov_keepout in v4 or fov_keepout_push in v3\n"
                 "- do not invent aliases such as keepout_clear\n\n"
                 f"## Policy Bounds\n"
                 f"- max_candidates: {int(max(1, max_candidates))}\n"

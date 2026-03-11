@@ -103,6 +103,9 @@ class ComsolFeatureDomainAuditMixin:
         selection_tags = self._safe_tag_list(
             lambda: self.model.java.selection().tags() if self.model is not None else []
         )
+        metadata = dict(getattr(design_state, "metadata", {}) or {})
+        shell_meta = dict(metadata.get("shell", {}) or {})
+        shell_enabled = bool(shell_meta.get("enabled", False))
 
         ht_feature_tags = self._safe_feature_tags("ht")
         ec_feature_tags = self._safe_feature_tags("ec")
@@ -111,6 +114,10 @@ class ComsolFeatureDomainAuditMixin:
         hs_count = int(self._count_prefix(ht_feature_tags, "hs_"))
         tc_count = int(self._count_prefix(ht_feature_tags, "tc_"))
         coating_count = int(self._count_prefix(selection_tags, "boxsel_coating_"))
+        shell_outer_selection_count = int(
+            self._count_prefix(selection_tags, "boxsel_shell_outer_")
+        )
+        outer_boundary_selection_present = bool("boxsel_outer_boundary" in set(selection_tags))
 
         heat_report = dict(heat_binding_report or {})
         active_heat_components = int(self._safe_int(heat_report.get("active_components", 0), 0))
@@ -135,7 +142,15 @@ class ComsolFeatureDomainAuditMixin:
         if bool(self.enable_coupled_multiphysics_real):
             required_studies.append("std_coupled")
 
-        required_feature_tags: Dict[str, List[str]] = {"ht": ["tl_global", "temp1", "conv_stabilizer"]}
+        canonical_ht_features = ["tl_global", "rad_amb1"]
+        diagnostic_ht_features = ["tl_global", "temp1", "conv_stabilizer"]
+        required_feature_tags: Dict[str, List[str]] = {
+            "ht": (
+                canonical_ht_features
+                if "rad_amb1" in set(ht_feature_tags)
+                else diagnostic_ht_features
+            )
+        }
         if bool(self.enable_power_comsol_real):
             required_feature_tags["ec"] = ["ec_term", "ec_gnd"]
         if bool(self.enable_structural_real):
@@ -167,6 +182,10 @@ class ComsolFeatureDomainAuditMixin:
             "required_physics_present": len(missing_physics) == 0,
             "required_studies_present": len(missing_studies) == 0,
             "required_feature_tags_present": len(missing_feature_tags) == 0,
+            "outer_boundary_selection_present": bool(outer_boundary_selection_present),
+            "shell_outer_boundary_selections_present": bool(
+                (not shell_enabled) or shell_outer_selection_count > 0
+            ),
             "heat_source_binding_complete": bool(
                 active_heat_components <= 0
                 or assigned_heat_sources >= active_heat_components
@@ -220,6 +239,7 @@ class ComsolFeatureDomainAuditMixin:
                 "heat_source_feature_count": int(hs_count),
                 "thermal_contact_feature_count": int(tc_count),
                 "coating_selection_count": int(coating_count),
+                "shell_outer_selection_count": int(shell_outer_selection_count),
                 "selection_tag_count": int(len(selection_tags)),
                 "dataset_count": int(len(dataset_tags)),
                 "active_heat_components": int(active_heat_components),
@@ -234,6 +254,7 @@ class ComsolFeatureDomainAuditMixin:
                 "ht_feature_tags": list(ht_feature_tags),
                 "ec_feature_tags": list(ec_feature_tags),
                 "solid_feature_tags": list(solid_feature_tags),
+                "outer_boundary_selection_present": bool(outer_boundary_selection_present),
             },
             "runtime": {
                 "structural_runtime": dict(struct_rt),

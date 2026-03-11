@@ -71,12 +71,42 @@ class ComsolThermalOperatorMixin:
                     num_selected = len(selected_entities)
                     logger.info(f"      intersects 回退后选中 {num_selected} 个域")
 
+                if num_selected == 0:
+                    resolved_domain, resolve_meta = self._resolve_missing_heat_domain(
+                        comp=comp,
+                        comp_index=i,
+                    )
+                    if resolved_domain is not None:
+                        resolved_sel_name = f"{sel_name}_recovered"
+                        recovered_sel = self.model.java.selection().create(resolved_sel_name, "Explicit")
+                        recovered_sel.geom("geom1", 3)
+                        recovered_sel.set([int(resolved_domain)])
+                        selection_name = resolved_sel_name
+                        selected_entities = [int(resolved_domain)]
+                        num_selected = 1
+                        disambiguated_heat_sources.append(comp.id)
+                        logger.warning(
+                            "      ⚠️ 0-hit 已自动恢复: "
+                            f"{comp.id} -> domain {resolved_domain} "
+                            f"(method={resolve_meta.get('method')}, "
+                            f"distance_mm={resolve_meta.get('distance_mm')}, "
+                            f"size_error={resolve_meta.get('size_error')})"
+                        )
+
                 if num_selected > 1:
+                    ambiguous_candidates = list(selected_entities)
                     logger.warning(f"      ⚠️ 选中 {num_selected} 个域，尝试 allvertices 收紧: {comp.id}")
                     box_sel.set("condition", "allvertices")
                     selected_entities = self._normalize_entity_ids(box_sel.entities())
                     num_selected = len(selected_entities)
                     logger.info(f"      allvertices 收紧后选中 {num_selected} 个域")
+                    if num_selected == 0 and ambiguous_candidates:
+                        selected_entities = ambiguous_candidates
+                        num_selected = len(selected_entities)
+                        logger.warning(
+                            "      ⚠️ allvertices 收紧为空，回退到 intersects 候选并执行域歧义收敛: %s",
+                            comp.id,
+                        )
 
                 if num_selected > 1:
                     resolved_domain, resolve_meta = self._resolve_ambiguous_heat_domain(
@@ -135,8 +165,18 @@ class ComsolThermalOperatorMixin:
 
             volume = (dim.x * dim.y * dim.z) / 1e9
             power_density = comp.power / volume if volume > 0 else 0
-            heat_source.set("Q0", f"{power_density} * P_scale [W/m^3]")
-            logger.info(f"      ✓ 热源已设置: {comp.power}W * P_scale, 功率密度: {power_density:.2e} W/m³")
+            power_expr_builder = getattr(self, "_heat_source_power_density_expression", None)
+            heat_source_expr = (
+                power_expr_builder(power_density)
+                if callable(power_expr_builder)
+                else f"{power_density} * P_scale [W/m^3]"
+            )
+            heat_source.set("Q0", heat_source_expr)
+            logger.info(
+                "      ✓ 热源已设置: %s, 功率密度: %.2e W/m³",
+                heat_source_expr,
+                power_density,
+            )
             total_heat_sources_assigned += 1
 
         if total_heat_sources_assigned == 0:
@@ -239,8 +279,110 @@ class ComsolThermalOperatorMixin:
             "distance_mm": float(abs(int(fallback_domain) - expected_domain)),
         }
 
+    def _list_domain_ids(self) -> list[int]:
+        if self.model is None:
+            return []
+        try:
+            geom = self.model.java.geom("geom1")
+            count = int(geom.getNDomains())
+        except Exception:
+            return []
+        return [domain_id for domain_id in range(1, count + 1)]
+
+    def _resolve_missing_heat_domain(
+        self,
+        *,
+        comp: Any,
+        comp_index: int,
+    ) -> tuple[Optional[int], Dict[str, Any]]:
+        domain_ids = self._list_domain_ids()
+        if not domain_ids:
+            return None, {"method": "no_domains", "distance_mm": None, "size_error": None}
+
+        comp_center = (
+            float(comp.position.x),
+            float(comp.position.y),
+            float(comp.position.z),
+        )
+        comp_span = (
+            max(float(comp.dimensions.x), 1.0),
+            max(float(comp.dimensions.y), 1.0),
+            max(float(comp.dimensions.z), 1.0),
+        )
+        comp_volume = float(comp_span[0] * comp_span[1] * comp_span[2])
+        scored: list[tuple[float, float, float, int]] = []
+        for domain_id in domain_ids:
+            bbox = self._estimate_domain_bbox_mm(domain_id)
+            if bbox is None:
+                continue
+            center = (
+                float((bbox[0] + bbox[1]) / 2.0),
+                float((bbox[2] + bbox[3]) / 2.0),
+                float((bbox[4] + bbox[5]) / 2.0),
+            )
+            span = (
+                max(float(abs(bbox[1] - bbox[0])), 1e-6),
+                max(float(abs(bbox[3] - bbox[2])), 1e-6),
+                max(float(abs(bbox[5] - bbox[4])), 1e-6),
+            )
+            dx = center[0] - comp_center[0]
+            dy = center[1] - comp_center[1]
+            dz = center[2] - comp_center[2]
+            distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+            size_error = sum(
+                abs(span[idx] - comp_span[idx]) / comp_span[idx]
+                for idx in range(3)
+            )
+            overlap_x = max(
+                0.0,
+                min(bbox[1], comp_center[0] + comp_span[0] / 2.0)
+                - max(bbox[0], comp_center[0] - comp_span[0] / 2.0),
+            )
+            overlap_y = max(
+                0.0,
+                min(bbox[3], comp_center[1] + comp_span[1] / 2.0)
+                - max(bbox[2], comp_center[1] - comp_span[1] / 2.0),
+            )
+            overlap_z = max(
+                0.0,
+                min(bbox[5], comp_center[2] + comp_span[2] / 2.0)
+                - max(bbox[4], comp_center[2] - comp_span[2] / 2.0),
+            )
+            overlap_fraction = float((overlap_x * overlap_y * overlap_z) / max(comp_volume, 1.0))
+            score = float(distance + 40.0 * size_error - 120.0 * overlap_fraction)
+            scored.append((score, float(distance), float(size_error), int(domain_id)))
+
+        if not scored:
+            return None, {"method": "bbox_unavailable", "distance_mm": None, "size_error": None}
+
+        scored.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+        _, distance_mm, size_error, domain_id = scored[0]
+        max_reasonable_distance = max(comp_span) * 1.75
+        if distance_mm > max_reasonable_distance and size_error > 2.5:
+            return None, {
+                "method": "nearest_bbox_rejected",
+                "distance_mm": float(distance_mm),
+                "size_error": float(size_error),
+            }
+        return int(domain_id), {
+            "method": "nearest_bbox_match",
+            "distance_mm": float(distance_mm),
+            "size_error": float(size_error),
+        }
+
     def _estimate_domain_center_mm(self, domain_id: int) -> Optional[tuple[float, float, float]]:
         """Best-effort domain centroid extraction from bbox, return None on failure."""
+        bbox = self._estimate_domain_bbox_mm(domain_id)
+        if bbox is None:
+            return None
+        return (
+            float((bbox[0] + bbox[1]) / 2.0),
+            float((bbox[2] + bbox[3]) / 2.0),
+            float((bbox[4] + bbox[5]) / 2.0),
+        )
+
+    def _estimate_domain_bbox_mm(self, domain_id: int) -> Optional[tuple[float, float, float, float, float, float]]:
+        """Best-effort domain bounding box extraction in geometry units."""
         if self.model is None:
             return None
 
@@ -274,9 +416,12 @@ class ComsolThermalOperatorMixin:
                 return None
 
             return (
-                float((values[0] + values[1]) / 2.0),
-                float((values[2] + values[3]) / 2.0),
-                float((values[4] + values[5]) / 2.0),
+                float(values[0]),
+                float(values[1]),
+                float(values[2]),
+                float(values[3]),
+                float(values[4]),
+                float(values[5]),
             )
         except Exception:
             return None

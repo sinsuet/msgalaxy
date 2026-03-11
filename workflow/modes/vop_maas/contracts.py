@@ -12,6 +12,9 @@ from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from optimization.modes.mass.operator_program import OperatorProgram, validate_operator_program
+from optimization.modes.mass.operator_program_v4 import OperatorProgramV4
+from optimization.modes.mass.operator_realization_v4 import realize_operator_program_v4
+from optimization.modes.mass.operator_rule_engine import evaluate_operator_rules_v4
 
 
 ALLOWED_CONSTRAINT_FOCUS = frozenset(
@@ -175,10 +178,16 @@ class VOPFidelityPlan(BaseModel):
 class VOPOperatorCandidate(BaseModel):
     """One candidate operator program emitted by the policy layer."""
 
+    model_config = ConfigDict(extra="ignore")
+
     candidate_id: str
     priority: float = 1.0
     note: str = ""
-    program: OperatorProgram
+    program: Optional[OperatorProgram | Dict[str, Any]] = None
+    program_v4: Optional[OperatorProgramV4 | Dict[str, Any]] = None
+    dsl_version: str = ""
+    rule_engine_report: Dict[str, Any] = Field(default_factory=dict)
+    realization: Dict[str, Any] = Field(default_factory=dict)
     screening_score: float = 0.0
     screening_reason: str = ""
 
@@ -248,6 +257,8 @@ class VOPPolicyFeedback(BaseModel):
     effective_fidelity: Dict[str, Any] = Field(default_factory=dict)
     selected_operator_program_id: str = ""
     selected_operator_actions: List[str] = Field(default_factory=list)
+    selected_semantic_program_id: str = ""
+    selected_semantic_actions: List[str] = Field(default_factory=list)
     diagnosis_status: str = ""
     diagnosis_reason: str = ""
     feasible_rate: Optional[float] = None
@@ -287,6 +298,7 @@ def validate_vop_policy_pack(
     policy: VOPPolicyPack | Mapping[str, Any],
     *,
     component_ids: Iterable[str],
+    object_catalog: Optional[Mapping[str, Any]] = None,
     strict: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -375,9 +387,83 @@ def validate_vop_policy_pack(
 
     normalized_candidates: List[VOPOperatorCandidate] = []
     component_set = [str(item).strip() for item in component_ids if str(item).strip()]
+    v4_object_catalog = _merge_v4_object_catalog(
+        component_ids=component_set,
+        object_catalog=object_catalog,
+    )
     for index, candidate in enumerate(list(parsed.operator_candidates or []), start=1):
+        candidate_id = str(candidate.candidate_id or f"candidate_{index:02d}")
+        priority = float(candidate.priority or 1.0)
+        raw_program_v4 = candidate.program_v4
+        raw_program = candidate.program
+
+        if raw_program_v4 in (None, {}) and _looks_like_v4_program(raw_program):
+            raw_program_v4 = raw_program
+
+        if raw_program_v4 not in (None, {}):
+            rule_report = evaluate_operator_rules_v4(
+                raw_program_v4,
+                object_catalog=v4_object_catalog,
+                strict=bool(strict),
+            )
+            if not rule_report.get("is_valid", False):
+                message = " | ".join(list(rule_report.get("errors", []) or []))
+                warnings.append(f"candidate[{index}] dropped: {message}")
+                continue
+            realization = realize_operator_program_v4(
+                raw_program_v4,
+                binding_catalog=v4_object_catalog,
+                allow_stub=not bool(strict),
+            )
+            if not realization.get("is_valid", False):
+                message = " | ".join(list(realization.get("errors", []) or []))
+                warnings.append(f"candidate[{index}] dropped: {message}")
+                continue
+            stubbed_actions = list(
+                dict(realization.get("summary", {}) or {}).get("stubbed_actions", []) or []
+            )
+            if strict and stubbed_actions:
+                warnings.append(
+                    "candidate[{}] dropped: strict_v4_stubbed_realization={}".format(
+                        index,
+                        ",".join(
+                            str(item).strip()
+                            for item in stubbed_actions
+                            if str(item).strip()
+                        ),
+                    )
+                )
+                continue
+            normalized_candidates.append(
+                candidate.model_copy(
+                    update={
+                        "program": realization["program"],
+                        "program_v4": rule_report.get("program"),
+                        "dsl_version": "v4",
+                        "rule_engine_report": _strip_program_from_report(rule_report),
+                        "realization": dict(realization.get("summary", {}) or {}),
+                        "candidate_id": candidate_id,
+                        "priority": priority,
+                    },
+                    deep=True,
+                )
+            )
+            warnings.extend(
+                f"candidate[{index}] {item}"
+                for item in list(rule_report.get("warnings", []) or [])
+            )
+            warnings.extend(
+                f"candidate[{index}] {item}"
+                for item in list(realization.get("warnings", []) or [])
+            )
+            continue
+
+        if raw_program in (None, {}):
+            warnings.append(f"candidate[{index}] dropped: missing_program_payload")
+            continue
+
         validated_program = validate_operator_program(
-            candidate.program,
+            raw_program,
             component_ids=component_set,
             max_actions=10,
         )
@@ -390,8 +476,10 @@ def validate_vop_policy_pack(
             candidate.model_copy(
                 update={
                     "program": normalized_program,
-                    "candidate_id": str(candidate.candidate_id or f"candidate_{index:02d}"),
-                    "priority": float(candidate.priority or 1.0),
+                    "program_v4": None,
+                    "dsl_version": str(candidate.dsl_version or "v3"),
+                    "candidate_id": candidate_id,
+                    "priority": priority,
                 },
                 deep=True,
             )
@@ -432,3 +520,93 @@ def validate_vop_policy_pack(
         "warnings": warnings,
         "policy": parsed,
     }
+
+
+def _looks_like_v4_program(payload: Any) -> bool:
+    if isinstance(payload, OperatorProgramV4):
+        return True
+    if not isinstance(payload, dict):
+        return False
+    version = str(
+        payload.get("version")
+        or payload.get("dsl_version")
+        or payload.get("semantic_version")
+        or ""
+    ).strip().lower()
+    if version.endswith("r4") or version.endswith("v4"):
+        return True
+    for action in list(payload.get("actions", []) or []):
+        if not isinstance(action, dict):
+            continue
+        if "targets" in action or "hard_rules" in action or "soft_preferences" in action:
+            return True
+        if any(
+            key in action
+            for key in (
+                "panel_id",
+                "aperture_id",
+                "zone_id",
+                "mount_site_id",
+                "component_group_id",
+            )
+        ):
+            return True
+    return False
+
+
+def _strip_program_from_report(report: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        str(key): value
+        for key, value in dict(report or {}).items()
+        if str(key) != "program"
+    }
+
+
+def _merge_v4_object_catalog(
+    *,
+    component_ids: Iterable[str],
+    object_catalog: Optional[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {}
+    if object_catalog:
+        for object_type, payload in dict(object_catalog).items():
+            normalized_type = str(object_type or "").strip().lower()
+            if not normalized_type:
+                continue
+            if isinstance(payload, Mapping):
+                merged[normalized_type] = dict(payload)
+                continue
+            merged[normalized_type] = _normalize_catalog_values(payload)
+
+    normalized_components = _normalize_catalog_values(component_ids)
+    current_components = merged.get("component")
+    if isinstance(current_components, Mapping):
+        component_map = dict(current_components)
+        for component_id in normalized_components:
+            component_map.setdefault(component_id, {})
+        merged["component"] = component_map
+    else:
+        merged["component"] = sorted(
+            set(_normalize_catalog_values(current_components)).union(normalized_components)
+        )
+    return merged
+
+
+def _normalize_catalog_values(payload: Any) -> List[str]:
+    if payload is None:
+        return []
+    if isinstance(payload, str):
+        raw_items = [item.strip() for item in payload.split(",")]
+    else:
+        try:
+            raw_items = [str(item).strip() for item in list(payload or [])]
+        except Exception:
+            return []
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped

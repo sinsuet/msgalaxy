@@ -30,6 +30,7 @@ READ_ONLY_MCP_CHECKLIST: tuple[str, ...] = (
     "Verify `MSGA_Envelope` and `MSGA_Keepouts` are visible and distinct from state component collections.",
     "Verify `MSGA_Attachments*` objects read as visualization-only proxies rather than solver truth components.",
     "Verify `MSGA_Annotations*` exposes only top-N moved-component labels instead of dense full-scene text.",
+    "Verify review payload operator-family audit reports no `unmapped_actions` for teacher-facing bundles.",
 )
 
 
@@ -121,6 +122,8 @@ def audit_review_package(
 
     key_states = dict(bundle.get("key_states", {}) or {})
     payload_states = dict(payload.get("states", {}) or {})
+    payload_metadata = dict(payload.get("metadata", {}) or {})
+    operator_family_audit = dict(payload_metadata.get("operator_family_audit", {}) or {})
     manifest_key_states = dict(manifest.get("key_states", {}) or {})
     manifest_metadata = dict(manifest.get("metadata", {}) or {})
     scene_collection_names = list(manifest_metadata.get("scene_collection_names", []) or [])
@@ -256,6 +259,16 @@ def audit_review_package(
             all(name in manifest_key_states for name in ("initial", "best", "final")),
             fail_details="Manifest key-state summary is incomplete for scene-side review.",
             pass_details="Manifest key-state summary covers initial/best/final.",
+        )
+    )
+    unmapped_actions = list(operator_family_audit.get("unmapped_actions", []) or [])
+    checks.append(
+        _build_check(
+            "operator_family_audit",
+            len(unmapped_actions) == 0,
+            fail_details=f"Review payload reports unmapped operator actions: {unmapped_actions}",
+            pass_details="Review payload reports zero unmapped operator actions.",
+            severity="warn",
         )
     )
 

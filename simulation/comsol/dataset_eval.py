@@ -6,6 +6,7 @@ from typing import Any, Optional
 import numpy as np
 
 from core.logger import get_logger
+from simulation.comsol.field_registry import get_field_spec
 
 logger = get_logger(__name__)
 
@@ -172,6 +173,197 @@ class ComsolDatasetEvaluatorMixin:
         setattr(self, "_dataset_tags_cache", list(tags))
         return tags
 
+    def _evaluate_dataset_derived_value(
+        self,
+        *,
+        expression: str,
+        dataset: str,
+        unit: Optional[str] = None,
+        reducer: str = "max",
+    ) -> Optional[float]:
+        """
+        Evaluate an explicit COMSOL solution dataset through Derived Values.
+
+        This follows COMSOL's result-tree pattern (`result().numerical()`
+        with `data=<dataset>`), which is more reliable than
+        `mph.Model.evaluate(..., dataset=...)` for explicit solution datasets.
+        """
+        if self.model is None:
+            return None
+
+        dataset_tag = str(dataset or "").strip()
+        if not dataset_tag:
+            return None
+
+        numerical_type = {
+            "max": "MaxVolume",
+            "min": "MinVolume",
+        }.get(str(reducer or "").strip().lower())
+        if not numerical_type:
+            return None
+
+        numeric_tag = f"drv_{abs(hash((dataset_tag, expression, reducer, datetime.now().timestamp()))) % 10_000_000}"
+        node = None
+        numerical_root = None
+        try:
+            numerical_root = self.model.java.result().numerical()
+            node = numerical_root.create(numeric_tag, numerical_type)
+            node.set("data", dataset_tag)
+            try:
+                node.selection().all()
+            except Exception:
+                pass
+            node.setIndex("expr", str(expression), 0)
+            if unit:
+                try:
+                    node.setIndex("unit", str(unit), 0)
+                except Exception:
+                    pass
+
+            values = self._extract_numeric_values(node.getReal())
+            if not values:
+                return None
+            if reducer == "min":
+                return float(min(values))
+            return float(max(values))
+        except Exception:
+            return None
+        finally:
+            if node is not None:
+                try:
+                    numerical_root.remove(numeric_tag)
+                except Exception:
+                    pass
+
+    def _probe_modal_dataset_frequency(self, dataset: str) -> Optional[float]:
+        if self.model is None:
+            return None
+
+        dataset_tag = str(dataset or "").strip()
+        if not dataset_tag:
+            return None
+
+        result_node = self.model.java.result()
+        eg_tag = f"eg_modal_tmp_{abs(hash((dataset_tag, datetime.now().timestamp()))) % 10_000_000}"
+        try:
+            eg = result_node.evaluationGroup().create(eg_tag, "EvaluationGroup")
+            eg.set("data", dataset_tag)
+            eg.create("gev1", "EvalGlobal")
+            eg.feature("gev1").setIndex("expr", "1", 0)
+            try:
+                eg.setIndex("looplevelinput", "manual", 1)
+                eg.setIndex("looplevel", "1 2 3 4 5 6", 1)
+            except Exception:
+                pass
+            eg.run()
+            values = self._extract_numeric_values(eg.getReal())
+            positives = [
+                float(v)
+                for v in values
+                if float(v) > 1e-9 and abs(float(v) - 1.0) > 1e-9
+            ]
+            if positives:
+                return float(min(positives))
+        except Exception:
+            return None
+        finally:
+            try:
+                result_node.evaluationGroup().remove(eg_tag)
+            except Exception:
+                pass
+        return None
+
+    def _supports_explicit_dataset_derived_values(self) -> bool:
+        if self.model is None:
+            return False
+        try:
+            result_node = self.model.java.result()
+        except Exception:
+            return False
+        numerical = getattr(result_node, "numerical", None)
+        return callable(numerical)
+
+    def _select_modal_result_dataset(
+        self,
+        *,
+        dataset_candidates: Optional[list[Optional[str]]] = None,
+    ) -> Optional[str]:
+        if self.model is None:
+            return None
+
+        model_identity = id(self.model)
+        cached_identity = getattr(self, "_modal_dataset_cache_model_identity", None)
+        cached_dataset = getattr(self, "_modal_dataset_cache_value", None)
+        if cached_identity == model_identity and cached_dataset:
+            return str(cached_dataset)
+
+        candidates = [str(tag) for tag in list(dataset_candidates or self._build_dataset_candidates(prefer_modal=True)) if tag]
+        for dataset_tag in candidates:
+            freq = self._probe_modal_dataset_frequency(dataset_tag)
+            if freq is None:
+                continue
+            setattr(self, "_modal_dataset_cache_model_identity", model_identity)
+            setattr(self, "_modal_dataset_cache_value", dataset_tag)
+            return dataset_tag
+        return None
+
+    def _select_structural_stationary_dataset(
+        self,
+        *,
+        dataset_candidates: Optional[list[Optional[str]]] = None,
+    ) -> Optional[str]:
+        if self.model is None:
+            return None
+
+        model_identity = id(self.model)
+        cached_identity = getattr(self, "_structural_dataset_cache_model_identity", None)
+        cached_dataset = getattr(self, "_structural_dataset_cache_value", None)
+        if cached_identity == model_identity and cached_dataset:
+            return str(cached_dataset)
+
+        candidates = [str(tag) for tag in list(dataset_candidates or self._build_dataset_candidates(prefer_modal=False)) if tag]
+        if not candidates:
+            return None
+
+        modal_dataset = self._select_modal_result_dataset(dataset_candidates=candidates)
+        best_dataset: Optional[str] = None
+        best_stress = -1.0
+        best_disp = -1.0
+        stress_field = get_field_spec("stress")
+        displacement_field = get_field_spec("displacement")
+
+        for dataset_tag in candidates:
+            if dataset_tag == modal_dataset:
+                continue
+
+            stress = self._evaluate_expression_candidates(
+                expressions=list(stress_field.expression_candidates),
+                unit=stress_field.unit,
+                datasets=[dataset_tag],
+                reducer="max",
+            )
+            disp = self._evaluate_expression_candidates(
+                expressions=list(displacement_field.expression_candidates),
+                unit=displacement_field.unit,
+                datasets=[dataset_tag],
+                reducer="max",
+            )
+            stress_value = float(stress or 0.0)
+            disp_value = float(disp or 0.0)
+            if stress_value <= 0.0 and disp_value <= 0.0:
+                continue
+            if stress_value > best_stress or (
+                abs(stress_value - best_stress) <= 1e-18 and disp_value > best_disp
+            ):
+                best_dataset = dataset_tag
+                best_stress = stress_value
+                best_disp = disp_value
+
+        if best_dataset:
+            setattr(self, "_structural_dataset_cache_model_identity", model_identity)
+            setattr(self, "_structural_dataset_cache_value", best_dataset)
+        return best_dataset
+
     @staticmethod
     def _dataset_priority(tag: str, *, prefer_modal: bool = False) -> int:
         name = str(tag or "").strip().lower()
@@ -267,6 +459,15 @@ class ComsolDatasetEvaluatorMixin:
             for dset in dataset_candidates:
                 if dset is not None and dset in failed:
                     continue
+                if dset is not None and reducer in {"max", "min"}:
+                    derived_value = self._evaluate_dataset_derived_value(
+                        expression=str(expr),
+                        dataset=str(dset),
+                        unit=unit,
+                        reducer=reducer,
+                    )
+                    if derived_value is not None:
+                        return float(derived_value)
                 try:
                     if dset is None:
                         raw = self.model.evaluate(expr, unit=unit) if unit else self.model.evaluate(expr)
@@ -278,7 +479,11 @@ class ComsolDatasetEvaluatorMixin:
                         )
                 except Exception as eval_error:
                     if dset is not None and self._is_dataset_missing_error(eval_error):
-                        failed.add(dset)
+                        if (
+                            not self._dataset_tag_exists(str(dset))
+                            or not self._supports_explicit_dataset_derived_values()
+                        ):
+                            failed.add(str(dset))
                         continue
                     if not unit:
                         continue
@@ -289,7 +494,11 @@ class ComsolDatasetEvaluatorMixin:
                             raw = self.model.evaluate(expr, dataset=dset)
                     except Exception as fallback_error:
                         if dset is not None and self._is_dataset_missing_error(fallback_error):
-                            failed.add(dset)
+                            if (
+                                not self._dataset_tag_exists(str(dset))
+                                or not self._supports_explicit_dataset_derived_values()
+                            ):
+                                failed.add(str(dset))
                         continue
 
                 values = self._extract_numeric_values(raw)
@@ -331,43 +540,17 @@ class ComsolDatasetEvaluatorMixin:
         if self.model is None:
             return None
 
-        result_node = self.model.java.result()
         for dset in dataset_candidates:
             if dset is None:
                 continue
-            eg_tag = f"eg_modal_tmp_{abs(hash((dset, datetime.now().timestamp()))) % 10_000_000}"
-            try:
-                eg = result_node.evaluationGroup().create(eg_tag, "EvaluationGroup")
-                eg.set("data", str(dset))
-                eg.create("gev1", "EvalGlobal")
-                eg.feature("gev1").setIndex("expr", "1", 0)
-                try:
-                    eg.setIndex("looplevelinput", "manual", 1)
-                    eg.setIndex("looplevel", "1 2 3 4 5 6", 1)
-                except Exception:
-                    pass
-                eg.run()
-                values = self._extract_numeric_values(eg.getReal())
-                positives = [
-                    float(v)
-                    for v in values
-                    if float(v) > 1e-9 and abs(float(v) - 1.0) > 1e-9
-                ]
-                if positives:
-                    freq = float(min(positives))
-                    logger.info(
-                        "  ✓ 通过 EvaluationGroup 回退提取到模态频率: %.6f Hz (dataset=%s)",
-                        freq,
-                        str(dset),
-                    )
-                    return freq
-            except Exception:
-                continue
-            finally:
-                try:
-                    result_node.evaluationGroup().remove(eg_tag)
-                except Exception:
-                    pass
+            freq = self._probe_modal_dataset_frequency(str(dset))
+            if freq is not None:
+                logger.info(
+                    "  ✓ 通过 EvaluationGroup 回退提取到模态频率: %.6f Hz (dataset=%s)",
+                    float(freq),
+                    str(dset),
+                )
+                return float(freq)
         return None
 
     def _extract_modal_frequency_from_solver_sequence(self) -> Optional[float]:

@@ -56,6 +56,17 @@ logs/
 # Local-only runtime/developer assets (not distributed by default)
 ylq.md
 tests/
+!tests/
+tests/*
+!tests/test_comsol_field_demo.py
+!tests/test_comsol_physics_profiles.py
 tools/
+!tools/
+tools/*
+!tools/comsol_field_demo/
+tools/comsol_field_demo/*
+!tools/comsol_field_demo/tool_export_tensors.py
+!tools/comsol_field_demo/tool_render_fields.py
+!tools/comsol_field_demo/tool_run_fields.py
 papers/
 tmp/

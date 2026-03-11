@@ -9,12 +9,124 @@ import numpy as np
 from core.exceptions import SimulationError
 from core.logger import get_logger
 from core.protocol import SimulationResult
+from simulation.comsol.physics_profiles import (
+    DIAGNOSTIC_SIMPLIFICATION_BOUNDARY_TEMPERATURE_ANCHOR,
+    DIAGNOSTIC_SIMPLIFICATION_P_SCALE,
+    DIAGNOSTIC_SIMPLIFICATION_WEAK_CONVECTION_STABILIZER,
+)
 
 logger = get_logger(__name__)
 
 
 class ComsolModelBuilderMixin:
     """Dynamic STEP import and COMSOL model assembly."""
+
+    @staticmethod
+    def _resolve_shell_geometry(design_state) -> dict[str, Any]:
+        try:
+            from geometry.shell_spec import resolve_shell_spec
+
+            shell_spec = resolve_shell_spec(design_state)
+        except Exception:
+            shell_spec = None
+
+        if shell_spec is not None:
+            try:
+                outer_x, outer_y, outer_z = (
+                    float(value) for value in shell_spec.outer_size_mm()
+                )
+                thickness = float(getattr(shell_spec, "thickness_mm", 0.0) or 0.0)
+                if min(outer_x, outer_y, outer_z) > 0.0 and thickness > 0.0:
+                    return {
+                        "outer_x": outer_x,
+                        "outer_y": outer_y,
+                        "outer_z": outer_z,
+                        "thickness": thickness,
+                        "shell_id": str(getattr(shell_spec, "shell_id", "") or ""),
+                        "outer_kind": str(
+                            getattr(
+                                getattr(shell_spec, "outer_profile", None),
+                                "normalized_kind",
+                                lambda: "",
+                            )()
+                            or ""
+                        ),
+                        "aperture_count": float(
+                            len(list(getattr(shell_spec, "aperture_sites", []) or []))
+                        ),
+                        "panel_count": float(
+                            len(list(getattr(shell_spec, "resolved_panels", lambda: [])() or []))
+                        ),
+                    }
+            except Exception:
+                pass
+
+        metadata = dict(getattr(design_state, "metadata", {}) or {})
+        shell_meta = dict(metadata.get("shell", {}) or {})
+        envelope = getattr(design_state, "envelope", None)
+        if not bool(shell_meta.get("enabled", False)) or envelope is None:
+            return {}
+        outer = getattr(envelope, "outer_size", None)
+        if outer is None:
+            return {}
+        outer_x = float(getattr(outer, "x", 0.0) or 0.0)
+        outer_y = float(getattr(outer, "y", 0.0) or 0.0)
+        outer_z = float(getattr(outer, "z", 0.0) or 0.0)
+        thickness = float(shell_meta.get("thickness_mm", getattr(envelope, "thickness", 0.0)) or 0.0)
+        if min(outer_x, outer_y, outer_z) <= 0.0 or thickness <= 0.0:
+            return {}
+        return {
+            "outer_x": outer_x,
+            "outer_y": outer_y,
+            "outer_z": outer_z,
+            "thickness": thickness,
+        }
+
+    def _select_shell_outer_boundary_entities(self, *, design_state) -> list[int]:
+        if self.model is None:
+            return []
+        shell = self._resolve_shell_geometry(design_state)
+        if not shell:
+            return []
+        face_tol = max(0.5, min(float(shell["thickness"]) * 0.35, 2.0))
+        outer_x = float(shell["outer_x"])
+        outer_y = float(shell["outer_y"])
+        outer_z = float(shell["outer_z"])
+        half_x = outer_x / 2.0
+        half_y = outer_y / 2.0
+        half_z = outer_z / 2.0
+        specs = [
+            ("xp", half_x - face_tol, half_x + face_tol, -half_y - 1.0, half_y + 1.0, -half_z - 1.0, half_z + 1.0),
+            ("xn", -half_x - face_tol, -half_x + face_tol, -half_y - 1.0, half_y + 1.0, -half_z - 1.0, half_z + 1.0),
+            ("yp", -half_x - 1.0, half_x + 1.0, half_y - face_tol, half_y + face_tol, -half_z - 1.0, half_z + 1.0),
+            ("yn", -half_x - 1.0, half_x + 1.0, -half_y - face_tol, -half_y + face_tol, -half_z - 1.0, half_z + 1.0),
+            ("zp", -half_x - 1.0, half_x + 1.0, -half_y - 1.0, half_y + 1.0, half_z - face_tol, half_z + face_tol),
+            ("zn", -half_x - 1.0, half_x + 1.0, -half_y - 1.0, half_y + 1.0, -half_z - face_tol, -half_z + face_tol),
+        ]
+        entities: list[int] = []
+        for suffix, x_min, x_max, y_min, y_max, z_min, z_max in specs:
+            selection_tag = f"boxsel_shell_outer_{suffix}"
+            try:
+                self.model.java.selection().remove(selection_tag)
+            except Exception:
+                pass
+            selection = self.model.java.selection().create(selection_tag, "Box")
+            selection.set("entitydim", "2")
+            selection.set("condition", "intersects")
+            selection.set("xmin", f"{x_min}[mm]")
+            selection.set("xmax", f"{x_max}[mm]")
+            selection.set("ymin", f"{y_min}[mm]")
+            selection.set("ymax", f"{y_max}[mm]")
+            selection.set("zmin", f"{z_min}[mm]")
+            selection.set("zmax", f"{z_max}[mm]")
+            try:
+                entities.extend(int(entity) for entity in list(selection.entities()))
+            except Exception:
+                continue
+        entities = sorted(set(entities))
+        if entities:
+            logger.info("      ✓ 机壳外表面边界已选择: %d 个边界实体", len(entities))
+        return entities
 
     def _list_physics_tags(self) -> list[str]:
         if self.model is None:
@@ -218,6 +330,10 @@ class ComsolModelBuilderMixin:
         Build a fresh COMSOL model from STEP geometry.
         """
         try:
+            reset_profile_contract_state = getattr(self, "_reset_profile_contract_state", None)
+            if callable(reset_profile_contract_state):
+                reset_profile_contract_state()
+
             if self.model is not None:
                 logger.info("  清理旧模型...")
                 try:
@@ -300,8 +416,21 @@ class ComsolModelBuilderMixin:
             mat.selection().all()
             logger.info("  ✓ 材料已应用到所有域")
 
-            self.model.java.param().set("P_scale", "0.01")
-            logger.info("  ✓ 全局参数 P_scale 已设置: 0.01 (1% 功率)")
+            use_power_continuation_ramp = bool(
+                getattr(self, "_uses_power_continuation_ramp", lambda: True)()
+            )
+            use_diagnostic_power_scaling = bool(
+                getattr(self, "_uses_diagnostic_power_scaling", lambda: True)()
+            )
+            if use_power_continuation_ramp:
+                self.model.java.param().set("P_scale", "0.01")
+                logger.info("  ✓ 全局参数 P_scale 已设置: 0.01 (1% 功率)")
+                if use_diagnostic_power_scaling:
+                    mark_profile_simplification = getattr(self, "_mark_profile_simplification", None)
+                    if callable(mark_profile_simplification):
+                        mark_profile_simplification(DIAGNOSTIC_SIMPLIFICATION_P_SCALE)
+            else:
+                logger.info("  ✓ 热路径启用：直接施加组件功率，不使用 P_scale continuation")
 
             logger.info("  [3.5/7] 建立全局默认导热网络...")
             try:
@@ -336,7 +465,9 @@ class ComsolModelBuilderMixin:
             )
 
             logger.info("  [5.6/7] 配置结构场求解支路...")
-            self._structural_setup_ok = self._configure_structural_multiphysics()
+            self._structural_setup_ok = self._configure_structural_multiphysics(
+                design_state=design_state,
+            )
 
             logger.info("  [5.7/7] 配置热-结构-电耦合支路...")
             self._coupled_setup_ok = self._configure_coupled_multiphysics()
@@ -372,8 +503,12 @@ class ComsolModelBuilderMixin:
             )
 
             logger.info("  [7/7] 配置求解器...")
-            ht.feature("init1").set("Tinit", "293.15[K]")
-            logger.info("  ✓ 求解器配置完成: 使用 COMSOL 默认配置, 初始温度=293.15K")
+            initial_temperature_k = float(getattr(self, "initial_temperature_k", 293.15) or 293.15)
+            ht.feature("init1").set("Tinit", f"{initial_temperature_k}[K]")
+            logger.info(
+                "  ✓ 求解器配置完成: 使用 COMSOL 默认配置, 初始温度=%.2fK",
+                initial_temperature_k,
+            )
             logger.info("  ✓ 动态模型创建完成")
         except Exception as exc:
             logger.error(f"动态模型创建失败: {exc}", exc_info=True)
@@ -435,16 +570,78 @@ class ComsolModelBuilderMixin:
             logger.warning(f"      外边界选择校验失败，将回退到全边界锚点: {exc}")
             missing_anchor_components = [c.id for c in design_state.components]
 
+        t_surface = float(getattr(self, "surface_temperature_k", 273.15) or 273.15)
+        shell_outer_entities = self._select_shell_outer_boundary_entities(design_state=design_state)
+        use_canonical_thermal_path = bool(
+            getattr(self, "_uses_canonical_thermal_path", lambda: False)()
+        )
+        if use_canonical_thermal_path:
+            radiation_bc = ht.feature().create("rad_amb1", "SurfaceToAmbientRadiation", 2)
+            t_surface_sink = float(getattr(self, "surface_temperature_k", 293.15) or 293.15)
+            t_ambient = float(getattr(self, "ambient_temperature_k", t_surface_sink) or t_surface_sink)
+            t_radiation_sink = t_ambient
+            radiation_bc.set("Tamb", f"{t_radiation_sink}[K]")
+            try:
+                radiation_bc.set("Text", f"{t_radiation_sink}[K]")
+            except Exception:
+                pass
+            try:
+                radiation_bc.set("epsilon_rad_mat", "userdef")
+            except Exception:
+                pass
+            try:
+                radiation_bc.set("epsilon_rad", "0.8")
+            except Exception:
+                pass
+            if shell_outer_entities:
+                emissivity_ok = self._ensure_boundary_surface_emissivity_material(
+                    tag="mat_shell_rad",
+                    label="Shell Outer Surface Emissivity",
+                    boundary_entities=shell_outer_entities,
+                    emissivity=0.8,
+                )
+                if emissivity_ok:
+                    logger.info("      ✓ 机壳外表面边界材料已补充 Surface Emissivity")
+                radiation_bc.selection().set(shell_outer_entities)
+                logger.info("      ✓ Canonical 辐射边界已绑定到舱体机壳外表面")
+            else:
+                logger.warning(
+                    "      ⚠ Canonical 辐射边界缺少机壳外表面选择，回退到 diagnostic_simplified。"
+                    f" 漏锚组件: {missing_anchor_components if missing_anchor_components else '未知'}"
+                )
+                try:
+                    ht.feature().remove("rad_amb1")
+                except Exception:
+                    pass
+            if shell_outer_entities:
+                logger.info(
+                    "      ✓ SurfaceToAmbientRadiation 已设置: Tamb=%.2fK",
+                    t_radiation_sink,
+                )
+                return
+
         temp_bc = ht.feature().create("temp1", "TemperatureBoundary")
-        t_surface = 273.15
         temp_bc.set("T0", f"{t_surface}[K]")
         logger.info(f"      ✓ 温度边界已设置: T_surface={t_surface}K")
+        mark_profile_simplification = getattr(self, "_mark_profile_simplification", None)
+        if callable(mark_profile_simplification):
+            mark_profile_simplification(DIAGNOSTIC_SIMPLIFICATION_BOUNDARY_TEMPERATURE_ANCHOR)
 
         logger.info("    - 添加数值稳定锚（微弱对流边界）...")
         conv_bc = ht.feature().create("conv_stabilizer", "HeatFluxBoundary")
-        h_stabilizer = 0.1
-        t_ambient = 293.15
+        h_stabilizer = 0.1 if not self._resolve_shell_geometry(design_state) else 2.0
+        t_ambient = float(getattr(self, "ambient_temperature_k", 293.15) or 293.15)
         conv_bc.set("q0", f"{h_stabilizer}[W/(m^2*K)]*({t_ambient}[K]-T)")
+        if callable(mark_profile_simplification):
+            mark_profile_simplification(DIAGNOSTIC_SIMPLIFICATION_WEAK_CONVECTION_STABILIZER)
+
+        if shell_outer_entities:
+            temp_bc.selection().set(shell_outer_entities)
+            conv_bc.selection().all()
+            logger.info("      ✓ 热边界已绑定到舱体机壳外表面")
+            logger.info("      ✓ 稳定化弱对流仍作用于全边界，以避免内部悬空域失稳")
+            logger.info(f"      ✓ 数值稳定锚已设置: h={h_stabilizer} W/(m^2*K), T_ambient={t_ambient}K")
+            return
 
         if selected_entities and not missing_anchor_components:
             temp_bc.selection().named(sel_name)
@@ -459,6 +656,40 @@ class ComsolModelBuilderMixin:
             )
 
         logger.info(f"      ✓ 数值稳定锚已设置: h={h_stabilizer} W/(m^2*K), T_ambient={t_ambient}K")
+
+    def _ensure_boundary_surface_emissivity_material(
+        self,
+        *,
+        tag: str,
+        label: str,
+        boundary_entities: list[int],
+        emissivity: float,
+    ) -> bool:
+        if not boundary_entities:
+            return False
+        try:
+            mat = self.model.java.material().create(tag, "Common")
+        except Exception:
+            try:
+                self.model.java.material().remove(tag)
+            except Exception:
+                pass
+            mat = self.model.java.material().create(tag, "Common")
+        mat.label(label)
+        try:
+            mat.selection().geom("geom1", 2)
+        except Exception:
+            pass
+        mat.selection().set([int(item) for item in list(boundary_entities) if int(item) > 0])
+        def_group = mat.propertyGroup("def")
+        applied = False
+        for prop_key in ("epsilon_rad", "epsilon"):
+            try:
+                def_group.set(prop_key, str(float(emissivity)))
+                applied = True
+            except Exception:
+                continue
+        return bool(applied)
 
     def _create_component_box_selection(
         self,

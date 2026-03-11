@@ -1,0 +1,691 @@
+{
+  "baseline_id": "public_reference_baseline_v1",
+  "version": "2026-03-10",
+  "reference_boundary": "Public morphology grammar only. No proprietary CAD, no STEP aperture kernel, and no internal reverse-engineered structure.",
+  "archetypes": [
+    {
+      "archetype_id": "navigation_satellite",
+      "mission_class": "navigation",
+      "morphology": {
+        "bus_topology": "panel_bus",
+        "bus_aspect_ratio_bounds": [
+          {
+            "numerator_axis": "x",
+            "denominator_axis": "y",
+            "min_ratio": 0.5,
+            "max_ratio": 2.5,
+            "notes": "Navigation panel buses may be moderately elongated in-plan."
+          },
+          {
+            "numerator_axis": "x",
+            "denominator_axis": "z",
+            "min_ratio": 0.5,
+            "max_ratio": 2.5,
+            "notes": "Body length and height stay in the same order of magnitude."
+          },
+          {
+            "numerator_axis": "y",
+            "denominator_axis": "z",
+            "min_ratio": 0.3,
+            "max_ratio": 2.0,
+            "notes": "Panel bus cross-section remains bounded and non-flat."
+          }
+        ],
+        "task_face_semantics": [
+          {
+            "semantic": "antenna_face",
+            "face_id": "+Z",
+            "required": true,
+            "notes": "Primary earth-pointing navigation payload face."
+          },
+          {
+            "semantic": "solar_array_mount_port",
+            "face_id": "+Y",
+            "required": true,
+            "notes": "Port-side solar wing mount."
+          },
+          {
+            "semantic": "solar_array_mount_starboard",
+            "face_id": "-Y",
+            "required": true,
+            "notes": "Starboard-side solar wing mount."
+          },
+          {
+            "semantic": "radiator_face",
+            "face_id": "-Z",
+            "required": false,
+            "notes": "Preferred cold-side radiator face."
+          }
+        ],
+        "external_appendage_schema": [
+          {
+            "template_id": "navigation_solar_wing",
+            "kind": "solar_array",
+            "allowed_faces": [
+              "+Y",
+              "-Y"
+            ],
+            "max_instances": 2,
+            "max_span_mm": [
+              2200.0,
+              700.0,
+              60.0
+            ],
+            "max_offset_mm": 220.0,
+            "notes": "Symmetric dual-wing pattern."
+          },
+          {
+            "template_id": "navigation_antenna_cluster",
+            "kind": "antenna_cluster",
+            "allowed_faces": [
+              "+Z"
+            ],
+            "max_instances": 2,
+            "max_span_mm": [
+              950.0,
+              950.0,
+              500.0
+            ],
+            "max_offset_mm": 180.0,
+            "notes": "Earth-pointing antenna deck."
+          }
+        ],
+        "interior_zone_schema": [
+          {
+            "zone_id": "nav_payload_core",
+            "semantic": "payload_zone",
+            "allowed_categories": [
+              "payload",
+              "communication"
+            ],
+            "notes": "Navigation payload and RF front-end volume."
+          },
+          {
+            "zone_id": "nav_avionics_bay",
+            "semantic": "avionics_zone",
+            "allowed_categories": [
+              "avionics",
+              "adcs"
+            ],
+            "notes": "Central avionics and attitude-control deck."
+          },
+          {
+            "zone_id": "nav_power_bay",
+            "semantic": "power_zone",
+            "allowed_categories": [
+              "power",
+              "battery"
+            ],
+            "notes": "Battery and power conditioning zone."
+          },
+          {
+            "zone_id": "nav_structure_spine",
+            "semantic": "structure_zone",
+            "allowed_categories": [
+              "structure"
+            ],
+            "notes": "Load path through the panel bus backbone."
+          }
+        ],
+        "attitude_semantics": [
+          "earth-pointing",
+          "antenna_boresight_stable"
+        ],
+        "allowed_shell_variants": [
+          "panel_box",
+          "elongated_panel_bus"
+        ]
+      },
+      "default_rule_profile": "satellite/navigation/default",
+      "public_reference_notes": [
+        "Public navigation satellite descriptions emphasize dedicated antenna deck and symmetric power appendages.",
+        "Data captures morphology grammar only and not any specific vendor geometry."
+      ],
+      "reference_boundary": "Open satellite morphology facts only."
+    },
+    {
+      "archetype_id": "optical_remote_sensing_microsat",
+      "mission_class": "earth_observation",
+      "morphology": {
+        "bus_topology": "monocoque",
+        "bus_aspect_ratio_bounds": [
+          {
+            "numerator_axis": "x",
+            "denominator_axis": "y",
+            "min_ratio": 0.7,
+            "max_ratio": 1.4,
+            "notes": "Optical microsat body stays close to square in planform."
+          },
+          {
+            "numerator_axis": "x",
+            "denominator_axis": "z",
+            "min_ratio": 0.6,
+            "max_ratio": 1.6,
+            "notes": "Instrument bus remains compact rather than rail-like."
+          },
+          {
+            "numerator_axis": "y",
+            "denominator_axis": "z",
+            "min_ratio": 0.6,
+            "max_ratio": 1.6,
+            "notes": "Side dimension and height remain in the same order."
+          }
+        ],
+        "task_face_semantics": [
+          {
+            "semantic": "payload_face",
+            "face_id": "+Z",
+            "required": true,
+            "notes": "Optical payload boresight face."
+          },
+          {
+            "semantic": "solar_array_mount",
+            "face_id": "+Y",
+            "required": true,
+            "notes": "Deployable solar array face."
+          },
+          {
+            "semantic": "radiator_face",
+            "face_id": "-Z",
+            "required": false,
+            "notes": "Cold-side thermal rejection face."
+          }
+        ],
+        "external_appendage_schema": [
+          {
+            "template_id": "optical_baffle",
+            "kind": "baffle",
+            "allowed_faces": [
+              "+Z"
+            ],
+            "max_instances": 1,
+            "max_span_mm": [
+              900.0,
+              900.0,
+              900.0
+            ],
+            "max_offset_mm": 80.0,
+            "notes": "Sun-shield or optical baffle around the payload face."
+          },
+          {
+            "template_id": "optical_solar_wing",
+            "kind": "solar_array",
+            "allowed_faces": [
+              "+Y",
+              "-Y"
+            ],
+            "max_instances": 2,
+            "max_span_mm": [
+              1600.0,
+              600.0,
+              50.0
+            ],
+            "max_offset_mm": 180.0,
+            "notes": "One or two side-mounted wings."
+          }
+        ],
+        "interior_zone_schema": [
+          {
+            "zone_id": "optical_payload_tube",
+            "semantic": "payload_zone",
+            "allowed_categories": [
+              "payload",
+              "optics"
+            ],
+            "notes": "Optical payload line-of-sight volume."
+          },
+          {
+            "zone_id": "optical_avionics_middeck",
+            "semantic": "avionics_zone",
+            "allowed_categories": [
+              "avionics",
+              "adcs"
+            ],
+            "notes": "ADCS and control electronics close to payload axis."
+          },
+          {
+            "zone_id": "optical_power_base",
+            "semantic": "power_zone",
+            "allowed_categories": [
+              "power",
+              "battery"
+            ],
+            "notes": "Power conditioning volume near structural base."
+          },
+          {
+            "zone_id": "optical_thermal_band",
+            "semantic": "thermal_zone",
+            "allowed_categories": [
+              "thermal"
+            ],
+            "notes": "Thermally sensitive isolation band."
+          }
+        ],
+        "attitude_semantics": [
+          "nadir-looking",
+          "sun-avoidance"
+        ],
+        "allowed_shell_variants": [
+          "camera_bus",
+          "monocoque_box"
+        ]
+      },
+      "default_rule_profile": "satellite/earth_observation/default",
+      "public_reference_notes": [
+        "Optical microsat grammar prioritizes a stable payload face and cold-side rejection face.",
+        "Payload housing and side solar appendages remain configurable within public morphology limits."
+      ],
+      "reference_boundary": "Public mission-shape baseline only."
+    },
+    {
+      "archetype_id": "radar_or_comm_payload_microsat",
+      "mission_class": "communications",
+      "morphology": {
+        "bus_topology": "panel_bus",
+        "bus_aspect_ratio_bounds": [
+          {
+            "numerator_axis": "x",
+            "denominator_axis": "y",
+            "min_ratio": 0.5,
+            "max_ratio": 2.5,
+            "notes": "RF buses may widen to support side-mounted payload structures."
+          },
+          {
+            "numerator_axis": "x",
+            "denominator_axis": "z",
+            "min_ratio": 0.4,
+            "max_ratio": 2.0,
+            "notes": "Antenna-dominant buses may be moderately elongated."
+          },
+          {
+            "numerator_axis": "y",
+            "denominator_axis": "z",
+            "min_ratio": 0.4,
+            "max_ratio": 2.0,
+            "notes": "Secondary span remains bounded against very flat slabs."
+          }
+        ],
+        "task_face_semantics": [
+          {
+            "semantic": "antenna_face",
+            "face_id": "+Z",
+            "required": true,
+            "notes": "Main radar or communications boresight face."
+          },
+          {
+            "semantic": "payload_mount_face",
+            "face_id": "+X",
+            "required": true,
+            "notes": "Sidewall payload or feed support face."
+          },
+          {
+            "semantic": "solar_array_mount",
+            "face_id": "-Y",
+            "required": false,
+            "notes": "Secondary solar array support."
+          }
+        ],
+        "external_appendage_schema": [
+          {
+            "template_id": "radar_panel",
+            "kind": "antenna_panel",
+            "allowed_faces": [
+              "+Z",
+              "+X"
+            ],
+            "max_instances": 2,
+            "max_span_mm": [
+              2200.0,
+              1800.0,
+              180.0
+            ],
+            "max_offset_mm": 260.0,
+            "notes": "Planar antenna or radar aperture placeholder."
+          },
+          {
+            "template_id": "comm_solar_wing",
+            "kind": "solar_array",
+            "allowed_faces": [
+              "+Y",
+              "-Y"
+            ],
+            "max_instances": 2,
+            "max_span_mm": [
+              1800.0,
+              700.0,
+              60.0
+            ],
+            "max_offset_mm": 220.0,
+            "notes": "Power support appendage for RF mission."
+          }
+        ],
+        "interior_zone_schema": [
+          {
+            "zone_id": "rf_payload_bay",
+            "semantic": "payload_zone",
+            "allowed_categories": [
+              "payload",
+              "communication"
+            ],
+            "notes": "RF payload, deployables, and feed-chain volume."
+          },
+          {
+            "zone_id": "rf_power_bay",
+            "semantic": "power_zone",
+            "allowed_categories": [
+              "power",
+              "battery"
+            ],
+            "notes": "Higher-power subsystem zone."
+          },
+          {
+            "zone_id": "rf_avionics_bay",
+            "semantic": "avionics_zone",
+            "allowed_categories": [
+              "avionics",
+              "adcs"
+            ],
+            "notes": "Core avionics and pointing control."
+          },
+          {
+            "zone_id": "rf_structure_frame",
+            "semantic": "structure_zone",
+            "allowed_categories": [
+              "structure"
+            ],
+            "notes": "Panel-frame load path and appendage support."
+          }
+        ],
+        "attitude_semantics": [
+          "antenna_boresight_stable",
+          "slew-capable"
+        ],
+        "allowed_shell_variants": [
+          "panel_box",
+          "antenna_deck_bus"
+        ]
+      },
+      "default_rule_profile": "satellite/communications/default",
+      "public_reference_notes": [
+        "The baseline treats radar and communications microsats as a shared antenna-dominant family.",
+        "It captures only face semantics and appendage envelopes, not mission-specific RF implementation."
+      ],
+      "reference_boundary": "Shared public RF morphology grammar."
+    },
+    {
+      "archetype_id": "cubesat_modular_bus",
+      "mission_class": "technology_demonstration",
+      "morphology": {
+        "bus_topology": "cubesat_rail",
+        "bus_aspect_ratio_bounds": [
+          {
+            "numerator_axis": "x",
+            "denominator_axis": "y",
+            "min_ratio": 0.8,
+            "max_ratio": 1.25,
+            "notes": "CubeSat rail cross-section remains near-square."
+          },
+          {
+            "numerator_axis": "x",
+            "denominator_axis": "z",
+            "min_ratio": 0.25,
+            "max_ratio": 1.0,
+            "notes": "Rail buses may extend along stack axis but not exceed square-body proportion."
+          },
+          {
+            "numerator_axis": "y",
+            "denominator_axis": "z",
+            "min_ratio": 0.25,
+            "max_ratio": 1.0,
+            "notes": "Secondary cross-section stays bounded relative to stack length."
+          }
+        ],
+        "task_face_semantics": [
+          {
+            "semantic": "payload_face",
+            "face_id": "+Z",
+            "required": true,
+            "notes": "Common payload or camera face for modular CubeSat buses."
+          },
+          {
+            "semantic": "rail_stack_axis",
+            "face_id": "-Z",
+            "required": true,
+            "notes": "Stacking and deployer alignment face."
+          },
+          {
+            "semantic": "solar_array_mount",
+            "face_id": "+Y",
+            "required": false,
+            "notes": "Optional deployable wing face."
+          }
+        ],
+        "external_appendage_schema": [
+          {
+            "template_id": "cubesat_deployable_panel",
+            "kind": "solar_array",
+            "allowed_faces": [
+              "+Y",
+              "-Y",
+              "+X",
+              "-X"
+            ],
+            "max_instances": 4,
+            "max_span_mm": [
+              600.0,
+              350.0,
+              30.0
+            ],
+            "max_offset_mm": 80.0,
+            "notes": "Small deployable side panel."
+          },
+          {
+            "template_id": "cubesat_patch_antenna",
+            "kind": "antenna",
+            "allowed_faces": [
+              "+Z",
+              "-Z"
+            ],
+            "max_instances": 2,
+            "max_span_mm": [
+              180.0,
+              180.0,
+              40.0
+            ],
+            "max_offset_mm": 30.0,
+            "notes": "Flush or near-flush patch antenna."
+          }
+        ],
+        "interior_zone_schema": [
+          {
+            "zone_id": "cubesat_payload_slot",
+            "semantic": "payload_zone",
+            "allowed_categories": [
+              "payload",
+              "optics"
+            ],
+            "notes": "Top-end modular payload slot."
+          },
+          {
+            "zone_id": "cubesat_stack_bus",
+            "semantic": "avionics_zone",
+            "allowed_categories": [
+              "avionics",
+              "power",
+              "adcs"
+            ],
+            "notes": "PCB stack and EPS/ADCS modular bus section."
+          },
+          {
+            "zone_id": "cubesat_battery_slot",
+            "semantic": "power_zone",
+            "allowed_categories": [
+              "battery",
+              "power"
+            ],
+            "notes": "Battery cassette or sidewall power volume."
+          },
+          {
+            "zone_id": "cubesat_rail_structure",
+            "semantic": "structure_zone",
+            "allowed_categories": [
+              "structure"
+            ],
+            "notes": "Rail and corner post structural zone."
+          }
+        ],
+        "attitude_semantics": [
+          "modular-stack",
+          "deployable-aware"
+        ],
+        "allowed_shell_variants": [
+          "1u_to_12u_rail_bus",
+          "flat_panel_cubesat"
+        ]
+      },
+      "default_rule_profile": "satellite/cubesat/default",
+      "public_reference_notes": [
+        "CubeSat grammar follows public rail-bus and modular stack conventions.",
+        "Only modular envelopes and side appendage limits are captured."
+      ],
+      "reference_boundary": "Public CubeSat morphology and packaging rules."
+    },
+    {
+      "archetype_id": "science_experiment_smallsat",
+      "mission_class": "science",
+      "morphology": {
+        "bus_topology": "modular_frame",
+        "bus_aspect_ratio_bounds": [
+          {
+            "numerator_axis": "x",
+            "denominator_axis": "y",
+            "min_ratio": 0.6,
+            "max_ratio": 1.8,
+            "notes": "Science buses allow moderate in-plane variation."
+          },
+          {
+            "numerator_axis": "x",
+            "denominator_axis": "z",
+            "min_ratio": 0.5,
+            "max_ratio": 2.0,
+            "notes": "Instrument carriers may be somewhat elongated but remain bounded."
+          },
+          {
+            "numerator_axis": "y",
+            "denominator_axis": "z",
+            "min_ratio": 0.5,
+            "max_ratio": 2.0,
+            "notes": "Frame depth stays in the same order as lateral span."
+          }
+        ],
+        "task_face_semantics": [
+          {
+            "semantic": "experiment_face",
+            "face_id": "+Z",
+            "required": true,
+            "notes": "Primary science instrument or experiment-facing side."
+          },
+          {
+            "semantic": "thermal_rejection_face",
+            "face_id": "-Z",
+            "required": false,
+            "notes": "Preferred radiator or cold-side face."
+          },
+          {
+            "semantic": "deployable_mount",
+            "face_id": "+Y",
+            "required": false,
+            "notes": "Optional experiment boom or panel support face."
+          }
+        ],
+        "external_appendage_schema": [
+          {
+            "template_id": "science_boom",
+            "kind": "boom",
+            "allowed_faces": [
+              "+Y",
+              "-Y",
+              "+X",
+              "-X"
+            ],
+            "max_instances": 2,
+            "max_span_mm": [
+              1800.0,
+              200.0,
+              200.0
+            ],
+            "max_offset_mm": 150.0,
+            "notes": "Sensor boom or experiment mast."
+          },
+          {
+            "template_id": "science_panel",
+            "kind": "solar_array",
+            "allowed_faces": [
+              "+Y",
+              "-Y"
+            ],
+            "max_instances": 2,
+            "max_span_mm": [
+              1400.0,
+              600.0,
+              50.0
+            ],
+            "max_offset_mm": 200.0,
+            "notes": "Supportive power panels for science missions."
+          }
+        ],
+        "interior_zone_schema": [
+          {
+            "zone_id": "science_payload_bay",
+            "semantic": "payload_zone",
+            "allowed_categories": [
+              "payload",
+              "science"
+            ],
+            "notes": "Primary experiment or science payload volume."
+          },
+          {
+            "zone_id": "science_avionics_ring",
+            "semantic": "avionics_zone",
+            "allowed_categories": [
+              "avionics",
+              "adcs"
+            ],
+            "notes": "Control electronics around the experiment bay."
+          },
+          {
+            "zone_id": "science_power_pack",
+            "semantic": "power_zone",
+            "allowed_categories": [
+              "power",
+              "battery"
+            ],
+            "notes": "EPS and battery support volume."
+          },
+          {
+            "zone_id": "science_thermal_guard",
+            "semantic": "thermal_zone",
+            "allowed_categories": [
+              "thermal"
+            ],
+            "notes": "Temperature-sensitive isolation and rejection zone."
+          }
+        ],
+        "attitude_semantics": [
+          "experiment-pointing",
+          "flexible-observation"
+        ],
+        "allowed_shell_variants": [
+          "modular_frame_box",
+          "instrument-forward_bus"
+        ]
+      },
+      "default_rule_profile": "satellite/science/default",
+      "public_reference_notes": [
+        "Science smallsat family remains intentionally broad and instrument-driven.",
+        "The baseline encodes experiment-facing semantics and deployable envelopes only."
+      ],
+      "reference_boundary": "Public science smallsat morphology grammar."
+    }
+  ]
+}

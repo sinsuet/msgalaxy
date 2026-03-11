@@ -31,6 +31,10 @@ from core.mode_contract import (
     resolve_lifecycle_state,
 )
 from core.path_policy import serialize_artifact_path, serialize_run_path
+from visualization.review_summary_bridge import (
+    format_iteration_review_report_block,
+    load_iteration_review_summary_for_run,
+)
 from core.modes.agent_loop.trace_store import (
     append_agent_loop_trace_row,
     init_agent_loop_trace_csv,
@@ -358,6 +362,12 @@ def _upsert_markdown_block(content: str, block: str, start_marker: str, end_mark
     return f"{content}{separator}\n{block}"
 
 
+def _format_markdown_bool(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    return "true" if bool(value) else "false"
+
+
 def write_markdown_report(
     run_dir: str,
     summary: Dict[str, Any],
@@ -439,6 +449,315 @@ def write_markdown_report(
             ).strip()
             if vop_round_audit_table:
                 f.write(f"- VOP round audit table: `{vop_round_audit_table}`\n")
+            f.write("\n")
+
+        iteration_review_summary = load_iteration_review_summary_for_run(run_dir, summary=summary)
+        iteration_review_block = format_iteration_review_report_block(iteration_review_summary)
+        if iteration_review_block:
+            f.write(iteration_review_block)
+
+        satellite_archetype_id = str(summary.get("satellite_archetype_id", "") or "").strip()
+        satellite_mission_class = str(summary.get("satellite_mission_class", "") or "").strip()
+        satellite_task_type = str(summary.get("satellite_task_type", "") or "").strip()
+        satellite_default_rule_profile = str(
+            summary.get("satellite_default_rule_profile", "") or ""
+        ).strip()
+        satellite_bus_span_mm = list(summary.get("satellite_bus_span_mm", []) or [])
+        satellite_bus_aspect_ratio_evaluated = list(
+            summary.get("satellite_bus_aspect_ratio_evaluated", []) or []
+        )
+        satellite_bus_aspect_ratio_violations = list(
+            summary.get("satellite_bus_aspect_ratio_violations", []) or []
+        )
+        satellite_task_face_missing_requirements = [
+            str(item).strip()
+            for item in list(summary.get("satellite_task_face_missing_requirements", []) or [])
+            if str(item).strip()
+        ]
+        satellite_task_face_resolution = [
+            dict(item)
+            for item in list(summary.get("satellite_task_face_resolution", []) or [])
+            if isinstance(item, dict)
+        ]
+        satellite_task_face_resolution_source_counts = dict(
+            summary.get("satellite_task_face_resolution_source_counts", {}) or {}
+        )
+        satellite_appendage_template_violations = [
+            str(item).strip()
+            for item in list(summary.get("satellite_appendage_template_violations", []) or [])
+            if str(item).strip()
+        ]
+        satellite_interior_zone_violations = [
+            str(item).strip()
+            for item in list(summary.get("satellite_interior_zone_violations", []) or [])
+            if str(item).strip()
+        ]
+        satellite_interior_zone_resolution = [
+            dict(item)
+            for item in list(summary.get("satellite_interior_zone_resolution", []) or [])
+            if isinstance(item, dict)
+        ]
+        satellite_interior_zone_resolution_source_counts = dict(
+            summary.get("satellite_interior_zone_resolution_source_counts", {}) or {}
+        )
+        satellite_interior_zone_unassigned_components = [
+            dict(item)
+            for item in list(summary.get("satellite_interior_zone_unassigned_components", []) or [])
+            if isinstance(item, dict)
+        ]
+        satellite_reference_baseline_id = str(
+            summary.get("satellite_reference_baseline_id", "") or ""
+        ).strip()
+        satellite_reference_baseline_version = str(
+            summary.get("satellite_reference_baseline_version", "") or ""
+        ).strip()
+        satellite_baseline_reference_boundary = str(
+            summary.get("satellite_baseline_reference_boundary", "") or ""
+        ).strip()
+        satellite_archetype_reference_boundary = str(
+            summary.get("satellite_archetype_reference_boundary", "") or ""
+        ).strip()
+        satellite_public_reference_notes = [
+            str(item).strip()
+            for item in list(summary.get("satellite_public_reference_notes", []) or [])
+            if str(item).strip()
+        ]
+        satellite_archetype_source = str(summary.get("satellite_archetype_source", "") or "").strip()
+        satellite_gate_mode = str(summary.get("satellite_likeness_gate_mode", "") or "").strip()
+        satellite_gate_evaluation_stage = str(
+            summary.get("satellite_gate_evaluation_stage", "") or ""
+        ).strip()
+        satellite_final_warning = bool(
+            summary.get("satellite_likeness_gate_final_warning", False)
+        )
+        satellite_final_warning_failed_rules = [
+            str(item).strip()
+            for item in list(
+                summary.get("satellite_likeness_gate_final_warning_failed_rules", []) or []
+            )
+            if str(item).strip()
+        ]
+        satellite_gate_total_rule_count = int(
+            summary.get("satellite_gate_total_rule_count", 0) or 0
+        )
+        satellite_gate_passed_rule_count = int(
+            summary.get("satellite_gate_passed_rule_count", 0) or 0
+        )
+        satellite_gate_failed_rule_count = int(
+            summary.get("satellite_gate_failed_rule_count", 0) or 0
+        )
+        satellite_gate_rule_results = [
+            dict(item)
+            for item in list(summary.get("satellite_likeness_gate_rule_results", []) or [])
+            if isinstance(item, dict) and str(item.get("rule_id", "") or "").strip()
+        ]
+        satellite_gate_failed_rule_details = [
+            dict(item)
+            for item in list(summary.get("satellite_gate_failed_rule_details", []) or [])
+            if isinstance(item, dict) and str(item.get("rule_id", "") or "").strip()
+        ]
+        satellite_failed_rules = [
+            str(item).strip()
+            for item in list(summary.get("satellite_likeness_gate_failed_rules", []) or [])
+            if str(item).strip()
+        ]
+        satellite_gate_present = (
+            satellite_archetype_id
+            or satellite_mission_class
+            or satellite_task_type
+            or satellite_default_rule_profile
+            or satellite_bus_span_mm
+            or satellite_bus_aspect_ratio_evaluated
+            or satellite_bus_aspect_ratio_violations
+            or satellite_reference_baseline_id
+            or satellite_reference_baseline_version
+            or satellite_baseline_reference_boundary
+            or satellite_archetype_reference_boundary
+            or satellite_public_reference_notes
+            or satellite_archetype_source
+            or satellite_gate_mode
+            or satellite_gate_evaluation_stage
+            or satellite_final_warning
+            or satellite_final_warning_failed_rules
+            or satellite_gate_rule_results
+            or "satellite_likeness_gate_passed" in summary
+        )
+        if satellite_gate_present:
+            f.write("## Satellite Context\n\n")
+            if satellite_archetype_id:
+                f.write(f"- Archetype: `{satellite_archetype_id}`\n")
+            if satellite_mission_class:
+                f.write(f"- Mission class: `{satellite_mission_class}`\n")
+            if satellite_task_type:
+                f.write(f"- Task type: `{satellite_task_type}`\n")
+            if satellite_default_rule_profile:
+                f.write(f"- Default rule profile: `{satellite_default_rule_profile}`\n")
+            if satellite_bus_span_mm:
+                f.write(f"- Bus span mm: `{satellite_bus_span_mm}`\n")
+            if satellite_reference_baseline_id or satellite_reference_baseline_version:
+                f.write(
+                    "- Reference baseline: "
+                    f"`{satellite_reference_baseline_id or 'n/a'}@{satellite_reference_baseline_version or 'n/a'}`\n"
+                )
+            if satellite_archetype_source:
+                f.write(f"- Archetype source: `{satellite_archetype_source}`\n")
+            if satellite_baseline_reference_boundary:
+                f.write(
+                    "- Baseline boundary: "
+                    f"`{satellite_baseline_reference_boundary}`\n"
+                )
+            if satellite_archetype_reference_boundary:
+                f.write(
+                    "- Archetype boundary: "
+                    f"`{satellite_archetype_reference_boundary}`\n"
+                )
+            if satellite_public_reference_notes:
+                f.write(
+                    "- Public reference notes: "
+                    f"`{' | '.join(satellite_public_reference_notes)}`\n"
+                )
+            if satellite_gate_mode:
+                f.write(f"- Likeness gate mode: `{satellite_gate_mode}`\n")
+            if satellite_gate_evaluation_stage:
+                f.write(
+                    "- Likeness evaluation stage: "
+                    f"`{satellite_gate_evaluation_stage}`\n"
+                )
+            f.write(
+                "- Likeness gate passed: "
+                f"`{_format_markdown_bool(summary.get('satellite_likeness_gate_passed', None))}`\n"
+            )
+            f.write(
+                "- Final-state gate warning: "
+                f"`{_format_markdown_bool(satellite_final_warning)}`\n"
+            )
+            if satellite_final_warning_failed_rules:
+                f.write(
+                    "- Final-state gate warning failed rules: "
+                    f"`{', '.join(satellite_final_warning_failed_rules)}`\n"
+                )
+            if satellite_gate_rule_results:
+                rule_text = ", ".join(
+                    [
+                        f"{str(item.get('rule_id', '') or '')}={_format_markdown_bool(item.get('passed', None))}"
+                        for item in satellite_gate_rule_results
+                        if str(item.get("rule_id", "") or "").strip()
+                    ]
+                )
+                f.write(f"- Gate rule results: `{rule_text or 'n/a'}`\n")
+            if satellite_gate_total_rule_count:
+                f.write(
+                    "- Gate rule counts: "
+                    f"`total={satellite_gate_total_rule_count}, passed={satellite_gate_passed_rule_count}, failed={satellite_gate_failed_rule_count}`\n"
+                )
+            if satellite_gate_failed_rule_details:
+                failed_detail_text = " | ".join(
+                    [
+                        f"{str(item.get('rule_id', '') or '')}: {str(item.get('summary', '') or '').strip()}"
+                        for item in satellite_gate_failed_rule_details
+                        if str(item.get("rule_id", "") or "").strip()
+                    ]
+                )
+                f.write(
+                    "- Failed rule details: "
+                    f"`{failed_detail_text or 'n/a'}`\n"
+                )
+            if satellite_bus_aspect_ratio_evaluated:
+                ratio_text = ", ".join(
+                    [
+                        f"{str(item.get('ratio_id', '') or '')}={item.get('ratio')}"
+                        for item in satellite_bus_aspect_ratio_evaluated
+                        if str(item.get("ratio_id", "") or "").strip()
+                    ]
+                )
+                f.write(f"- Bus aspect ratios: `{ratio_text or 'n/a'}`\n")
+            if satellite_bus_aspect_ratio_violations:
+                f.write(
+                    "- Bus aspect-ratio violations: "
+                    f"`{', '.join(str(item) for item in satellite_bus_aspect_ratio_violations)}`\n"
+                )
+            f.write(
+                "- Task-face missing requirements: "
+                f"`{', '.join(satellite_task_face_missing_requirements) if satellite_task_face_missing_requirements else 'none'}`\n"
+            )
+            if satellite_task_face_resolution:
+                task_face_resolution_text = ", ".join(
+                    [
+                        f"{str(item.get('semantic', '') or '')}:{str(item.get('face_id', '') or '')}({str(item.get('source', '') or 'n/a')})"
+                        for item in satellite_task_face_resolution
+                        if str(item.get("semantic", "") or "").strip()
+                    ]
+                )
+                f.write(
+                    "- Task-face resolution: "
+                    f"`{task_face_resolution_text or 'n/a'}`\n"
+                )
+            if satellite_task_face_resolution_source_counts:
+                f.write(
+                    "- Task-face resolution source counts: "
+                    f"`{', '.join([f'{key}={value}' for key, value in satellite_task_face_resolution_source_counts.items()])}`\n"
+                )
+            f.write(
+                "- Appendage template violations: "
+                f"`{', '.join(satellite_appendage_template_violations) if satellite_appendage_template_violations else 'none'}`\n"
+            )
+            f.write(
+                "- Interior-zone violations: "
+                f"`{', '.join(satellite_interior_zone_violations) if satellite_interior_zone_violations else 'none'}`\n"
+            )
+            if satellite_interior_zone_resolution:
+                interior_zone_resolution_text = ", ".join(
+                    [
+                        f"{str(item.get('component_id', '') or '')}->{str(item.get('zone_id', '') or '')}({str(item.get('component_category', '') or '')};{str(item.get('source', '') or 'n/a')})"
+                        for item in satellite_interior_zone_resolution
+                        if str(item.get("component_id", "") or "").strip()
+                    ]
+                )
+                f.write(
+                    "- Interior-zone resolution: "
+                    f"`{interior_zone_resolution_text or 'n/a'}`\n"
+                )
+            if satellite_interior_zone_resolution_source_counts:
+                f.write(
+                    "- Interior-zone resolution source counts: "
+                    f"`{', '.join([f'{key}={value}' for key, value in satellite_interior_zone_resolution_source_counts.items()])}`\n"
+                )
+            if satellite_interior_zone_unassigned_components:
+                unassigned_text = ", ".join(
+                    [
+                        f"{str(item.get('component_id', '') or '')}:{str(item.get('component_category', '') or '')}"
+                        for item in satellite_interior_zone_unassigned_components
+                        if str(item.get("component_id", "") or "").strip()
+                    ]
+                )
+                f.write(
+                    "- Interior-zone unassigned details: "
+                    f"`{unassigned_text or 'n/a'}`\n"
+                )
+            f.write(
+                "- Failed rules: "
+                f"`{', '.join(satellite_failed_rules) if satellite_failed_rules else 'none'}`\n"
+            )
+            if "satellite_candidate_task_face_count" in summary:
+                f.write(
+                    "- Candidate task faces: "
+                    f"`{summary.get('satellite_candidate_task_face_count')}`\n"
+                )
+            if "satellite_candidate_appendage_count" in summary:
+                f.write(
+                    "- Candidate appendages: "
+                    f"`{summary.get('satellite_candidate_appendage_count')}`\n"
+                )
+            if "satellite_candidate_interior_zone_assignment_count" in summary:
+                f.write(
+                    "- Candidate interior-zone assignments: "
+                    f"`{summary.get('satellite_candidate_interior_zone_assignment_count')}`\n"
+                )
+            if "satellite_candidate_interior_zone_unassigned_count" in summary:
+                f.write(
+                    "- Candidate interior-zone unassigned: "
+                    f"`{summary.get('satellite_candidate_interior_zone_unassigned_count')}`\n"
+                )
             f.write("\n")
 
         mass_final_summary_block = build_mass_final_summary_report_block(run_dir, summary)

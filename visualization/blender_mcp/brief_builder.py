@@ -45,8 +45,20 @@ def build_render_brief(
     metrics = dict(bundle.get("metrics", {}) or {})
     key_states = dict(bundle.get("key_states", {}) or {})
     final_state = dict(key_states.get("final", {}) or {})
+    best_state = dict(key_states.get("best", {}) or {})
     artifact_links = dict(bundle.get("artifact_links", {}) or {})
     metadata = dict(bundle.get("metadata", {}) or {})
+    final_state_metadata = dict(final_state.get("metadata", {}) or {})
+    best_state_metadata = dict(best_state.get("metadata", {}) or {})
+
+    payload = {}
+    if payload_file is not None and payload_file.exists():
+        try:
+            payload = json.loads(payload_file.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+    payload_metadata = dict(payload.get("metadata", {}) or {})
+    operator_family_audit = dict(payload_metadata.get("operator_family_audit", {}) or {})
 
     prompt_lines = [
         "Use the `blender` MCP server for this task.",
@@ -103,6 +115,13 @@ def build_render_brief(
             f"- Key states: `{','.join(key_states.keys())}`",
             f"- Direct-render state: `{final_state.get('name', 'final')}`",
             f"- Final snapshot: `{final_state.get('snapshot_path', '')}`",
+            f"- Best primary operator family: `{best_state_metadata.get('primary_action_family_label', '')}`",
+            f"- Final primary operator family: `{final_state_metadata.get('primary_action_family_label', '')}`",
+            f"- Best operator caption: `{best_state_metadata.get('semantic_caption_short', '')}`",
+            f"- Final operator caption: `{final_state_metadata.get('semantic_caption_short', '')}`",
+            f"- Final operator rules: `{final_state_metadata.get('rule_summary', '')}`",
+            f"- Final expected effects: `{final_state_metadata.get('expected_effect_summary', '')}`",
+            f"- Operator-family unmapped actions: `{json.dumps(operator_family_audit.get('unmapped_actions', []), ensure_ascii=False)}`",
             "- Scene collections: `MSGA_Envelope`, `MSGA_Keepouts`, `MSGA_State_Initial`, `MSGA_State_Best`, `MSGA_State_Final`, `MSGA_Attachments`, `MSGA_Annotations`",
             "- Default visible state collection: `MSGA_State_Final`",
             f"- Component count: `{len(components)}`",

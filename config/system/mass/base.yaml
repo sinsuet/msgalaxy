@@ -16,6 +16,8 @@ geometry:
 
 simulation:
   backend: comsol
+  physics_profile: diagnostic_simplified
+  orbital_thermal_loads_available: false
   save_mph_each_eval: false
   save_mph_on_failure: true
   enable_structural_real: true

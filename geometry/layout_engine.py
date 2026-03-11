@@ -8,12 +8,19 @@ from typing import List, Dict, Any
 import random
 import numpy as np
 
+from geometry.catalog_geometry import resolve_catalog_component_spec_from_component_config
 from geometry.schema import Part, AABB, EnvelopeGeometry, PackingResult, generate_category_color
 from geometry.keepout import build_envelope, build_bins, create_keepout_aabbs
 from geometry.packing import multistart_pack
 from core.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _component_value(component_cfg: Dict[str, Any], key: str, default: Any = None) -> Any:
+    if key in component_cfg and component_cfg.get(key) is not None:
+        return component_cfg.get(key)
+    return default
 
 
 def generate_bom_from_config(cfg: Dict[str, Any]) -> List[Part]:
@@ -30,13 +37,22 @@ def generate_bom_from_config(cfg: Dict[str, Any]) -> List[Part]:
     parts = []
 
     for comp in components:
+        catalog_spec = resolve_catalog_component_spec_from_component_config(comp)
+        dims_mm = comp.get('dims_mm')
+        if catalog_spec is not None:
+            dims_mm = list(catalog_spec.resolved_proxy().size_mm)
+        if dims_mm is None:
+            raise KeyError(f"component_missing_dims_mm_or_catalog_proxy:{comp.get('id')}")
+        mass_kg = _component_value(comp, 'mass_kg', getattr(catalog_spec, 'mass_kg', 0.0))
+        power_w = _component_value(comp, 'power_w', getattr(catalog_spec, 'power_w', 0.0))
+        category = _component_value(comp, 'category', getattr(catalog_spec, 'family', 'generic'))
         part = Part(
             id=comp['id'],
-            dims=tuple(comp['dims_mm']),
-            mass=comp['mass_kg'],
-            power=comp['power_w'],
-            category=comp['category'],
-            color=generate_category_color(comp['category']),
+            dims=tuple(dims_mm),
+            mass=float(mass_kg or 0.0),
+            power=float(power_w or 0.0),
+            category=str(category or 'generic'),
+            color=generate_category_color(str(category or 'generic')),
             clearance_mm=cfg.get('clearance_mm', 5.0)
         )
         parts.append(part)

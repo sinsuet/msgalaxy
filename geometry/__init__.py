@@ -45,6 +45,33 @@ from .metrics import (
     calculate_pairwise_clearance,
     summarize_geometry_state,
 )
+from .catalog_geometry import (
+    CatalogComponentSpec,
+    GeometryProfileSpec,
+    PrimitivePlacementSpec,
+    extract_catalog_component_specs_from_layout_config,
+    load_catalog_component_spec,
+    resolve_catalog_component_spec_from_component_config,
+    resolve_catalog_component_spec,
+    resolve_catalog_component_specs,
+)
+from .geometry_proxy import (
+    GeometryProxySpec,
+    build_geometry_proxy_manifest,
+    component_proxy_entries,
+    shell_proxy_entries,
+)
+from .shell_spec import (
+    ApertureSiteSpec,
+    PanelSpec,
+    ShellSpec,
+    aperture_proxy_plans,
+    build_box_panels,
+    load_shell_spec,
+    plan_box_panel_aperture,
+    resolve_shell_spec_from_mapping,
+    resolve_shell_spec,
+)
 
 __all__ = [
     # Schema
@@ -77,4 +104,27 @@ __all__ = [
     "calculate_packing_efficiency",
     "calculate_pairwise_clearance",
     "summarize_geometry_state",
+    # Catalog geometry contracts
+    "CatalogComponentSpec",
+    "GeometryProfileSpec",
+    "PrimitivePlacementSpec",
+    "GeometryProxySpec",
+    "build_geometry_proxy_manifest",
+    "component_proxy_entries",
+    "shell_proxy_entries",
+    "extract_catalog_component_specs_from_layout_config",
+    "load_catalog_component_spec",
+    "resolve_catalog_component_spec_from_component_config",
+    "resolve_catalog_component_spec",
+    "resolve_catalog_component_specs",
+    # Shell/panel/aperture contracts
+    "ApertureSiteSpec",
+    "PanelSpec",
+    "ShellSpec",
+    "aperture_proxy_plans",
+    "build_box_panels",
+    "load_shell_spec",
+    "plan_box_panel_aperture",
+    "resolve_shell_spec_from_mapping",
+    "resolve_shell_spec",
 ]

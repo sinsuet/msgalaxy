@@ -1,0 +1,22 @@
+{
+  "shell_id": "cylinder_shell_endcap_port_v1",
+  "outer_profile": {
+    "kind": "cylinder",
+    "radius_mm": 120.0,
+    "height_mm": 220.0
+  },
+  "thickness_mm": 8.0,
+  "aperture_sites": [
+    {
+      "aperture_id": "zenith_camera_port",
+      "panel_id": "panel_pz",
+      "shape": "circular_cutout",
+      "center_mm": [10.0, -15.0],
+      "size_mm": [50.0, 50.0],
+      "proxy_depth_mm": 70.0,
+      "through_shell": true,
+      "allowed_component_families": ["payload"]
+    }
+  ],
+  "material": "aluminum_6061"
+}

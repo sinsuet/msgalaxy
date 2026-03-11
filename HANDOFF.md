@@ -1,9 +1,9 @@
 ﻿# MsGalaxy HANDOFF
 
 **Role**: Single Source of Truth (SSOT)  
-**Last Updated**: 2026-03-09 00:45 +08:00 (Asia/Shanghai)
+**Last Updated**: 2026-03-11 19:11 +08:00 (Asia/Shanghai)
 **State Tag**: `mp-op-maas-v3-transition`  
-**Current Focus**: 继续沿 `vop_maas` 主链收口 real-LLM primary round、`PolicyPack -> mass` 注入、feedback-aware second-pass 与 `L1-L4` targeted regression；`Mode Scoped Experiment Observability v2` 已补齐 `run naming + single run log + VOP controller-first summary/report/visualization + runtime fingerprint -> bundle/brief/release-audit`，并新增 `mass` run 的传统优化过程中文总结（template-only、mode-scoped）。
+**Current Focus**: 在既有 `mass / vop_maas` 可执行主线上，继续以 docs-first 方式推进卫星领域重构；ADR-0010 ~ 0014 目前已完成最小共享桥接、集成 smoke，以及 review-package 侧的 legacy case adapter、summary/report/visualization digest 回写、`teacher_demo` field-case strict gate、DSL v4 family mapping 与 semantic caption 消费薄切片，真实执行基线仍未切换到完整新架构。
 
 ---
 
@@ -97,8 +97,19 @@
   - `run/agent_loop/run_L1.py` ~ `run/agent_loop/run_L4.py`
   - `run/vop_maas/run_L1.py` ~ `run/vop_maas/run_L4.py`（experimental，默认仍建议先用 `simplified` / `mock_policy` 验线）
 - 旧批量 benchmark 入口、旧模板、旧测试链已删除；`benchmarks/` 已在 2026-03-07 清空，后续若重建必须遵循 `RULES.md` 的短名规则。
-- Blender 可视化侧链 P0 已落地：可从 run 目录生成 `render_bundle.json`、Blender 场景脚本、Codex brief，并可选 direct Blender render。
-- Blender 可视化下一批准方向已冻结为 **Blender Review Package**（planned target，尚未实现）：保持 Blender 作为主 3D 审阅面，新增离线 review dashboard 作为伴随分析面；默认入口仍为 `run/render_blender_scene.py`，默认 profile 为 `engineering`，默认 state set 为 `initial/best/final`。
+- ADR-0010 ~ 0014 已落地最小共享桥接与集成 smoke（不等于五个子系统已全面实现）：
+  - `domain/satellite/geometry_bridge.py` 已统一 `task/mission -> archetype -> shell/catalog/aperture -> geometry proxy` 的归一化报告
+  - `simulation/comsol/model_builder.py` 已支持从 `metadata.shell_spec` 解析 canonical shell geometry
+  - `visualization/review_package/*` 已透传 `contract_bundle / field_export_registry / simulation_metric_unit_contract / profile_audit_digest`，并已稳定写出 DSL v4 的 `operator_family_registry / package_index / aggregate montage metadata / semantic caption` 等 review 字段，同时把 iteration review 摘要回写到 `summary.json / report.md / visualizations/visualization_summary.txt` 与 Blender sidecar digest
+  - `visualization/review_package/iteration_builder.py` 已支持旧 case 最小适配：识别 `design_state.json`、已有 `field_exports`、已有 render/summary metadata，并对缺失/不兼容 case 合同 clear fail-fast；见 `docs/reports/R54_case_contract_adapter_20260311.md`
+  - `teacher_demo` 现已具备 profile 级 `field_case_gate`：仅接受 `explicit_step_index / explicit_sequence / dataset_summary_case_order` 这类稳定绑定；`dataset_case_order`、`default_case_dir`、`ambiguous/incompatible/defaulted/unmapped` 会阻断 `teacher_demo`，但不阻断 `research_fast`；见 `docs/reports/R55_teacher_demo_field_case_gate_20260311.md`
+  - `core.visualization._operator_action_family(...)` 现统一消费 v3 + v4 canonical family map，`geometry/aperture/thermal/structural/power/mission` 六大家族在 visualization / review package 统计中不再大面积掉到 `other`
+  - `visualization.review_summary_bridge` 与 Blender review sidecar 现已把 `primary_action_label / semantic_caption / target_summary / rule_summary / expected_effect_summary / observed_effect_summary` 暴露到 `package_index.json`、`review_payload.json`、`render_bundle.json`、`render_manifest.json`、`render_brief.md`、`report.md` 与 `visualization_summary.txt`
+  - `tests/test_comsol_physics_profiles.py`、`tests/test_architecture_integration_smoke.py` 与 `tests/test_real_comsol_vertical_smoke.py` 当前定向结果为 `20 passed`；见 `docs/reports/R50_architecture_integration_validation_20260311.md`、`docs/reports/R51_real_comsol_vertical_smoke_20260311.md` 与 `docs/reports/R56_canonical_thermal_probe_20260311.md`
+  - `R51` 已记录一次真实 `STEP -> COMSOL import -> solve -> field export -> review inputs` 垂直 smoke 通过；默认稳定链路仍如实落在 `diagnostic_simplified`
+  - `tool_real_comsol_vertical_smoke.py` 现新增显式 `--enable-canonical-thermal-path` 探测开关；`R56` 记录了真实 COMSOL 下的 canonical thermal probe：`SurfaceToAmbientRadiation + user-defined emissivity + finer continuation` 已完成最小桥接，但单例 vertical smoke 仍在首个稳态步发生 Newton 不收敛，因此 canonical thermal 仍不能宣称 release-grade validated
+- Blender 可视化侧链已进入 `Blender Review Package` 薄切片：可从 run 目录生成 `render_bundle.json`、`review_payload.json`、`render_manifest.json v2`、`render_brief.md`、三态 scene script、scene audit，并挂接 `IterationReviewPackage` 索引与 family audit / semantic caption 摘要。
+- Blender 可视化下一批准方向仍保留：以 Blender 作为主 3D 审阅面，继续补离线 companion dashboard、更高保真 teacher/demo 批量渲染与更丰富的数据集级联查；默认入口仍为 `run/render_blender_scene.py`，默认 profile 为 `engineering`，默认 state set 为 `initial/best/final`。
 
 ### 1.2 未实现/仅规划（不可过度声明）
 - M4（神经可行性预测、神经算子策略、多保真神经调度）尚未开始实现。
@@ -107,7 +118,15 @@
 - 当前还没有新的 `LLM intent vs deterministic` 对照结论；这一阶段尚未开始。
 - `LLMGateway` 迁移仍在推进中：`MetaReasoner`、`agent_loop` agents 与 runner/profile 归一已开始落地，但尚未宣称所有历史调用点全部完成切换
 - `vop_maas` 的 **多轮** reflective replanning、policy memory、template evolution 仍未实现；当前只能按 `M5-min` 单轮薄切片对外表述，不能上升为完整 `M5/M6`。
-- Blender Review Package 仍处于规划态：当前仓内 **尚未** 具备三态 Blender scene、`review_payload.json`、离线 `review_dashboard.html`、升级版 `render_manifest.json v2`，不得将其描述为已落地能力。
+- `Blender Review Package` 的离线 `review_dashboard.html`、全量 teacher-demo 高保真批处理与更完整的数据集审阅交互仍未实现；当前已落地的是 `review_payload.json`、`render_manifest.json v2`、三态 scene script、scene audit 与 `IterationReviewPackage` 薄切片。
+- DSL v4 在 review/visualization 侧已稳定落到六大家族并可生成紧凑语义 caption，但 `reorient_to_allowed_face`、`activate_aperture_site`、`mount_to_bracket_site`、`rebalance_cg_by_group_shift`、`move_heat_source_to_radiator_zone`、`separate_hot_pair` 仍只在 family/compact caption 级表达，尚未形成更细粒度子家族分析。
+- `2026-03-10` 已接受新的卫星领域重构蓝图，并已完成最小共享桥接/适配/集成 smoke；尚未进入五个子系统的全面替换与主线切换：
+  - `docs/adr/0010-satellite-archetype-and-reference-baseline.md`
+  - `docs/adr/0011-catalog-shell-aperture-geometry-kernel.md`
+  - `docs/adr/0012-comsol-canonical-satellite-physics-contract.md`
+  - `docs/adr/0013-operator-dsl-v4-and-placement-rule-engine.md`
+  - `docs/adr/0014-iteration-review-package-and-teacher-demo-chain.md`
+- 上述蓝图的目标是把 MsGalaxy 从“通用盒体布局优化”升级为“卫星原型驱动 + 目录件 + 机壳开窗 + 规范 COMSOL + step 级审阅”的卫星布局平台；当前仓内代码仍以 `ComponentGeometry + scenario BOM + DSL v3 + simplified/canonical mixed COMSOL path` 为真实基线。
 
 ---
 
@@ -220,6 +239,10 @@
 - 已通过：
   - `pytest tests/test_maas_core.py tests/test_api.py -q`
   - 结果：`66 passed`
+- 已通过：
+  - `pytest tests/test_operator_family_v4_mapping.py tests/test_iteration_review_package.py tests/test_blender_render_bundle.py -q`
+  - 结果：`20 passed`
+  - 证明：DSL v4 family 映射、teacher/research review package、Blender bundle/brief/report/visualization summary 的 family audit 与 semantic caption 消费链保持一致；详见 `docs/reports/R53_v4_operator_family_mapping_20260311.md` 与 `docs/reports/R55_v4_operator_semantic_caption_review_contract_20260311.md`
 - 注：`conda run` 在本环境偶发打印误导性 `ERROR conda.cli.main_run...` 文本，但上述两轮返回码均为 `0`，以退出码与 pytest 汇总为准。
 
 ### 3.4 收尾治理（2026-03-07）

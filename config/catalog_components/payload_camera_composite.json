@@ -1,0 +1,42 @@
+{
+  "catalog_id": "payload_camera_composite_v1",
+  "family": "payload",
+  "display_name": "Payload Camera Composite",
+  "geometry_profile": {
+    "kind": "composite_primitive",
+    "children": [
+      {
+        "placement_id": "camera_body",
+        "offset_mm": [0.0, 0.0, 0.0],
+        "profile": {
+          "kind": "box",
+          "size_mm": [140.0, 120.0, 110.0]
+        }
+      },
+      {
+        "placement_id": "camera_baffle",
+        "offset_mm": [0.0, 0.0, 85.0],
+        "profile": {
+          "kind": "frustum",
+          "bottom_radius_mm": 28.0,
+          "top_radius_mm": 18.0,
+          "height_mm": 60.0
+        }
+      }
+    ]
+  },
+  "geometry_proxy": {
+    "kind": "aabb",
+    "size_mm": [140.0, 120.0, 200.0],
+    "functional_axis": "+Z",
+    "mount_faces": ["-Z"]
+  },
+  "mass_kg": 3.8,
+  "power_w": 28.0,
+  "material": "aluminum",
+  "mount_faces": ["-Z"],
+  "allowed_orientations": ["+Z", "-Z"],
+  "interfaces": {
+    "aperture_alignment": "camera_window"
+  }
+}

@@ -10,7 +10,7 @@ from typing import Any, Dict, Sequence
 
 from core.path_policy import serialize_repo_path, serialize_run_path
 from core.protocol import DesignState
-from core.visualization import _parse_operator_actions
+from core.visualization import _operator_action_family, _resolve_record_operator_actions
 from geometry.cad_export_occ import export_design_occ
 from visualization.blender_mcp.contracts import (
     RenderArtifactLinks,
@@ -26,11 +26,15 @@ from visualization.blender_mcp.contracts import (
 )
 from visualization.review_package import (
     DEFAULT_KEY_STATES,
+    build_iteration_review_packages_from_run,
     build_review_package_artifact_links,
     build_review_payload,
     build_state_selection,
+    get_operator_family_spec,
     planned_review_package_paths,
 )
+from visualization.review_package.operator_semantics import build_operator_semantic_display
+from visualization.review_summary_bridge import build_iteration_review_audit_digest
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -206,12 +210,41 @@ def _normalize_key_states(key_states: str | Sequence[str] | None) -> list[str]:
     return list(dict.fromkeys(normalized or list(DEFAULT_KEY_STATES)))
 
 
+def _operator_family_label(family: str) -> str:
+    spec = get_operator_family_spec(family)
+    if spec is None:
+        return str(family or "")
+    return str(spec.label or family)
+
+
 def _record_to_render_state(state_name: str, record: Dict[str, Any]) -> RenderState:
     event = dict(record.get("event", {}) or {})
     snapshot = dict(record.get("snapshot", {}) or {})
     design_state = DesignState(**dict(snapshot.get("design_state", {}) or {}))
     components = [_component_to_render(component) for component in design_state.components]
     metadata = dict(snapshot.get("metadata", {}) or {})
+    event_metadata = dict(event.get("metadata", {}) or {})
+    merged_metadata = dict(metadata)
+    merged_metadata.update(event_metadata)
+    operator_actions = _resolve_record_operator_actions(event, snapshot)
+    primary_action = "" if not operator_actions else str(operator_actions[0])
+    primary_action_family = _operator_action_family(primary_action) if primary_action else ""
+    semantic_display = build_operator_semantic_display(
+        primary_action=primary_action,
+        dsl_version=(
+            merged_metadata.get("selected_candidate_dsl_version", "")
+            or merged_metadata.get("operator_dsl_version", "")
+            or ""
+        ),
+        metadata=merged_metadata,
+        expected_effects=merged_metadata.get("expected_effects", []),
+        observed_effects=[],
+        rule_engine_report=(
+            merged_metadata.get("rule_engine_report")
+            or merged_metadata.get("rule_engine")
+            or {}
+        ),
+    )
     metadata.update(
         {
             "moved_components": list(event.get("moved_components", []) or []),
@@ -220,6 +253,21 @@ def _record_to_render_state(state_name: str, record: Dict[str, Any]) -> RenderSt
             "changed_contacts": list(event.get("changed_contacts", []) or []),
             "changed_coatings": list(event.get("changed_coatings", []) or []),
             "component_count": len(components),
+            "primary_action": primary_action,
+            "primary_action_family": primary_action_family,
+            "primary_action_family_label": _operator_family_label(primary_action_family),
+            "primary_action_label": str(semantic_display.get("primary_action_label", "") or ""),
+            "semantic_caption_short": str(semantic_display.get("semantic_caption_short", "") or ""),
+            "semantic_caption": str(semantic_display.get("semantic_caption", "") or ""),
+            "target_summary": str(semantic_display.get("target_summary", "") or ""),
+            "rule_summary": str(semantic_display.get("rule_summary", "") or ""),
+            "expected_effect_summary": str(semantic_display.get("expected_effect_summary", "") or ""),
+            "observed_effect_summary": str(semantic_display.get("observed_effect_summary", "") or ""),
+            "unmapped_actions": [
+                action
+                for action in operator_actions
+                if _operator_action_family(action) == "other"
+            ],
         }
     )
     return RenderState(
@@ -230,7 +278,7 @@ def _record_to_render_state(state_name: str, record: Dict[str, Any]) -> RenderSt
         diagnosis_status=str(event.get("diagnosis_status", snapshot.get("diagnosis_status", "")) or ""),
         diagnosis_reason=str(event.get("diagnosis_reason", snapshot.get("diagnosis_reason", "")) or ""),
         metrics=dict(snapshot.get("metrics", event.get("metrics", {})) or {}),
-        operator_actions=_parse_operator_actions(event.get("operator_actions", snapshot.get("operator_actions", []))),
+        operator_actions=operator_actions,
         components=components,
         metadata=metadata,
     )
@@ -263,6 +311,8 @@ def build_render_bundle_from_run(
     profile_name: str = "engineering",
     export_step: bool = False,
     key_states: str | Sequence[str] | None = None,
+    review_field_case_dir: str | Path | None = None,
+    review_field_case_map: str | Path | Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     run_path = Path(run_dir).resolve()
     summary_path = run_path / "summary.json"
@@ -291,6 +341,46 @@ def build_render_bundle_from_run(
         output_root=output_root,
         step_path=serialize_repo_path(step_path),
     )
+    review_package_metadata: Dict[str, Any] = {
+        "iteration_review_build_status": "not_started",
+    }
+    try:
+        inferred_review_field_case_dir = review_field_case_dir
+        inferred_review_field_case_map = review_field_case_map
+        if inferred_review_field_case_dir is None:
+            inferred_review_field_case_dir = str(summary.get("iteration_review_field_case_dir", "") or "").strip() or None
+        if inferred_review_field_case_map is None:
+            inferred_review_field_case_map = str(summary.get("iteration_review_field_case_map_path", "") or "").strip() or None
+        review_result = build_iteration_review_packages_from_run(
+            run_path,
+            field_case_dir=inferred_review_field_case_dir,
+            field_case_map=inferred_review_field_case_map,
+        )
+        artifact_links.update(
+            {
+                "iteration_review_root": str(review_result.get("output_root", "") or ""),
+                "iteration_review_index_path": str(review_result.get("index_path", "") or ""),
+                "teacher_demo_review_index_path": str(
+                    dict(dict(review_result.get("profiles", {}) or {}).get("teacher_demo", {}) or {}).get("index_path", "")
+                    or ""
+                ),
+                "research_fast_review_index_path": str(
+                    dict(dict(review_result.get("profiles", {}) or {}).get("research_fast", {}) or {}).get("index_path", "")
+                    or ""
+                ),
+            }
+        )
+        review_package_metadata = {
+            "iteration_review_build_status": "success",
+            "iteration_review_index_path": str(review_result.get("index_path", "") or ""),
+            "iteration_review_teacher_demo_index_path": str(artifact_links.get("teacher_demo_review_index_path", "") or ""),
+            "iteration_review_research_fast_index_path": str(artifact_links.get("research_fast_review_index_path", "") or ""),
+        }
+    except Exception as exc:
+        review_package_metadata = {
+            "iteration_review_build_status": "error",
+            "iteration_review_error": str(exc),
+        }
 
     source = RenderSource(
         run_dir=serialize_repo_path(run_path),
@@ -359,6 +449,7 @@ def build_render_bundle_from_run(
             "scene_contract_status": "phase1_final_state_render_only",
             "visualization_only": True,
             "legacy_components_alias_state": "final",
+            **review_package_metadata,
         },
     )
 
@@ -370,8 +461,27 @@ def build_render_bundle_from_run(
             state_records=selected_records,
             all_records=all_records,
             summary=summary,
+            artifact_links_override=artifact_links,
             notes=list(bundle.heuristics.notes),
         )
+    )
+    payload_metadata = dict(payload.metadata or {})
+    operator_family_registry = dict(payload_metadata.get("operator_family_registry", {}) or {})
+    operator_family_audit = dict(payload_metadata.get("operator_family_audit", {}) or {})
+    payload.artifacts.update(
+        {
+            "iteration_review_root": str(artifact_links.get("iteration_review_root", "") or ""),
+            "iteration_review_index_path": str(artifact_links.get("iteration_review_index_path", "") or ""),
+            "teacher_demo_review_index_path": str(artifact_links.get("teacher_demo_review_index_path", "") or ""),
+            "research_fast_review_index_path": str(artifact_links.get("research_fast_review_index_path", "") or ""),
+        }
+    )
+    iteration_review_digest = build_iteration_review_audit_digest(payload.iteration_review)
+    bundle.metadata["iteration_review_summary"] = iteration_review_digest
+    bundle.metadata["operator_family_registry"] = operator_family_registry
+    bundle.metadata["operator_family_audit"] = operator_family_audit
+    bundle.metadata["final_primary_action_family_label"] = str(
+        dict(final_state.metadata or {}).get("primary_action_family_label", "") or ""
     )
 
     manifest = RenderManifest(
@@ -422,12 +532,19 @@ def build_render_bundle_from_run(
                 "output_image": False,
                 "output_blend": False,
             },
+            **review_package_metadata,
         },
         summary_path=source.summary_path,
         snapshot_path=source.snapshot_path,
         step_path=source.step_path,
         step_export_error=step_error,
         component_count=len(final_state.components),
+    )
+    manifest.metadata["iteration_review_summary"] = iteration_review_digest
+    manifest.metadata["operator_family_registry"] = operator_family_registry
+    manifest.metadata["operator_family_audit"] = operator_family_audit
+    manifest.metadata["final_primary_action_family_label"] = str(
+        dict(final_state.metadata or {}).get("primary_action_family_label", "") or ""
     )
 
     bundle_path = planned_paths["bundle_path"]
@@ -446,4 +563,5 @@ def build_render_bundle_from_run(
         "manifest_path": str(manifest_path),
         "output_dir": str(output_root),
         "key_states": list(render_states.keys()),
+        "iteration_review_index_path": str(artifact_links.get("iteration_review_index_path", "") or ""),
     }

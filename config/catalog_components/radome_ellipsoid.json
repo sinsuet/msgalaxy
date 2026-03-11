@@ -1,0 +1,19 @@
+{
+  "catalog_id": "radome_ellipsoid_v1",
+  "family": "payload",
+  "display_name": "Radome Ellipsoid",
+  "geometry_profile": {
+    "kind": "ellipsoid",
+    "semi_axes_mm": [70.0, 55.0, 40.0]
+  },
+  "geometry_proxy": {
+    "kind": "aabb",
+    "size_mm": [140.0, 110.0, 80.0],
+    "functional_axis": "+Z",
+    "mount_faces": ["-Z"]
+  },
+  "mass_kg": 1.4,
+  "power_w": 0.0,
+  "mount_faces": ["-Z"],
+  "allowed_orientations": ["+Z", "-Z"]
+}

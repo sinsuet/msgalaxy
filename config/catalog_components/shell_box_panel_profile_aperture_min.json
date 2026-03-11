@@ -1,0 +1,37 @@
+{
+  "shell_id": "box_shell_profile_port_v1",
+  "outer_profile": {
+    "kind": "box",
+    "size_mm": [340.0, 260.0, 220.0]
+  },
+  "thickness_mm": 8.0,
+  "panels": [
+    {
+      "panel_id": "panel_px",
+      "face": "+X",
+      "span_mm": [260.0, 220.0],
+      "surface_semantics": ["sensor_side"]
+    }
+  ],
+  "aperture_sites": [
+    {
+      "aperture_id": "sensor_profile_port",
+      "panel_id": "panel_px",
+      "shape": "profile_cutout",
+      "center_mm": [10.0, 20.0],
+      "size_mm": [80.0, 40.0],
+      "profile_points_mm": [
+        [-40.0, 0.0],
+        [-20.0, -20.0],
+        [20.0, -20.0],
+        [40.0, 0.0],
+        [20.0, 20.0],
+        [-20.0, 20.0]
+      ],
+      "proxy_depth_mm": 90.0,
+      "through_shell": true,
+      "allowed_component_families": ["payload"]
+    }
+  ],
+  "material": "aluminum_6061"
+}

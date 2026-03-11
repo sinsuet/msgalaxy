@@ -1,0 +1,50 @@
+{
+  "shell_id": "cylinder_shell_side_profile_port_v1",
+  "outer_profile": {
+    "kind": "cylinder",
+    "radius_mm": 130.0,
+    "height_mm": 240.0
+  },
+  "thickness_mm": 8.0,
+  "panels": [
+    {
+      "panel_id": "panel_px",
+      "face": "+X",
+      "span_mm": [260.0, 240.0],
+      "surface_semantics": ["sensor_side"]
+    },
+    {
+      "panel_id": "panel_pz",
+      "face": "+Z",
+      "span_mm": [260.0, 260.0],
+      "surface_semantics": ["zenith_side"]
+    },
+    {
+      "panel_id": "panel_nz",
+      "face": "-Z",
+      "span_mm": [260.0, 260.0],
+      "surface_semantics": ["mount_side"]
+    }
+  ],
+  "aperture_sites": [
+    {
+      "aperture_id": "side_sensor_profile_port",
+      "panel_id": "panel_px",
+      "shape": "profile_cutout",
+      "center_mm": [0.0, 10.0],
+      "size_mm": [70.0, 40.0],
+      "profile_points_mm": [
+        [-35.0, 0.0],
+        [-18.0, -20.0],
+        [18.0, -20.0],
+        [35.0, 0.0],
+        [18.0, 20.0],
+        [-18.0, 20.0]
+      ],
+      "proxy_depth_mm": 90.0,
+      "through_shell": true,
+      "allowed_component_families": ["payload"]
+    }
+  ],
+  "material": "aluminum_6061"
+}

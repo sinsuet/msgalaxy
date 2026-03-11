@@ -12,14 +12,19 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 from core.artifact_index import load_artifact_index
-from core.path_policy import serialize_repo_path, serialize_run_path
+from core.path_policy import resolve_repo_path, serialize_repo_path, serialize_run_path
 from core.visualization import (
     _compute_component_displacements,
     _load_layout_snapshot_records,
+    _merge_operator_actions,
     _operator_action_family,
     _parse_operator_actions,
+    _resolve_record_operator_actions,
     _select_best_candidate_record,
 )
+from .operator_semantics import build_operator_semantic_display
+from .registry import get_operator_family_spec, get_review_profile_contract
+from visualization.review_summary_bridge import build_iteration_review_summary_from_paths
 
 
 DEFAULT_KEY_STATES: tuple[str, ...] = ("initial", "best", "final")
@@ -28,6 +33,15 @@ _NUMBER_RE = re.compile(r"^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$")
 
 def load_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _load_optional_json(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        return load_json(path)
+    except Exception:
+        return {}
 
 
 def iter_snapshot_files(run_dir: Path) -> Iterable[Path]:
@@ -285,6 +299,58 @@ def _list_visualization_paths(run_dir: Path) -> List[str]:
     return paths
 
 
+def _operator_family_label(family: str) -> str:
+    spec = get_operator_family_spec(family)
+    if spec is None:
+        return str(family or "")
+    return str(spec.label or family)
+
+
+def _operator_state_summary(record: Dict[str, Any]) -> Dict[str, Any]:
+    event = dict(record.get("event", {}) or {})
+    snapshot = dict(record.get("snapshot", {}) or {})
+    metadata = dict(snapshot.get("metadata", {}) or {})
+    event_metadata = dict(event.get("metadata", {}) or {})
+    merged_metadata = dict(metadata)
+    merged_metadata.update(event_metadata)
+    actions = _resolve_record_operator_actions(event, snapshot)
+    primary_action = "" if not actions else str(actions[0])
+    primary_family = _operator_action_family(primary_action) if primary_action else ""
+    unmapped_actions = [
+        action for action in actions if _operator_action_family(action) == "other"
+    ]
+    semantic_display = build_operator_semantic_display(
+        primary_action=primary_action,
+        dsl_version=(
+            merged_metadata.get("selected_candidate_dsl_version", "")
+            or merged_metadata.get("operator_dsl_version", "")
+            or ""
+        ),
+        metadata=merged_metadata,
+        expected_effects=merged_metadata.get("expected_effects", []),
+        observed_effects=[],
+        rule_engine_report=(
+            merged_metadata.get("rule_engine_report")
+            or merged_metadata.get("rule_engine")
+            or {}
+        ),
+    )
+    return {
+        "operator_actions": actions,
+        "primary_action": primary_action,
+        "primary_action_family": primary_family,
+        "primary_action_family_label": _operator_family_label(primary_family),
+        "primary_action_label": str(semantic_display.get("primary_action_label", "") or ""),
+        "semantic_caption_short": str(semantic_display.get("semantic_caption_short", "") or ""),
+        "semantic_caption": str(semantic_display.get("semantic_caption", "") or ""),
+        "target_summary": str(semantic_display.get("target_summary", "") or ""),
+        "rule_summary": str(semantic_display.get("rule_summary", "") or ""),
+        "expected_effect_summary": str(semantic_display.get("expected_effect_summary", "") or ""),
+        "observed_effect_summary": str(semantic_display.get("observed_effect_summary", "") or ""),
+        "unmapped_actions": unmapped_actions,
+    }
+
+
 def build_review_package_artifact_links(
     *,
     run_dir: Path,
@@ -366,6 +432,7 @@ def _compact_state_summary(state_name: str, record: Dict[str, Any]) -> Dict[str,
     snapshot = dict(record.get("snapshot", {}) or {})
     metadata = dict(snapshot.get("metadata", {}) or {})
     design_state = dict(snapshot.get("design_state", {}) or {})
+    operator_summary = _operator_state_summary(record)
     return {
         "name": state_name,
         "snapshot_path": str(record.get("persisted_snapshot_path", "") or ""),
@@ -374,7 +441,20 @@ def _compact_state_summary(state_name: str, record: Dict[str, Any]) -> Dict[str,
         "diagnosis_status": str(event.get("diagnosis_status", snapshot.get("diagnosis_status", "")) or ""),
         "diagnosis_reason": str(event.get("diagnosis_reason", snapshot.get("diagnosis_reason", "")) or ""),
         "metrics": dict(snapshot.get("metrics", event.get("metrics", {})) or {}),
-        "operator_actions": _parse_operator_actions(event.get("operator_actions", snapshot.get("operator_actions", []))),
+        "operator_actions": list(operator_summary.get("operator_actions", []) or []),
+        "primary_action": str(operator_summary.get("primary_action", "") or ""),
+        "primary_action_family": str(operator_summary.get("primary_action_family", "") or ""),
+        "primary_action_family_label": str(
+            operator_summary.get("primary_action_family_label", "") or ""
+        ),
+        "primary_action_label": str(operator_summary.get("primary_action_label", "") or ""),
+        "semantic_caption_short": str(operator_summary.get("semantic_caption_short", "") or ""),
+        "semantic_caption": str(operator_summary.get("semantic_caption", "") or ""),
+        "target_summary": str(operator_summary.get("target_summary", "") or ""),
+        "rule_summary": str(operator_summary.get("rule_summary", "") or ""),
+        "expected_effect_summary": str(operator_summary.get("expected_effect_summary", "") or ""),
+        "observed_effect_summary": str(operator_summary.get("observed_effect_summary", "") or ""),
+        "unmapped_actions": list(operator_summary.get("unmapped_actions", []) or []),
         "component_count": len(list(design_state.get("components", []) or [])),
         "layout_state_hash": str(metadata.get("layout_state_hash", "") or ""),
         "moved_components": list(event.get("moved_components", []) or []),
@@ -427,11 +507,23 @@ def _build_operator_coverage(
     family_counts: Dict[str, int] = {}
     action_counts: Dict[str, int] = {}
     state_actions: Dict[str, List[str]] = {}
+    state_primary_action_families: Dict[str, Dict[str, str]] = {}
 
     for state_name, record in state_records.items():
         event = dict(record.get("event", {}) or {})
-        actions = _parse_operator_actions(event.get("operator_actions", []))
+        snapshot = dict(record.get("snapshot", {}) or {})
+        actions = _resolve_record_operator_actions(event, snapshot)
         state_actions[state_name] = actions
+        operator_summary = _operator_state_summary(record)
+        state_primary_action_families[state_name] = {
+            "primary_action": str(operator_summary.get("primary_action", "") or ""),
+            "primary_action_family": str(
+                operator_summary.get("primary_action_family", "") or ""
+            ),
+            "primary_action_family_label": str(
+                operator_summary.get("primary_action_family_label", "") or ""
+            ),
+        }
         for action in actions:
             action_counts[action] = int(action_counts.get(action, 0) or 0) + 1
             family = _operator_action_family(action)
@@ -440,20 +532,15 @@ def _build_operator_coverage(
     timeline_actions = []
     for record in all_records:
         event = dict(record.get("event", {}) or {})
-        timeline_actions.extend(_parse_operator_actions(event.get("operator_actions", [])))
+        snapshot = dict(record.get("snapshot", {}) or {})
+        timeline_actions.extend(_resolve_record_operator_actions(event, snapshot))
     unique_timeline_actions = sorted(set(timeline_actions))
 
     policy_adjustments: List[Dict[str, Any]] = []
     for row in policy_rows:
         actions = row.get("actions")
         parsed_actions = actions if isinstance(actions, list) else _parse_scalar(actions)
-        action_types: List[str] = []
-        if isinstance(parsed_actions, list):
-            for item in parsed_actions:
-                if isinstance(item, dict):
-                    action_type = str(item.get("type", "") or "").strip()
-                    if action_type:
-                        action_types.append(action_type)
+        action_types = _merge_operator_actions(parsed_actions)
         policy_adjustments.append(
             {
                 "mode": str(row.get("mode", "") or ""),
@@ -464,11 +551,17 @@ def _build_operator_coverage(
             }
         )
 
+    unmapped_actions = sorted(
+        action for action in action_counts.keys() if _operator_action_family(action) == "other"
+    )
     return {
         "state_actions": state_actions,
+        "state_primary_action_families": state_primary_action_families,
         "timeline_unique_actions": unique_timeline_actions,
         "operator_action_counts": action_counts,
         "operator_family_counts": family_counts,
+        "unmapped_actions": unmapped_actions,
+        "unmapped_action_count": int(len(unmapped_actions)),
         "policy_rows_path": _path_if_exists(run_dir, run_dir / "tables" / "policy_tuning.csv"),
         "policy_event_path": _path_if_exists(run_dir, run_dir / "events" / "policy_events.jsonl"),
         "policy_adjustments": policy_adjustments,
@@ -522,6 +615,7 @@ def _build_timeline(run_dir: Path, records: Sequence[Dict[str, Any]]) -> Dict[st
     events: List[Dict[str, Any]] = []
     for record in records:
         event = dict(record.get("event", {}) or {})
+        snapshot = dict(record.get("snapshot", {}) or {})
         events.append(
             {
                 "sequence": int(event.get("sequence", 0) or 0),
@@ -532,7 +626,7 @@ def _build_timeline(run_dir: Path, records: Sequence[Dict[str, Any]]) -> Dict[st
                 "thermal_source": str(event.get("thermal_source", "") or ""),
                 "diagnosis_status": str(event.get("diagnosis_status", "") or ""),
                 "diagnosis_reason": str(event.get("diagnosis_reason", "") or ""),
-                "operator_actions": _parse_operator_actions(event.get("operator_actions", [])),
+                "operator_actions": _resolve_record_operator_actions(event, snapshot),
                 "metrics": dict(event.get("metrics", dict(dict(record.get("snapshot", {}) or {}).get("metrics", {}) or {})) or {}),
             }
         )
@@ -559,6 +653,32 @@ def _build_release_audit(run_dir: Path, summary: Dict[str, Any]) -> Dict[str, An
     }
 
 
+def _build_iteration_review_summary(artifact_links: Dict[str, Any]) -> Dict[str, Any]:
+    return build_iteration_review_summary_from_paths(
+        root_index_path_text=str(artifact_links.get("iteration_review_index_path", "") or ""),
+        teacher_demo_review_index_path=str(artifact_links.get("teacher_demo_review_index_path", "") or ""),
+        research_fast_review_index_path=str(artifact_links.get("research_fast_review_index_path", "") or ""),
+    )
+
+
+def _operator_family_registry_payload() -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+    for family_key in (
+        "geometry",
+        "aperture",
+        "thermal",
+        "structural",
+        "power",
+        "mission",
+        "other",
+    ):
+        spec = get_operator_family_spec(family_key)
+        if spec is None:
+            continue
+        payload[family_key] = spec.model_dump(mode="json")
+    return payload
+
+
 def build_review_payload(
     *,
     run_dir: Path,
@@ -567,9 +687,10 @@ def build_review_payload(
     state_records: Dict[str, Dict[str, Any]],
     all_records: Sequence[Dict[str, Any]],
     summary: Dict[str, Any],
+    artifact_links_override: Dict[str, Any] | None = None,
     notes: Sequence[str] | None = None,
 ) -> Dict[str, Any]:
-    artifact_links = build_review_package_artifact_links(
+    artifact_links = dict(artifact_links_override or {}) or build_review_package_artifact_links(
         run_dir=run_dir,
         output_root=output_root,
         step_path=str(dict(bundle_payload.get("source", {}) or {}).get("step_path", "") or ""),
@@ -582,9 +703,32 @@ def build_review_payload(
     payload_notes.extend([str(item) for item in list(notes or []) if str(item).strip()])
 
     states = {state_name: _compact_state_summary(state_name, record) for state_name, record in state_records.items()}
+    operator_coverage = _build_operator_coverage(
+        run_dir=run_dir,
+        state_records=state_records,
+        all_records=all_records,
+    )
+    operator_family_audit = {
+        "unmapped_actions": list(operator_coverage.get("unmapped_actions", []) or []),
+        "unmapped_action_count": int(operator_coverage.get("unmapped_action_count", 0) or 0),
+        "v4_family_gate_passed": int(operator_coverage.get("unmapped_action_count", 0) or 0) == 0,
+        "teacher_demo_unknown_v4_family_policy": str(
+            get_review_profile_contract("teacher_demo").unknown_v4_family_policy
+        ),
+        "research_fast_unknown_v4_family_policy": str(
+            get_review_profile_contract("research_fast").unknown_v4_family_policy
+        ),
+        "state_primary_action_families": dict(
+            operator_coverage.get("state_primary_action_families", {}) or {}
+        ),
+    }
 
     return {
         "schema_version": "blender_review_payload/v1",
+        "metadata": {
+            "operator_family_registry": _operator_family_registry_payload(),
+            "operator_family_audit": operator_family_audit,
+        },
         "run": {
             "run_id": str(summary.get("run_id", run_dir.name) or run_dir.name),
             "run_label": str(summary.get("run_label", "") or ""),
@@ -599,9 +743,10 @@ def build_review_payload(
         "states": states,
         "attempt_trends": _build_attempt_trends(run_dir),
         "generation_trends": _build_generation_trends(run_dir),
-        "operator_coverage": _build_operator_coverage(run_dir=run_dir, state_records=state_records, all_records=all_records),
+        "operator_coverage": operator_coverage,
         "layout_displacement": _build_layout_displacement(state_records, run_dir),
         "timeline": _build_timeline(run_dir, all_records),
+        "iteration_review": _build_iteration_review_summary(artifact_links),
         "artifacts": artifact_links,
         "notes": payload_notes,
     }

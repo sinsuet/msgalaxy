@@ -18,6 +18,7 @@ import numpy as np
 from core.exceptions import SatelliteDesignError
 from core.final_summary_mass_zh import generate_mass_final_summary_zh
 from core.protocol import DesignState
+from domain.satellite.runtime import evaluate_satellite_likeness_for_design_state
 from optimization.knowledge.mass import MassEvidence
 from optimization.modes.mass.maas_mcts import (
     MCTSEvaluation,
@@ -83,6 +84,642 @@ class MaaSPipelineService:
                 plan["physics_audit_top_k"] = int(floor_audit)
 
         return plan
+
+    @staticmethod
+    def _strict_operator_gate_enabled(opt_cfg: Dict[str, Any]) -> bool:
+        def _is_strict(key: str) -> bool:
+            value = str(opt_cfg.get(key, "off") or "off").strip().lower()
+            return value == "strict"
+
+        return bool(opt_cfg.get("mass_physics_real_only", False)) or _is_strict(
+            "mass_operator_family_gate_mode"
+        ) or _is_strict("mass_operator_realization_gate_mode")
+
+    @staticmethod
+    def _merge_forced_operator_actions(
+        *,
+        existing_actions: List[Any],
+        existing_action_params: List[Any],
+        selected_actions: List[Any],
+        selected_action_params: List[Any],
+        preserve_existing_order: bool = False,
+    ) -> tuple[List[str], List[Dict[str, Any]]]:
+        selected_params_list = list(selected_action_params or [])
+        existing_params_list = list(existing_action_params or [])
+
+        if preserve_existing_order:
+            merged_actions: List[str] = []
+            merged_action_params: List[Dict[str, Any]] = []
+            seen_actions: set[str] = set()
+            selected_param_map: Dict[str, Dict[str, Any]] = {}
+
+            for index, action in enumerate(list(selected_actions or [])):
+                action_name = str(action or "").strip().lower()
+                if not action_name or action_name in selected_param_map:
+                    continue
+                params = (
+                    selected_params_list[index]
+                    if index < len(selected_params_list)
+                    else {}
+                )
+                selected_param_map[action_name] = (
+                    dict(params) if isinstance(params, dict) else {}
+                )
+
+            for index, action in enumerate(list(existing_actions or [])):
+                action_name = str(action or "").strip().lower()
+                if not action_name or action_name in seen_actions:
+                    continue
+                seen_actions.add(action_name)
+                base_params = (
+                    existing_params_list[index]
+                    if index < len(existing_params_list)
+                    else {}
+                )
+                merged_params = (
+                    dict(base_params) if isinstance(base_params, dict) else {}
+                )
+                override_params = dict(selected_param_map.get(action_name, {}) or {})
+                if override_params:
+                    merged_params.update(override_params)
+                merged_actions.append(action_name)
+                merged_action_params.append(merged_params)
+
+            for action_name, params in selected_param_map.items():
+                if action_name in seen_actions:
+                    continue
+                seen_actions.add(action_name)
+                merged_actions.append(action_name)
+                merged_action_params.append(dict(params))
+
+            return merged_actions, merged_action_params
+
+        merged_actions: List[str] = []
+        merged_action_params: List[Dict[str, Any]] = []
+        seen_actions: set[str] = set()
+
+        def _append(action: Any, params: Any) -> None:
+            action_name = str(action or "").strip().lower()
+            if not action_name or action_name in seen_actions:
+                return
+            seen_actions.add(action_name)
+            merged_actions.append(action_name)
+            merged_action_params.append(
+                dict(params) if isinstance(params, dict) else {}
+            )
+
+        for index, action in enumerate(list(selected_actions or [])):
+            params = (
+                selected_params_list[index]
+                if index < len(selected_params_list)
+                else {}
+            )
+            _append(action, params)
+
+        for index, action in enumerate(list(existing_actions or [])):
+            params = (
+                existing_params_list[index]
+                if index < len(existing_params_list)
+                else {}
+            )
+            _append(action, params)
+
+        return merged_actions, merged_action_params
+
+    @classmethod
+    def _resolve_vop_policy_search_space(
+        cls,
+        requested_search_space: str,
+        *,
+        opt_cfg: Dict[str, Any],
+        selected_actions: Optional[List[Any]] = None,
+    ) -> str:
+        search_space = str(requested_search_space or "").strip().lower()
+        if search_space not in {"coordinate", "operator_program", "hybrid"}:
+            return ""
+
+        if (
+            search_space != "operator_program"
+            and bool(opt_cfg.get("mass_enable_operator_program", True))
+            and cls._strict_operator_gate_enabled(opt_cfg)
+        ):
+            existing_actions = list(
+                opt_cfg.get("mass_operator_program_forced_slot_actions", []) or []
+            )
+            if existing_actions or list(selected_actions or []):
+                return "operator_program"
+
+        return search_space
+
+    @staticmethod
+    def _is_missing_satellite_value(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return not str(value).strip()
+        if isinstance(value, (dict, list, tuple, set)):
+            return len(value) == 0
+        return False
+
+    @classmethod
+    def _extract_satellite_metadata_snapshot(
+        cls,
+        *metadata_sources: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        keys = (
+            "satellite_context",
+            "satellite_likeness_gate",
+            "satellite_archetype_id",
+            "satellite_mission_class",
+            "satellite_task_type",
+            "satellite_default_rule_profile",
+            "satellite_reference_baseline_id",
+            "satellite_reference_baseline_version",
+            "satellite_baseline_reference_boundary",
+            "satellite_archetype_reference_boundary",
+            "satellite_public_reference_notes",
+            "satellite_likeness_gate_passed",
+            "satellite_likeness_gate_mode",
+            "satellite_gate_evaluation_stage",
+            "satellite_likeness_gate_final_warning",
+            "satellite_likeness_gate_final_warning_failed_rules",
+        )
+        snapshot: Dict[str, Any] = {}
+        for key in keys:
+            for metadata in metadata_sources:
+                if not isinstance(metadata, dict) or key not in metadata:
+                    continue
+                value = metadata.get(key)
+                if cls._is_missing_satellite_value(value):
+                    continue
+                if isinstance(value, dict):
+                    snapshot[key] = dict(value)
+                elif isinstance(value, list):
+                    snapshot[key] = list(value)
+                else:
+                    snapshot[key] = value
+                break
+
+        for boolean_key in ("satellite_likeness_gate_passed",):
+            if boolean_key in snapshot:
+                continue
+            for metadata in metadata_sources:
+                if not isinstance(metadata, dict) or boolean_key not in metadata:
+                    continue
+                snapshot[boolean_key] = metadata.get(boolean_key)
+                break
+
+        return snapshot
+
+    @classmethod
+    def _apply_satellite_context_metadata(
+        cls,
+        metadata: Optional[Dict[str, Any]],
+        *,
+        satellite_context: Dict[str, Any],
+        evaluation_stage: str = "",
+    ) -> Dict[str, Any]:
+        updated = dict(metadata or {})
+        context = dict(satellite_context or {})
+        if not context:
+            return updated
+
+        updated["satellite_context"] = dict(context)
+        archetype_id = str(context.get("archetype_id", "") or "").strip()
+        if archetype_id:
+            updated["satellite_archetype_id"] = archetype_id
+            updated["satellite_mission_class"] = str(
+                context.get("mission_class", "") or ""
+            )
+            updated["satellite_task_type"] = str(context.get("task_type", "") or "")
+            updated["satellite_default_rule_profile"] = str(
+                context.get("default_rule_profile", "") or ""
+            )
+            updated["satellite_reference_baseline_id"] = str(
+                context.get("baseline_id", "") or ""
+            )
+            updated["satellite_reference_baseline_version"] = str(
+                context.get("baseline_version", "") or ""
+            )
+            updated["satellite_baseline_reference_boundary"] = str(
+                context.get("baseline_reference_boundary", "") or ""
+            )
+            updated["satellite_archetype_reference_boundary"] = str(
+                context.get("archetype_reference_boundary", "") or ""
+            )
+            updated["satellite_public_reference_notes"] = list(
+                context.get("public_reference_notes", []) or []
+            )
+
+        if context.get("gate_report"):
+            updated["satellite_likeness_gate"] = dict(
+                context.get("gate_report", {}) or {}
+            )
+        if context.get("gate_passed") is not None:
+            updated["satellite_likeness_gate_passed"] = bool(
+                context.get("gate_passed", False)
+            )
+        updated["satellite_likeness_gate_mode"] = str(
+            context.get("gate_mode", "off") or "off"
+        )
+        if evaluation_stage:
+            updated["satellite_gate_evaluation_stage"] = str(evaluation_stage)
+
+        failed_rule_ids = [
+            str(item.get("rule_id", "") or "").strip()
+            for item in list(dict(context.get("gate_report", {}) or {}).get("checks", []) or [])
+            if not bool(item.get("passed", False)) and str(item.get("rule_id", "") or "").strip()
+        ]
+        if evaluation_stage == "final_state":
+            final_warning = bool(context.get("gate_passed", None) is False)
+            updated["satellite_likeness_gate_final_warning"] = bool(final_warning)
+            updated["satellite_likeness_gate_final_warning_failed_rules"] = list(
+                failed_rule_ids if final_warning else []
+            )
+        return updated
+
+    @classmethod
+    def _build_satellite_artifact_payload(
+        cls,
+        *metadata_sources: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        satellite_metadata = cls._extract_satellite_metadata_snapshot(*metadata_sources)
+        satellite_context = dict(satellite_metadata.get("satellite_context", {}) or {})
+        gate_report = dict(
+            satellite_metadata.get("satellite_likeness_gate", {})
+            or satellite_context.get("gate_report", {})
+            or {}
+        )
+        candidate = dict(satellite_context.get("candidate", {}) or {})
+        candidate_metadata = dict(candidate.get("metadata", {}) or {})
+        gate_checks = list(gate_report.get("checks", []) or [])
+
+        def _find_gate_check(rule_id: str) -> Dict[str, Any]:
+            for item in gate_checks:
+                if str(item.get("rule_id", "") or "").strip() == str(rule_id):
+                    return dict(item)
+            return {}
+
+        def _count_sources(records: List[Dict[str, Any]]) -> Dict[str, int]:
+            counts: Dict[str, int] = {}
+            for item in list(records or []):
+                source = str(dict(item or {}).get("source", "") or "").strip()
+                if not source:
+                    continue
+                counts[source] = int(counts.get(source, 0)) + 1
+            return {key: counts[key] for key in sorted(counts)}
+
+        def _build_failed_rule_details() -> List[Dict[str, Any]]:
+            details_list: List[Dict[str, Any]] = []
+            for check in list(gate_checks or []):
+                rule_id = str(check.get("rule_id", "") or "").strip()
+                if not rule_id or bool(check.get("passed", False)):
+                    continue
+                raw_details = dict(check.get("details", {}) or {})
+                entry: Dict[str, Any] = {"rule_id": rule_id}
+
+                if rule_id == "archetype_match":
+                    candidate_archetype_id = str(
+                        raw_details.get("candidate_archetype_id", "") or ""
+                    ).strip()
+                    expected_archetype_id = str(
+                        raw_details.get("expected_archetype_id", "") or ""
+                    ).strip()
+                    entry["summary"] = (
+                        f"candidate={candidate_archetype_id or 'n/a'}, "
+                        f"expected={expected_archetype_id or 'n/a'}"
+                    )
+                    if candidate_archetype_id:
+                        entry["candidate_archetype_id"] = candidate_archetype_id
+                    if expected_archetype_id:
+                        entry["expected_archetype_id"] = expected_archetype_id
+                elif rule_id == "bus_aspect_ratio_in_bounds":
+                    violations = [
+                        str(item).strip()
+                        for item in list(raw_details.get("violations", []) or [])
+                        if str(item).strip()
+                    ]
+                    entry["summary"] = " | ".join(violations) if violations else "ratio violation"
+                    entry["violations"] = violations
+                elif rule_id == "task_faces_present":
+                    missing_requirements = [
+                        f"{str(item[0])}@{str(item[1])}"
+                        for item in list(raw_details.get("missing_task_faces", []) or [])
+                        if isinstance(item, (list, tuple)) and len(item) == 2
+                    ]
+                    entry["summary"] = (
+                        "missing=" + ", ".join(missing_requirements)
+                        if missing_requirements
+                        else "missing task-face requirement"
+                    )
+                    entry["missing_requirements"] = missing_requirements
+                elif rule_id == "appendage_templates_in_bounds":
+                    violations = [
+                        str(item).strip()
+                        for item in list(raw_details.get("violations", []) or [])
+                        if str(item).strip()
+                    ]
+                    entry["summary"] = " | ".join(violations) if violations else "appendage violation"
+                    entry["violations"] = violations
+                elif rule_id == "interior_zone_assignments_in_bounds":
+                    violations = [
+                        str(item).strip()
+                        for item in list(raw_details.get("violations", []) or [])
+                        if str(item).strip()
+                    ]
+                    unassigned_components = [
+                        dict(item)
+                        for item in list(raw_details.get("unassigned_components", []) or [])
+                        if isinstance(item, dict)
+                    ]
+                    entry["summary"] = " | ".join(violations) if violations else "interior-zone violation"
+                    entry["violations"] = violations
+                    if unassigned_components:
+                        entry["unassigned_components"] = unassigned_components
+                else:
+                    entry["summary"] = str(check.get("message", "") or "").strip() or rule_id
+
+                details_list.append(entry)
+            return details_list
+
+        archetype_id = str(
+            satellite_metadata.get("satellite_archetype_id", "")
+            or satellite_context.get("archetype_id", "")
+            or ""
+        ).strip()
+        task_type = str(
+            satellite_metadata.get("satellite_task_type", "")
+            or satellite_context.get("task_type", "")
+            or ""
+        ).strip()
+        default_rule_profile = str(
+            satellite_metadata.get("satellite_default_rule_profile", "")
+            or satellite_context.get("default_rule_profile", "")
+            or ""
+        ).strip()
+        mission_class = str(
+            satellite_metadata.get("satellite_mission_class", "")
+            or satellite_context.get("mission_class", "")
+            or ""
+        ).strip()
+        baseline_id = str(
+            satellite_metadata.get("satellite_reference_baseline_id", "")
+            or satellite_context.get("baseline_id", "")
+            or ""
+        ).strip()
+        baseline_version = str(
+            satellite_metadata.get("satellite_reference_baseline_version", "")
+            or satellite_context.get("baseline_version", "")
+            or ""
+        ).strip()
+        baseline_reference_boundary = str(
+            satellite_metadata.get("satellite_baseline_reference_boundary", "")
+            or satellite_context.get("baseline_reference_boundary", "")
+            or satellite_context.get("reference_boundary", "")
+            or ""
+        ).strip()
+        archetype_reference_boundary = str(
+            satellite_metadata.get("satellite_archetype_reference_boundary", "")
+            or satellite_context.get("archetype_reference_boundary", "")
+            or ""
+        ).strip()
+        public_reference_notes = [
+            str(item).strip()
+            for item in list(
+                satellite_metadata.get("satellite_public_reference_notes", [])
+                or satellite_context.get("public_reference_notes", [])
+                or []
+            )
+            if str(item).strip()
+        ]
+        archetype_source = str(satellite_context.get("archetype_source", "") or "").strip()
+        gate_mode = str(
+            satellite_metadata.get("satellite_likeness_gate_mode", "")
+            or satellite_context.get("gate_mode", "")
+            or ""
+        ).strip()
+        gate_evaluation_stage = str(
+            satellite_metadata.get("satellite_gate_evaluation_stage", "") or ""
+        ).strip()
+        final_warning = bool(
+            satellite_metadata.get("satellite_likeness_gate_final_warning", False)
+        )
+        final_warning_failed_rules = [
+            str(item).strip()
+            for item in list(
+                satellite_metadata.get(
+                    "satellite_likeness_gate_final_warning_failed_rules",
+                    [],
+                )
+                or []
+            )
+            if str(item).strip()
+        ]
+
+        gate_passed = satellite_metadata.get("satellite_likeness_gate_passed", None)
+        if gate_passed is None and "gate_passed" in satellite_context:
+            gate_passed = satellite_context.get("gate_passed", None)
+
+        failed_rule_ids = [
+            str(item.get("rule_id", "") or "").strip()
+            for item in list(gate_report.get("checks", []) or [])
+            if not bool(item.get("passed", False)) and str(item.get("rule_id", "") or "").strip()
+        ]
+        gate_rule_results = [
+            {
+                "rule_id": str(item.get("rule_id", "") or "").strip(),
+                "passed": bool(item.get("passed", False)),
+            }
+            for item in list(gate_report.get("checks", []) or [])
+            if str(item.get("rule_id", "") or "").strip()
+        ]
+        gate_total_rule_count = int(len(gate_rule_results))
+        gate_failed_rule_count = int(
+            sum(1 for item in gate_rule_results if not bool(item.get("passed", False)))
+        )
+        gate_passed_rule_count = int(max(gate_total_rule_count - gate_failed_rule_count, 0))
+        gate_failed_rule_details = _build_failed_rule_details()
+        task_face_check = _find_gate_check("task_faces_present")
+        task_face_details = dict(task_face_check.get("details", {}) or {})
+        bus_ratio_check = _find_gate_check("bus_aspect_ratio_in_bounds")
+        bus_ratio_details = dict(bus_ratio_check.get("details", {}) or {})
+        appendage_check = _find_gate_check("appendage_templates_in_bounds")
+        appendage_details = dict(appendage_check.get("details", {}) or {})
+        interior_zone_check = _find_gate_check("interior_zone_assignments_in_bounds")
+        interior_zone_details = dict(interior_zone_check.get("details", {}) or {})
+        bus_span_mm = candidate.get("bus_span_mm", None)
+        if bus_span_mm is None:
+            bus_span_mm = bus_ratio_details.get("bus_span_mm", None)
+        evaluated_ratios = list(bus_ratio_details.get("evaluated_ratios", []) or [])
+        bus_ratio_violations = list(bus_ratio_details.get("violations", []) or [])
+        task_face_missing_requirements = [
+            f"{str(item[0])}@{str(item[1])}"
+            for item in list(task_face_details.get("missing_task_faces", []) or [])
+            if isinstance(item, (list, tuple)) and len(item) == 2
+        ]
+        task_face_resolution = [
+            dict(item)
+            for item in list(candidate_metadata.get("task_face_resolution", []) or [])
+            if isinstance(item, dict)
+        ]
+        task_face_resolution_source_counts = _count_sources(task_face_resolution)
+        appendage_template_violations = [
+            str(item).strip()
+            for item in list(appendage_details.get("violations", []) or [])
+            if str(item).strip()
+        ]
+        interior_zone_violations = [
+            str(item).strip()
+            for item in list(interior_zone_details.get("violations", []) or [])
+            if str(item).strip()
+        ]
+        interior_zone_assignments = list(candidate.get("interior_zone_assignments", []) or [])
+        interior_zone_resolution = list(
+            dict(item)
+            for item in list(candidate_metadata.get("interior_zone_resolution", []) or [])
+            if isinstance(item, dict)
+        )
+        interior_zone_resolution_source_counts = _count_sources(
+            interior_zone_resolution
+        )
+        interior_zone_unassigned_components = list(
+            dict(item)
+            for item in list(
+                candidate_metadata.get("interior_zone_unassigned_components", [])
+                or interior_zone_details.get("unassigned_components", [])
+                or []
+            )
+            if isinstance(item, dict)
+        )
+
+        if not any(
+            (
+                archetype_id,
+                task_type,
+                default_rule_profile,
+                mission_class,
+                baseline_id,
+                baseline_version,
+                baseline_reference_boundary,
+                archetype_reference_boundary,
+                public_reference_notes,
+                archetype_source,
+                gate_mode,
+                gate_evaluation_stage,
+                final_warning,
+                final_warning_failed_rules,
+                gate_rule_results,
+                satellite_context,
+            )
+        ):
+            return {}
+
+        return {
+            "satellite_archetype_id": archetype_id,
+            "satellite_mission_class": mission_class,
+            "satellite_task_type": task_type,
+            "satellite_default_rule_profile": default_rule_profile,
+            "satellite_reference_baseline_id": baseline_id,
+            "satellite_reference_baseline_version": baseline_version,
+            "satellite_baseline_reference_boundary": baseline_reference_boundary,
+            "satellite_archetype_reference_boundary": archetype_reference_boundary,
+            "satellite_public_reference_notes": public_reference_notes,
+            "satellite_archetype_source": archetype_source,
+            "satellite_likeness_gate_mode": gate_mode,
+            "satellite_likeness_gate_passed": gate_passed,
+            "satellite_gate_evaluation_stage": gate_evaluation_stage,
+            "satellite_likeness_gate_final_warning": bool(final_warning),
+            "satellite_likeness_gate_final_warning_failed_rules": final_warning_failed_rules,
+            "satellite_likeness_gate_rule_results": gate_rule_results,
+            "satellite_gate_total_rule_count": gate_total_rule_count,
+            "satellite_gate_passed_rule_count": gate_passed_rule_count,
+            "satellite_gate_failed_rule_count": gate_failed_rule_count,
+            "satellite_gate_failed_rule_details": gate_failed_rule_details,
+            "satellite_likeness_gate_failed_rules": failed_rule_ids,
+            "satellite_bus_span_mm": bus_span_mm,
+            "satellite_bus_aspect_ratio_evaluated": evaluated_ratios,
+            "satellite_bus_aspect_ratio_violations": bus_ratio_violations,
+            "satellite_task_face_missing_requirements": task_face_missing_requirements,
+            "satellite_task_face_resolution": task_face_resolution,
+            "satellite_task_face_resolution_source_counts": task_face_resolution_source_counts,
+            "satellite_appendage_template_violations": appendage_template_violations,
+            "satellite_interior_zone_violations": interior_zone_violations,
+            "satellite_interior_zone_resolution": interior_zone_resolution,
+            "satellite_interior_zone_resolution_source_counts": interior_zone_resolution_source_counts,
+            "satellite_interior_zone_unassigned_components": interior_zone_unassigned_components,
+            "satellite_candidate_task_face_count": int(
+                len(list(candidate.get("task_face_assignments", []) or []))
+            ),
+            "satellite_candidate_appendage_count": int(
+                len(list(candidate.get("appendages", []) or []))
+            ),
+            "satellite_candidate_interior_zone_assignment_count": int(
+                len(interior_zone_assignments)
+            ),
+            "satellite_candidate_interior_zone_resolution_count": int(
+                len(interior_zone_resolution)
+            ),
+            "satellite_candidate_interior_zone_unassigned_count": int(
+                len(interior_zone_unassigned_components)
+            ),
+        }
+
+    def _refresh_satellite_context_for_state(
+        self,
+        design_state: DesignState,
+        *,
+        bom_file: Optional[str],
+    ) -> None:
+        if not str(bom_file or "").strip():
+            return
+
+        host = self.host
+        opt_cfg = dict(host.config.get("optimization", {}) or {})
+        inherited_gate_mode = str(
+            dict(getattr(design_state, "metadata", {}) or {}).get(
+                "satellite_likeness_gate_mode",
+                "",
+            )
+            or ""
+        ).strip()
+        gate_mode = inherited_gate_mode or str(
+            opt_cfg.get("satellite_likeness_gate_mode", "off") or "off"
+        )
+
+        try:
+            satellite_context = evaluate_satellite_likeness_for_design_state(
+                design_state,
+                bom_file=bom_file,
+                default_gate_mode=gate_mode,
+            )
+        except Exception as exc:
+            host.logger.logger.warning(
+                "Satellite final-state context refresh failed: %s",
+                exc,
+            )
+            return
+
+        design_state.metadata = self._apply_satellite_context_metadata(
+            getattr(design_state, "metadata", {}) or {},
+            satellite_context=satellite_context,
+            evaluation_stage="final_state",
+        )
+        if bool(
+            dict(getattr(design_state, "metadata", {}) or {}).get(
+                "satellite_likeness_gate_final_warning",
+                False,
+            )
+        ):
+            host.logger.logger.warning(
+                "Satellite final-state gate warning: failed_rules=%s",
+                list(
+                    dict(getattr(design_state, "metadata", {}) or {}).get(
+                        "satellite_likeness_gate_final_warning_failed_rules",
+                        [],
+                    )
+                    or []
+                ),
+            )
 
     def run_pipeline(
         self,
@@ -276,10 +913,46 @@ class MaaSPipelineService:
                 return report
 
             opt_cfg = host.config.setdefault("optimization", {})
-            search_space = str(active_policy_priors.get("search_space_prior", "") or "").strip().lower()
-            if search_space in {"coordinate", "operator_program", "hybrid"}:
-                opt_cfg["mass_search_space"] = search_space
-                report["search_space_override"] = search_space
+            selected_program = dict(
+                active_policy_priors.get("selected_operator_candidate", {}) or {}
+            )
+            selected_program_payload = dict(selected_program.get("program", {}) or {})
+            selected_program_id = str(
+                selected_program_payload.get("program_id", "")
+                or selected_program.get("candidate_id", "")
+                or ""
+            ).strip()
+            selected_actions = []
+            selected_action_params = []
+            for action_payload in list(selected_program_payload.get("actions", []) or []):
+                if not isinstance(action_payload, dict):
+                    continue
+                action_name = str(action_payload.get("action", "") or "").strip().lower()
+                if not action_name:
+                    continue
+                selected_actions.append(action_name)
+                params_payload = action_payload.get("params", {})
+                selected_action_params.append(
+                    dict(params_payload) if isinstance(params_payload, dict) else {}
+                )
+
+            requested_search_space = str(
+                active_policy_priors.get("search_space_prior", "") or ""
+            ).strip().lower()
+            applied_search_space = self._resolve_vop_policy_search_space(
+                requested_search_space,
+                opt_cfg=opt_cfg,
+                selected_actions=selected_actions,
+            )
+            if applied_search_space:
+                opt_cfg["mass_search_space"] = applied_search_space
+                report["search_space_override"] = applied_search_space
+                if requested_search_space and requested_search_space != applied_search_space:
+                    host.logger.logger.info(
+                        "VOP policy search space coerced under strict operator gate contract: requested=%s applied=%s",
+                        requested_search_space,
+                        applied_search_space,
+                    )
 
             runtime_knobs = dict(active_policy_priors.get("runtime_knob_priors", {}) or {})
             knob_map = {
@@ -329,29 +1002,24 @@ class MaaSPipelineService:
                 )
                 report["fidelity_overrides"]["mass_audit_top_k"] = int(opt_cfg["mass_audit_top_k"])
 
-            selected_program = dict(active_policy_priors.get("selected_operator_candidate", {}) or {})
-            selected_program_payload = dict(selected_program.get("program", {}) or {})
-            selected_program_id = str(
-                selected_program_payload.get("program_id", "")
-                or selected_program.get("candidate_id", "")
-                or ""
-            ).strip()
-            selected_actions = []
-            selected_action_params = []
-            for action_payload in list(selected_program_payload.get("actions", []) or []):
-                if not isinstance(action_payload, dict):
-                    continue
-                action_name = str(action_payload.get("action", "") or "").strip().lower()
-                if not action_name:
-                    continue
-                selected_actions.append(action_name)
-                params_payload = action_payload.get("params", {})
-                selected_action_params.append(
-                    dict(params_payload) if isinstance(params_payload, dict) else {}
-                )
             if selected_actions:
-                opt_cfg["mass_operator_program_forced_slot_actions"] = list(selected_actions)
-                opt_cfg["mass_operator_program_forced_slot_action_params"] = list(selected_action_params)
+                existing_actions = list(
+                    opt_cfg.get("mass_operator_program_forced_slot_actions", []) or []
+                )
+                existing_action_params = list(
+                    opt_cfg.get("mass_operator_program_forced_slot_action_params", []) or []
+                )
+                merged_actions, merged_action_params = self._merge_forced_operator_actions(
+                    existing_actions=existing_actions,
+                    existing_action_params=existing_action_params,
+                    selected_actions=selected_actions,
+                    selected_action_params=selected_action_params,
+                    preserve_existing_order=self._strict_operator_gate_enabled(opt_cfg),
+                )
+                opt_cfg["mass_operator_program_forced_slot_actions"] = list(merged_actions)
+                opt_cfg["mass_operator_program_forced_slot_action_params"] = list(
+                    merged_action_params
+                )
                 report["selected_operator_program_id"] = selected_program_id
                 report["selected_operator_actions"] = list(selected_actions)
 
@@ -1886,6 +2554,16 @@ class MaaSPipelineService:
             )
 
         final_state = candidate_state or current_state
+        final_state.metadata.update(
+            self._extract_satellite_metadata_snapshot(
+                getattr(final_state, "metadata", {}) or {},
+                getattr(current_state, "metadata", {}) or {},
+            )
+        )
+        self._refresh_satellite_context_for_state(
+            final_state,
+            bom_file=bom_file,
+        )
         final_state_selected_from_candidate = candidate_state is not None
         if final_state_selected_from_candidate:
             try:
@@ -1898,11 +2576,19 @@ class MaaSPipelineService:
         else:
             final_metrics, final_violations = current_metrics, violations
 
-        if (
-            final_state_selected_from_candidate
-            and len(final_violations) == 0
+        final_state_recheck_feasible = (
+            len(final_violations) == 0
             and str(last_diagnosis.get("status", "")) not in {"feasible", "feasible_but_stalled"}
-        ):
+            and (
+                final_state_selected_from_candidate
+                or (
+                    not final_state_selected_from_candidate
+                    and bool(enforce_audit_feasible)
+                    and str(physics_audit_report.get("selected_reason", "")) == "no_feasible_after_audit"
+                )
+            )
+        )
+        if final_state_recheck_feasible:
             last_diagnosis = dict(last_diagnosis or {})
             last_diagnosis["status"] = "feasible"
             last_diagnosis["reason"] = "final_state_recheck_feasible"
@@ -2031,7 +2717,7 @@ class MaaSPipelineService:
             else:
                 best_cv_min_source = "missing"
 
-        if final_state_selected_from_candidate and len(final_violations) == 0:
+        if final_state_recheck_feasible:
             resolved_best_cv_min = 0.0
             best_cv_min_source = "final_state_feasible"
             maas_trace_features["best_cv_min"] = 0.0
@@ -3228,7 +3914,7 @@ class MaaSPipelineService:
             "fov_occlusion_proxy": float(final_mission_metrics.get("fov_occlusion_proxy", 0.0) or 0.0),
             "emc_separation_proxy": float(final_mission_metrics.get("emc_separation_proxy", 0.0) or 0.0),
         }
-        if final_state_selected_from_candidate and len(final_violations) == 0:
+        if final_state_recheck_feasible:
             summary_attempt_payload["dominant_violation"] = ""
             summary_attempt_payload["constraint_violation_breakdown"] = {}
 
@@ -3306,6 +3992,10 @@ class MaaSPipelineService:
             trace_features=maas_trace_features,
         )
         final_state.metadata["release_audit"] = dict(release_audit_payload)
+        satellite_artifact_payload = self._build_satellite_artifact_payload(
+            getattr(final_state, "metadata", {}) or {},
+            getattr(current_state, "metadata", {}) or {},
+        )
         host.logger.save_summary(
             status=summary_status,
             final_iteration=iteration,
@@ -3550,6 +4240,7 @@ class MaaSPipelineService:
                 "operator_realization_gate_thermal_evidence_missing_actions": list(
                     operator_realization_gate_report.get("thermal_evidence_missing_actions", []) or []
                 ),
+                **satellite_artifact_payload,
             },
         )
         host.logger.log_maas_phase_event(
@@ -3776,6 +4467,7 @@ class MaaSPipelineService:
                     ),
                     "observability_tables": observability_tables,
                     "observability_tables_error": observability_tables_error,
+                    **satellite_artifact_payload,
                 },
             }
         )

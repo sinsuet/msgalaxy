@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 from core.logger import get_logger
+from simulation.comsol.field_registry import get_field_spec
 from simulation.power_network_solver import solve_dc_power_network_metrics
 
 logger = get_logger(__name__)
@@ -12,6 +13,29 @@ logger = get_logger(__name__)
 
 class ComsolResultExtractorMixin:
     """Structural/power/coupled branches and result extraction for dynamic COMSOL runs."""
+
+    @staticmethod
+    def _resolve_shell_geometry(design_state) -> Dict[str, float]:
+        metadata = dict(getattr(design_state, "metadata", {}) or {})
+        shell_meta = dict(metadata.get("shell", {}) or {})
+        envelope = getattr(design_state, "envelope", None)
+        if not bool(shell_meta.get("enabled", False)) or envelope is None:
+            return {}
+        outer = getattr(envelope, "outer_size", None)
+        if outer is None:
+            return {}
+        outer_x = float(getattr(outer, "x", 0.0) or 0.0)
+        outer_y = float(getattr(outer, "y", 0.0) or 0.0)
+        outer_z = float(getattr(outer, "z", 0.0) or 0.0)
+        thickness = float(shell_meta.get("thickness_mm", getattr(envelope, "thickness", 0.0)) or 0.0)
+        if min(outer_x, outer_y, outer_z) <= 0.0 or thickness <= 0.0:
+            return {}
+        return {
+            "outer_x": outer_x,
+            "outer_y": outer_y,
+            "outer_z": outer_z,
+            "thickness": thickness,
+        }
 
     def _select_power_terminal_components(self, design_state) -> Tuple[Optional[Any], Optional[Any]]:
         components = list(getattr(design_state, "components", []) or [])
@@ -267,7 +291,7 @@ class ComsolResultExtractorMixin:
             logger.warning("  ⚠ 电学场支路配置失败，回退电源网络求解: %s", exc)
             return False
 
-    def _configure_structural_multiphysics(self) -> bool:
+    def _configure_structural_multiphysics(self, *, design_state=None) -> bool:
         """
         Configure structural branch (Solid + Stationary + Eigenfrequency).
 
@@ -284,9 +308,17 @@ class ComsolResultExtractorMixin:
             except Exception:
                 solid = self.model.java.physics().create("solid", "SolidMechanics", "geom1")
 
+            fixed_entities = []
             try:
                 fixed = solid.feature().create("fix_all", "Fixed", 2)
-                fixed.selection().all()
+                fixed_entities = self._select_structural_support_boundaries(design_state=design_state)
+                if fixed_entities:
+                    try:
+                        fixed.selection().set(fixed_entities)
+                    except Exception:
+                        fixed.selection().all()
+                else:
+                    fixed.selection().all()
             except Exception:
                 pass
 
@@ -294,11 +326,12 @@ class ComsolResultExtractorMixin:
                 body = solid.feature().create("bndl1", "BodyLoad", 3)
                 body.selection().all()
                 accel = max(float(self.structural_launch_accel_g), 0.0)
+                lateral_ratio = max(float(getattr(self, "structural_lateral_accel_ratio", 0.18)), 0.0)
                 density = max(float(self.structural_density_kg_m3), 1e-6)
                 body.set(
                     "FperVol",
                     [
-                        "0[N/m^3]",
+                        f"{lateral_ratio * accel * 9.81 * density}[N/m^3]",
                         "0[N/m^3]",
                         f"-{accel * 9.81 * density}[N/m^3]",
                     ],
@@ -342,6 +375,81 @@ class ComsolResultExtractorMixin:
         except Exception as exc:
             logger.warning("  ⚠ 结构场支路配置失败，回退 proxy: %s", exc)
             return False
+
+    def _select_structural_support_boundaries(self, *, design_state=None) -> list[int]:
+        if self.model is None or design_state is None:
+            return []
+        shell_entities: list[int] = []
+        shell = self._resolve_shell_geometry(design_state)
+        if shell:
+            try:
+                selection_tag = "sel_struct_support_shell_bottom"
+                try:
+                    self.model.java.selection().remove(selection_tag)
+                except Exception:
+                    pass
+                selection = self.model.java.selection().create(selection_tag, "Box")
+                selection.label("Structural Support Shell Bottom")
+                selection.set("entitydim", "2")
+                selection.set("condition", "intersects")
+                half_x = float(shell["outer_x"]) / 2.0
+                half_y = float(shell["outer_y"]) / 2.0
+                half_z = float(shell["outer_z"]) / 2.0
+                face_tol = max(0.5, min(float(shell["thickness"]) * 0.4, 3.0))
+                selection.set("xmin", f"{-half_x - 1.0}[mm]")
+                selection.set("xmax", f"{half_x + 1.0}[mm]")
+                selection.set("ymin", f"{-half_y - 1.0}[mm]")
+                selection.set("ymax", f"{half_y + 1.0}[mm]")
+                selection.set("zmin", f"{-half_z - face_tol}[mm]")
+                selection.set("zmax", f"{-half_z + face_tol}[mm]")
+                entities = [int(entity) for entity in list(self.model.java.selection(selection_tag).entities())]
+                shell_entities = sorted(set(entities))
+                if shell_entities:
+                    logger.info("  ✓ 结构支撑边界已加入机壳底板: %d 个边界实体", len(shell_entities))
+            except Exception as exc:
+                logger.warning("  ⚠ 机壳底板支撑边界选择失败，将回退组件底部支撑: %s", exc)
+        components = list(getattr(design_state, "components", []) or [])
+        if not components:
+            return shell_entities
+        try:
+            entities: list[int] = []
+            for index, comp in enumerate(components):
+                selection_tag = f"sel_struct_support_{index}"
+                try:
+                    self.model.java.selection().remove(selection_tag)
+                except Exception:
+                    pass
+                selection = self.model.java.selection().create(selection_tag, "Box")
+                selection.label(f"Structural Support {getattr(comp, 'id', index)}")
+                selection.set("entitydim", "2")
+                selection.set("condition", "intersects")
+
+                x_min = float(comp.position.x - comp.dimensions.x / 2.0) - 0.5
+                x_max = float(comp.position.x + comp.dimensions.x / 2.0) + 0.5
+                y_min = float(comp.position.y - comp.dimensions.y / 2.0) - 0.5
+                y_max = float(comp.position.y + comp.dimensions.y / 2.0) + 0.5
+                z_min = float(comp.position.z - comp.dimensions.z / 2.0)
+                z_tol = max(1.0, min(float(comp.dimensions.z) * 0.1, 4.0))
+
+                selection.set("xmin", f"{x_min}[mm]")
+                selection.set("xmax", f"{x_max}[mm]")
+                selection.set("ymin", f"{y_min}[mm]")
+                selection.set("ymax", f"{y_max}[mm]")
+                selection.set("zmin", f"{z_min - z_tol}[mm]")
+                selection.set("zmax", f"{z_min + z_tol}[mm]")
+                try:
+                    current_entities = [int(entity) for entity in list(self.model.java.selection(selection_tag).entities())]
+                except Exception:
+                    current_entities = []
+                entities.extend(current_entities)
+
+            entities = sorted(set(entities + list(shell_entities)))
+            if entities:
+                logger.info("  ✓ 结构支撑边界已选择: %d 个底部边界实体", len(entities))
+            return entities
+        except Exception as exc:
+            logger.warning("  ⚠ 结构支撑边界选择失败，将回退全边界固定: %s", exc)
+            return []
 
     def _configure_coupled_multiphysics(self) -> bool:
         """
@@ -532,22 +640,25 @@ class ComsolResultExtractorMixin:
 
         dataset_candidates = self._build_dataset_candidates(prefer_modal=False)
         modal_dataset_candidates = self._build_dataset_candidates(prefer_modal=True)
+        temperature_field = get_field_spec("temperature")
+        stress_field = get_field_spec("von_mises")
+        displacement_field = get_field_spec("displacement_magnitude")
 
         max_temp_k = self._evaluate_expression_candidates(
-            expressions=["T"],
-            unit="K",
+            expressions=list(temperature_field.expression_candidates),
+            unit=temperature_field.unit,
             datasets=dataset_candidates,
             reducer="max",
         )
         min_temp_k = self._evaluate_expression_candidates(
-            expressions=["T"],
-            unit="K",
+            expressions=list(temperature_field.expression_candidates),
+            unit=temperature_field.unit,
             datasets=dataset_candidates,
             reducer="min",
         )
         avg_temp_k = self._evaluate_expression_candidates(
-            expressions=["T"],
-            unit="K",
+            expressions=list(temperature_field.expression_candidates),
+            unit=temperature_field.unit,
             datasets=dataset_candidates,
             reducer="mean",
         )
@@ -565,16 +676,23 @@ class ComsolResultExtractorMixin:
 
         runtime = dict(structural_runtime or {})
         if bool(self.enable_structural_real) and bool(runtime.get("stat_solved", False)):
+            modal_dataset = self._select_modal_result_dataset(
+                dataset_candidates=modal_dataset_candidates
+            )
+            structural_dataset = self._select_structural_stationary_dataset(
+                dataset_candidates=dataset_candidates
+            )
+            structural_eval_datasets = [structural_dataset] if structural_dataset else dataset_candidates
             stress_pa = self._evaluate_expression_candidates(
-                expressions=["solid.mises", "solid.svm", "mises"],
-                unit="Pa",
-                datasets=dataset_candidates,
+                expressions=list(stress_field.expression_candidates),
+                unit=stress_field.unit,
+                datasets=structural_eval_datasets,
                 reducer="max",
             )
             disp_m = self._evaluate_expression_candidates(
-                expressions=["solid.disp", "sqrt(u^2+v^2+w^2)"],
-                unit="m",
-                datasets=dataset_candidates,
+                expressions=list(displacement_field.expression_candidates),
+                unit=displacement_field.unit,
+                datasets=structural_eval_datasets,
                 reducer="max",
             )
             first_modal_hz = None
@@ -600,14 +718,14 @@ class ComsolResultExtractorMixin:
                 )
                 if first_modal_hz is None:
                     first_modal_hz = self._extract_modal_frequency_via_eval_group(
-                        dataset_candidates=modal_dataset_candidates,
+                        dataset_candidates=[modal_dataset] if modal_dataset else modal_dataset_candidates,
                     )
                 if first_modal_hz is None:
                     first_modal_hz = self._extract_modal_frequency_from_solver_sequence()
                 if first_modal_hz is None:
                     logger.warning(
                         "  ⚠ 模态求解已完成但频率提取失败，将由上游按分项回退。 datasets=%s, runtime=%s",
-                        modal_dataset_candidates[:8],
+                        [modal_dataset] if modal_dataset else modal_dataset_candidates[:8],
                         runtime,
                     )
 

@@ -1,0 +1,41 @@
+{
+  "shell_id": "box_shell_circular_port_v1",
+  "outer_profile": {
+    "kind": "box",
+    "size_mm": [320.0, 240.0, 220.0]
+  },
+  "thickness_mm": 8.0,
+  "panels": [
+    {
+      "panel_id": "panel_px",
+      "face": "+X",
+      "span_mm": [240.0, 220.0],
+      "active_variant": "camera_boss",
+      "surface_semantics": ["payload_side"],
+      "metadata": {
+        "variant_definitions": {
+          "camera_boss": {
+            "kind": "box_pad",
+            "center_mm": [0.0, 20.0],
+            "size_mm": [100.0, 100.0],
+            "depth_mm": 20.0
+          }
+        }
+      }
+    }
+  ],
+  "aperture_sites": [
+    {
+      "aperture_id": "camera_port",
+      "panel_id": "panel_px",
+      "shape": "circular_cutout",
+      "center_mm": [0.0, 20.0],
+      "size_mm": [60.0, 60.0],
+      "proxy_depth_mm": 80.0,
+      "through_shell": true,
+      "allowed_component_families": ["payload"],
+      "impact_tags": ["thermal", "structural", "fov"]
+    }
+  ],
+  "material": "aluminum_6061"
+}

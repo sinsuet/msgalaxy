@@ -1,0 +1,42 @@
+{
+  "shell_id": "box_shell_frustum_variant_v1",
+  "outer_profile": {
+    "kind": "box",
+    "size_mm": [360.0, 260.0, 240.0]
+  },
+  "thickness_mm": 8.0,
+  "panels": [
+    {
+      "panel_id": "panel_py",
+      "face": "+Y",
+      "span_mm": [360.0, 240.0],
+      "active_variant": "sensor_hood",
+      "surface_semantics": ["sensor_side"],
+      "metadata": {
+        "variant_definitions": {
+          "sensor_hood": {
+            "kind": "frustum_pad",
+            "center_mm": [20.0, -10.0],
+            "profile": {
+              "kind": "frustum",
+              "bottom_radius_mm": 30.0,
+              "top_radius_mm": 18.0,
+              "height_mm": 24.0
+            }
+          }
+        }
+      }
+    }
+  ],
+  "aperture_sites": [
+    {
+      "aperture_id": "sensor_slot",
+      "panel_id": "panel_py",
+      "shape": "rectangular_cutout",
+      "center_mm": [20.0, -10.0],
+      "size_mm": [40.0, 30.0],
+      "through_shell": true
+    }
+  ],
+  "material": "aluminum_6061"
+}

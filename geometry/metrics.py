@@ -4,11 +4,12 @@ Shared geometry metrics for runtime evaluation and seed services.
 
 from __future__ import annotations
 
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
 from core.protocol import DesignState
+from geometry.catalog_geometry import resolve_catalog_component_specs
 
 
 def _safe_float(value: object, default: float = 0.0) -> float:
@@ -21,24 +22,52 @@ def _safe_float(value: object, default: float = 0.0) -> float:
     return float(parsed)
 
 
+def _component_center_and_size(
+    comp: object,
+    *,
+    catalog_specs: Optional[dict] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    position = np.asarray(
+        [
+            _safe_float(getattr(getattr(comp, "position", None), "x", 0.0)),
+            _safe_float(getattr(getattr(comp, "position", None), "y", 0.0)),
+            _safe_float(getattr(getattr(comp, "position", None), "z", 0.0)),
+        ],
+        dtype=float,
+    )
+    size = np.asarray(
+        [
+            max(_safe_float(getattr(getattr(comp, "dimensions", None), "x", 0.0)), 0.0),
+            max(_safe_float(getattr(getattr(comp, "dimensions", None), "y", 0.0)), 0.0),
+            max(_safe_float(getattr(getattr(comp, "dimensions", None), "z", 0.0)), 0.0),
+        ],
+        dtype=float,
+    )
+
+    comp_id = str(getattr(comp, "id", "") or "")
+    if catalog_specs and comp_id in catalog_specs:
+        try:
+            proxy = catalog_specs[comp_id].resolved_proxy()
+            proxy_size = np.asarray([_safe_float(value) for value in proxy.size_mm], dtype=float)
+            if proxy_size.shape == (3,) and np.all(proxy_size > 0.0):
+                size = proxy_size
+            proxy_offset = np.asarray([_safe_float(value) for value in proxy.center_offset_mm], dtype=float)
+            if proxy_offset.shape == (3,):
+                position = position + proxy_offset
+        except Exception:
+            pass
+
+    return position, size
+
+
 def component_arrays(design_state: DesignState) -> Tuple[np.ndarray, np.ndarray]:
+    catalog_specs = resolve_catalog_component_specs(design_state)
     centers = []
     half_sizes = []
     for comp in list(getattr(design_state, "components", []) or []):
-        centers.append(
-            [
-                _safe_float(getattr(getattr(comp, "position", None), "x", 0.0)),
-                _safe_float(getattr(getattr(comp, "position", None), "y", 0.0)),
-                _safe_float(getattr(getattr(comp, "position", None), "z", 0.0)),
-            ]
-        )
-        half_sizes.append(
-            [
-                0.5 * max(_safe_float(getattr(getattr(comp, "dimensions", None), "x", 0.0)), 0.0),
-                0.5 * max(_safe_float(getattr(getattr(comp, "dimensions", None), "y", 0.0)), 0.0),
-                0.5 * max(_safe_float(getattr(getattr(comp, "dimensions", None), "z", 0.0)), 0.0),
-            ]
-        )
+        center, size = _component_center_and_size(comp, catalog_specs=catalog_specs)
+        centers.append(center.tolist())
+        half_sizes.append((size * 0.5).tolist())
 
     return (
         np.asarray(centers, dtype=float),
@@ -116,11 +145,11 @@ def calculate_boundary_violation(design_state: DesignState) -> float:
 
 
 def calculate_component_volume_sum(design_state: DesignState) -> float:
+    catalog_specs = resolve_catalog_component_specs(design_state)
     total_volume = 0.0
     for comp in list(getattr(design_state, "components", []) or []):
-        dx = max(_safe_float(getattr(getattr(comp, "dimensions", None), "x", 0.0)), 0.0)
-        dy = max(_safe_float(getattr(getattr(comp, "dimensions", None), "y", 0.0)), 0.0)
-        dz = max(_safe_float(getattr(getattr(comp, "dimensions", None), "z", 0.0)), 0.0)
+        _, size = _component_center_and_size(comp, catalog_specs=catalog_specs)
+        dx, dy, dz = size.tolist()
         total_volume += dx * dy * dz
     return float(total_volume)
 
@@ -149,4 +178,3 @@ def summarize_geometry_state(design_state: DesignState) -> Dict[str, float]:
         "packing_efficiency": float(calculate_packing_efficiency(design_state)),
         "component_volume_sum": float(calculate_component_volume_sum(design_state)),
     }
-
