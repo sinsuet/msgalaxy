@@ -2,6 +2,7 @@
 
 - status: accepted
 - date: 2026-03-10
+- updated: 2026-03-12
 - deciders: msgalaxy-core
 - cross-reference:
   - `R41_catalog_shell_geometry_upgrade_20260310`
@@ -62,7 +63,7 @@
 
 - 在 STEP/BREP 几何生成阶段完成真实拓扑；
 - 不允许把“后期在 COMSOL 里临时挖孔”作为主方案；
-- `vop_maas` 算子只允许激活预定义 `aperture site / panel variant`，不允许任意 Boolean 建模。
+- 运行时策略层只允许激活预定义 `aperture site / panel variant`，不允许任意 Boolean 建模。
 
 原因：
 
@@ -131,11 +132,22 @@
 
 ## Implemented / Accepted Target / Deferred
 
-### Implemented（截至 2026-03-10 的真实实现）
+### Implemented（截至 2026-03-12 的真实实现）
 
-- 已有 `box/cylinder/shell/heatsink/bracket` 薄切片；
+- 已有 `box / cylinder / frustum / ellipsoid / extruded_profile / composite_primitive` 目录件合同；
 - STEP 生成已基于 OpenCASCADE；
-- shell 可通过 metadata 导出厚壁空腔。
+- shell / panel variant / aperture contract 已进入 STEP 导出链；
+- `ResolvedGeometryTruth` 已进入主线，用于统一：
+  - 本地几何包络
+  - 旋转后的有效包络
+  - 有效包络中心偏移
+  - declared proxy 与 geometry-derived proxy 的对照
+- `CatalogComponentSpec.resolved_proxy()` 默认从 `geometry_profile` 推导搜索包络，不再默认盲信 catalog 声明 proxy；
+- `domain/satellite/seed.py` 已回写：
+  - `resolved_geometry_truth`
+  - `resolved_shell_truth`
+- `geometry/cad_export_occ.py` 已按 rotation-aware effective bbox 与真实中心偏移导出目录件几何；
+- `ComponentGeometry.position` 在主线 CAD 导出中已按 `effective_bbox_center` 解释。
 
 ### Accepted Target（本 ADR 接受的目标架构）
 

@@ -7,7 +7,7 @@
   - `R40_satellite_reference_baseline_20260310`
   - `R41_catalog_shell_geometry_upgrade_20260310`
   - `R43_operator_dsl_v4_and_rule_governance_20260310`
-  - `R44_iteration_review_package_20260310`
+  - `R45_0010_integration_handoff_20260311`
 
 ## Context
 
@@ -29,7 +29,7 @@ MsGalaxy 当前真实基线仍然以通用 `ComponentGeometry` 和场景 BOM 驱
 - EnduroSat、GomSpace、SSTL 等公开平台介绍；
 - 中国官方对小卫星平台、北斗系统与导航卫星平台特征的公开说明。
 
-因此，需要在现有 `mass / vop_maas` 之上增加一层“卫星原型事实基线”，把“像卫星”从口头要求变成正式合同。
+因此，需要在现有 `mass` scenario runtime 之上增加一层“卫星原型事实基线”，把“像卫星”从口头要求变成正式合同。
 
 ## Problem Statement
 
@@ -148,12 +148,20 @@ MsGalaxy 当前真实基线仍然以通用 `ComponentGeometry` 和场景 BOM 驱
 
 ## Implemented / Accepted Target / Deferred
 
-### Implemented（截至 2026-03-10 的真实实现）
+### Implemented（截至 2026-03-24 的真实实现）
 
-- `ComponentGeometry` 仍是通用组件合同；
-- `layout_seed_service` 仍以通用布局为主；
-- `geometry/cad_export_occ.py` 仅支持有限的卫星感要素（盒体、圆柱、机壳、散热器、支架）；
-- 当前没有正式 `SatelliteArchetype` 合同与 `SatelliteLikenessGate`。
+- `domain/satellite/contracts.py` 中已存在正式的 `SatelliteArchetype / MorphologyGrammar / SatelliteReferenceBaseline` 最小合同；
+- `config/satellite_archetypes/public_reference_baseline.json` 已提供公开资料驱动的 archetype baseline；
+- `domain/satellite/gate.py` 中已存在规则化 `SatelliteLikenessGate` skeleton；
+- `domain/satellite/seed.py` 已把 `satellite_archetype_id / satellite_default_rule_profile` 回写到 `DesignState.metadata`；
+- `domain/satellite/runtime.py` 现会对 aperture 对齐的载荷优先使用 `placement_state.aperture_site + mount_face` 解析 `payload_face`，避免仅按位置分数误选侧面组件；
+- `optical_remote_sensing_microsat` 的 `optical_avionics_middeck` grammar 当前已与活跃 `optical_remote_sensing_bus` scenario 对齐，允许 `communication` 类侧装天线面板；
+- `workflow/scenario_runtime.py` 主线现已在 `proxy_feasible` 之后、`STEP/COMSOL` 之前执行卫星 likeness gate：
+  - 默认 `satellite_likeness_gate_mode = strict`
+  - gate 失败会以 `comsol_block_reason=satellite_likeness_failed` 阻断真实物理链
+  - `summary / report / result_index` 会稳定沉淀 candidate / gate report / resolution audit
+- 2026-03-24 同日 3 次独立主线复跑已表明：修复后的 strict gate 不再误阻断活跃 optical bus，三次均进入 `fields_exported` 且 `real_feasible=true`
+- 当前仍未把该 gate 扩展成 teacher/demo 专用的高保真几何审校器，也未完成多场景 release-grade 证明。
 
 ### Accepted Target（本 ADR 接受的目标架构）
 

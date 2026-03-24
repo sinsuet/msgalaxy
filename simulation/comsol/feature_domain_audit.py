@@ -103,9 +103,15 @@ class ComsolFeatureDomainAuditMixin:
         selection_tags = self._safe_tag_list(
             lambda: self.model.java.selection().tags() if self.model is not None else []
         )
-        metadata = dict(getattr(design_state, "metadata", {}) or {})
-        shell_meta = dict(metadata.get("shell", {}) or {})
-        shell_enabled = bool(shell_meta.get("enabled", False))
+        try:
+            from geometry.shell_spec import resolve_shell_spec
+
+            shell_enabled = resolve_shell_spec(design_state) is not None
+        except Exception:
+            metadata = dict(getattr(design_state, "metadata", {}) or {})
+            shell_truth = dict(metadata.get("resolved_shell_truth", {}) or {})
+            shell_meta = dict(metadata.get("shell", {}) or {})
+            shell_enabled = bool(shell_truth) or bool(shell_meta.get("enabled", False))
 
         ht_feature_tags = self._safe_feature_tags("ht")
         ec_feature_tags = self._safe_feature_tags("ec")
@@ -123,6 +129,31 @@ class ComsolFeatureDomainAuditMixin:
         active_heat_components = int(self._safe_int(heat_report.get("active_components", 0), 0))
         assigned_heat_sources = int(self._safe_int(heat_report.get("assigned_count", 0), 0))
         expected_contacts = int(self._estimate_expected_contact_pairs(design_state))
+        shell_contact_report = dict(getattr(self, "_last_shell_contact_report", {}) or {})
+        shell_contact_components = [
+            dict(item)
+            for item in list(shell_contact_report.get("components", []) or [])
+            if isinstance(item, dict)
+        ]
+        shell_contact_required_count = int(
+            self._safe_int(shell_contact_report.get("required_count", len(shell_contact_components)), 0)
+        )
+        shell_contact_applied_count = int(
+            self._safe_int(
+                shell_contact_report.get(
+                    "applied_count",
+                    sum(1 for item in shell_contact_components if bool(item.get("applied", False))),
+                ),
+                0,
+            )
+        )
+        shell_contact_failed_components = sorted(
+            str(item.get("component_id", "") or "")
+            for item in shell_contact_components
+            if str(item.get("component_id", "") or "").strip()
+            and not bool(item.get("applied", False))
+        )
+        expected_total_contact_features = int(expected_contacts + shell_contact_applied_count)
 
         struct_rt = dict(structural_runtime or {})
         power_rt = dict(power_runtime or {})
@@ -142,14 +173,8 @@ class ComsolFeatureDomainAuditMixin:
         if bool(self.enable_coupled_multiphysics_real):
             required_studies.append("std_coupled")
 
-        canonical_ht_features = ["tl_global", "rad_amb1"]
-        diagnostic_ht_features = ["tl_global", "temp1", "conv_stabilizer"]
         required_feature_tags: Dict[str, List[str]] = {
-            "ht": (
-                canonical_ht_features
-                if "rad_amb1" in set(ht_feature_tags)
-                else diagnostic_ht_features
-            )
+            "ht": ["rad_amb1"]
         }
         if bool(self.enable_power_comsol_real):
             required_feature_tags["ec"] = ["ec_term", "ec_gnd"]
@@ -195,8 +220,12 @@ class ComsolFeatureDomainAuditMixin:
                 or hs_count >= max(assigned_heat_sources, active_heat_components)
             ),
             "thermal_contact_features_present": bool(
-                expected_contacts <= 0
-                or tc_count > 0
+                expected_total_contact_features <= 0
+                or tc_count >= expected_total_contact_features
+            ),
+            "required_shell_contacts_effective": bool(
+                shell_contact_required_count <= 0
+                or shell_contact_applied_count >= shell_contact_required_count
             ),
             "power_study_solved": bool(
                 (not bool(self.enable_power_comsol_real))
@@ -245,6 +274,9 @@ class ComsolFeatureDomainAuditMixin:
                 "active_heat_components": int(active_heat_components),
                 "assigned_heat_sources": int(assigned_heat_sources),
                 "expected_contact_pairs": int(expected_contacts),
+                "required_shell_contact_count": int(shell_contact_required_count),
+                "applied_shell_contact_count": int(shell_contact_applied_count),
+                "expected_total_contact_features": int(expected_total_contact_features),
             },
             "tags": {
                 "physics_tags": list(physics_tags),
@@ -257,9 +289,12 @@ class ComsolFeatureDomainAuditMixin:
                 "outer_boundary_selection_present": bool(outer_boundary_selection_present),
             },
             "runtime": {
+                "shell_enabled": bool(shell_enabled),
                 "structural_runtime": dict(struct_rt),
                 "power_runtime": dict(power_rt),
                 "coupled_runtime": dict(coupled_rt),
+                "shell_contact_failed_components": list(shell_contact_failed_components),
             },
             "heat_binding_report": dict(heat_report),
+            "shell_contact_report": dict(shell_contact_report),
         }

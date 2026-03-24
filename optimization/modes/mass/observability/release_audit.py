@@ -27,7 +27,6 @@ from core.path_policy import serialize_repo_path, serialize_run_path
 from optimization.modes.mass.observability.materialize import (
     materialize_observability_tables,
 )
-from visualization.review_summary_bridge import load_iteration_review_summary_for_run
 
 _RELEASE_AUDIT_FEASIBLE_STATUSES = {"feasible", "feasible_but_stalled"}
 
@@ -406,22 +405,6 @@ def rebuild_run_release_audit_artifacts(
 
     observability_tables = materialize_observability_tables(run_dir)
     summary["observability_tables"] = dict(observability_tables or {})
-    iteration_review_summary = load_iteration_review_summary_for_run(run_dir, summary=summary)
-    if str(iteration_review_summary.get("status", "") or "") == "available":
-        summary["iteration_review_index_path"] = str(iteration_review_summary.get("root_index_path", "") or "")
-        summary["iteration_review_teacher_demo_index_path"] = str(
-            dict(dict(iteration_review_summary.get("profiles", {}) or {}).get("teacher_demo", {}) or {}).get(
-                "index_path", ""
-            )
-            or ""
-        )
-        summary["iteration_review_research_fast_index_path"] = str(
-            dict(dict(iteration_review_summary.get("profiles", {}) or {}).get("research_fast", {}) or {}).get(
-                "index_path", ""
-            )
-            or ""
-        )
-        summary["iteration_review_summary"] = dict(iteration_review_summary or {})
     _write_json(summary_path, summary)
 
     manifest_path = run_path / "events" / "run_manifest.json"
@@ -666,16 +649,6 @@ def collect_release_audit_summary_rows(run_dirs: Iterable[str]) -> List[Dict[str
             release_audit_table = serialize_run_path(run_dir, release_audit_table_path)
         else:
             release_audit_table = ""
-        vop_round_table_path = run_path / "tables" / "vop_rounds.csv"
-        vop_round_rows = _read_csv_rows(vop_round_table_path)
-        if vop_round_table_path.exists():
-            vop_round_audit_table = serialize_run_path(run_dir, vop_round_table_path)
-        else:
-            vop_round_audit_table = str(summary.get("vop_round_audit_table", "") or "")
-        vop_round_events = (
-            [] if vop_round_rows else _read_jsonl(run_path / "events" / "vop_round_events.jsonl")
-        )
-        vop_round_count = len(vop_round_rows) if vop_round_rows else len(vop_round_events)
         best_candidate_metrics = dict(summary.get("best_candidate_metrics", {}) or {})
         row: Dict[str, Any] = {
             "run_dir": serialize_repo_path(run_dir),
@@ -768,20 +741,7 @@ def collect_release_audit_summary_rows(run_dirs: Iterable[str]) -> List[Dict[str
             "best_candidate_mission_keepout_violation": best_candidate_metrics.get(
                 "mission_keepout_violation"
             ),
-            "vop_round_count": int(summary.get("vop_round_count", vop_round_count) or 0)
-            if not vop_round_rows
-            else int(vop_round_count),
-            "vop_round_audit_table": str(vop_round_audit_table or ""),
             "release_audit_table": str(release_audit_table or ""),
-            "runtime_feature_fingerprint_path": str(
-                summary.get("runtime_feature_fingerprint_path", "") or ""
-            ),
-            "llm_final_summary_zh_path": str(
-                summary.get("llm_final_summary_zh_path", "") or ""
-            ),
-            "llm_final_summary_digest_path": str(
-                summary.get("llm_final_summary_digest_path", "") or ""
-            ),
         }
         row.update(classify_release_audit_gap(row))
         rows.append(row)

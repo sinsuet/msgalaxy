@@ -9,11 +9,6 @@ import numpy as np
 from core.exceptions import SimulationError
 from core.logger import get_logger
 from core.protocol import SimulationResult
-from simulation.comsol.physics_profiles import (
-    DIAGNOSTIC_SIMPLIFICATION_BOUNDARY_TEMPERATURE_ANCHOR,
-    DIAGNOSTIC_SIMPLIFICATION_P_SCALE,
-    DIAGNOSTIC_SIMPLIFICATION_WEAK_CONVECTION_STABILIZER,
-)
 
 logger = get_logger(__name__)
 
@@ -295,6 +290,97 @@ class ComsolModelBuilderMixin:
         except Exception as mat_struct_exc:
             logger.warning("  ⚠ 结构材料参数写入失败，结构场可能回退: %s", mat_struct_exc)
 
+    def _configure_primary_stationary_solver(
+        self,
+        *,
+        study_tag: str = "std1",
+        step_tag: str = "stat",
+    ) -> bool:
+        """
+        Build an explicit stationary solver for the canonical thermal branch.
+
+        Documented facts:
+        - Surface-to-Ambient Radiation makes the stationary heat solve nonlinear.
+        - COMSOL recommends direct linear solvers and nonlinear damping controls
+          when stationary nonlinear models struggle to converge.
+
+        Local inference:
+        - The main bus case is easier to reason about when we do not rely on
+          the auto-generated default solver sequence.
+        """
+        if self.model is None:
+            return False
+        try:
+            try:
+                self.model.java.sol().remove("sol1")
+            except Exception:
+                pass
+
+            sol = self.model.java.sol().create("sol1")
+            try:
+                sol.study(str(study_tag))
+            except Exception:
+                pass
+            try:
+                sol.attach(str(study_tag))
+            except Exception:
+                pass
+
+            study_step = sol.feature().create("st1", "StudyStep")
+            study_step.set("study", str(study_tag))
+            study_step.set("studystep", str(step_tag))
+            sol.feature().create("v1", "Variables")
+            stationary = sol.feature().create("s1", "Stationary")
+
+            for key, value in (
+                ("nonlin", "on"),
+                ("stol", "1e-3"),
+                ("keeplog", "on"),
+            ):
+                try:
+                    stationary.set(key, value)
+                except Exception:
+                    continue
+
+            fully_coupled = None
+            try:
+                fully_coupled = stationary.feature().create("fc1", "FullyCoupled")
+            except Exception:
+                fully_coupled = None
+            if fully_coupled is not None:
+                for key, value in (
+                    ("linsolver", "d1"),
+                    ("dtech", "const"),
+                    ("initstep", "0.2"),
+                    ("minstep", "1.0E-5"),
+                    ("maxiter", "100"),
+                    ("termonres", "on"),
+                ):
+                    try:
+                        fully_coupled.set(key, value)
+                    except Exception:
+                        continue
+
+            direct = stationary.feature().create("d1", "Direct")
+            for key, value in (
+                ("linsolver", "pardiso"),
+                ("pivotperturb", "1.0E-12"),
+                ("iterrefine", "on"),
+            ):
+                try:
+                    direct.set(key, value)
+                except Exception:
+                    continue
+
+            logger.info("  ✓ 已配置 canonical 热稳态求解器: explicit sol1/s1 + direct pardiso")
+            return True
+        except Exception as exc:
+            logger.warning(
+                "  ⚠ 显式 canonical 热稳态求解器配置失败，将回退默认 study 求解: %s",
+                exc,
+            )
+            return False
+
     def _get_or_generate_step_file(self, request) -> Path:
         """
         Resolve existing STEP file from request or generate one on-demand.
@@ -369,6 +455,12 @@ class ComsolModelBuilderMixin:
                     success=False,
                     metrics={"max_temp": 9999.0, "min_temp": 9999.0, "avg_temp": 9999.0, "temp_gradient": 0.0},
                     violations=[],
+                    raw_data={
+                        "comsol_execution_stage": "model_build_failed",
+                        "model_build_succeeded": False,
+                        "solve_attempted": False,
+                        "solve_succeeded": False,
+                    },
                     error_message=f"COMSOL 导入节点执行失败: {str(import_node_error)}",
                 )
 
@@ -383,6 +475,12 @@ class ComsolModelBuilderMixin:
                     success=False,
                     metrics={"max_temp": 9999.0, "min_temp": 9999.0, "avg_temp": 9999.0, "temp_gradient": 0.0},
                     violations=[],
+                    raw_data={
+                        "comsol_execution_stage": "model_build_failed",
+                        "model_build_succeeded": False,
+                        "solve_attempted": False,
+                        "solve_succeeded": False,
+                    },
                     error_message=f"COMSOL 几何序列执行失败: {str(geom_run_error)}",
                 )
 
@@ -398,6 +496,12 @@ class ComsolModelBuilderMixin:
                     success=False,
                     metrics={"max_temp": 9999.0, "min_temp": 9999.0, "avg_temp": 9999.0, "temp_gradient": 0.0},
                     violations=[],
+                    raw_data={
+                        "comsol_execution_stage": "model_build_failed",
+                        "model_build_succeeded": False,
+                        "solve_attempted": False,
+                        "solve_succeeded": False,
+                    },
                     error_message=f"COMSOL 几何域校验失败: {str(domain_check_error)}",
                 )
 
@@ -416,38 +520,8 @@ class ComsolModelBuilderMixin:
             mat.selection().all()
             logger.info("  ✓ 材料已应用到所有域")
 
-            use_power_continuation_ramp = bool(
-                getattr(self, "_uses_power_continuation_ramp", lambda: True)()
-            )
-            use_diagnostic_power_scaling = bool(
-                getattr(self, "_uses_diagnostic_power_scaling", lambda: True)()
-            )
-            if use_power_continuation_ramp:
-                self.model.java.param().set("P_scale", "0.01")
-                logger.info("  ✓ 全局参数 P_scale 已设置: 0.01 (1% 功率)")
-                if use_diagnostic_power_scaling:
-                    mark_profile_simplification = getattr(self, "_mark_profile_simplification", None)
-                    if callable(mark_profile_simplification):
-                        mark_profile_simplification(DIAGNOSTIC_SIMPLIFICATION_P_SCALE)
-            else:
-                logger.info("  ✓ 热路径启用：直接施加组件功率，不使用 P_scale continuation")
-
-            logger.info("  [3.5/7] 建立全局默认导热网络...")
-            try:
-                thin_layer = ht.feature().create("tl_global", "ThinLayer")
-                thin_layer.selection().geom("geom1", 2)
-                thin_layer.selection().set([])
-                thin_layer.selection().all()
-                d_gap = 0.1
-                thin_layer.set("ds", f"{d_gap}[mm]")
-                try:
-                    thin_layer.set("ks_mat", "userdef")
-                except Exception:
-                    pass
-                thin_layer.set("ks", "167[W/(m*K)]")
-                logger.info(f"      ✓ 全局默认导热网络已建立: ds={d_gap} mm, ks=167 W/(m*K)")
-            except Exception as exc:
-                logger.warning(f"      ⚠️ 全局导热网络创建失败（非致命）: {exc}")
+            logger.info("  ✓ 热路径启用：直接施加组件功率，不使用 P_scale continuation")
+            logger.info("  ✓ 不再注入全局 ThinLayer；canonical 热路径依赖真实接触/共享边界")
 
             logger.info("  [4/6] 创建 Box Selection 并赋予热源...")
             self._last_heat_binding_report = self._assign_heat_sources_dynamic(design_state, ht, geom)
@@ -486,6 +560,12 @@ class ComsolModelBuilderMixin:
                     success=False,
                     metrics={"max_temp": 9999.0, "min_temp": 9999.0, "avg_temp": 9999.0, "temp_gradient": 0.0},
                     violations=[],
+                    raw_data={
+                        "comsol_execution_stage": "model_build_failed",
+                        "model_build_succeeded": False,
+                        "solve_attempted": False,
+                        "solve_succeeded": False,
+                    },
                     error_message=f"COMSOL 网格生成失败: {str(mesh_error)}",
                 )
             logger.info("  ✓ 网格生成成功")
@@ -505,14 +585,31 @@ class ComsolModelBuilderMixin:
             logger.info("  [7/7] 配置求解器...")
             initial_temperature_k = float(getattr(self, "initial_temperature_k", 293.15) or 293.15)
             ht.feature("init1").set("Tinit", f"{initial_temperature_k}[K]")
+            self._configure_primary_stationary_solver(study_tag="std1", step_tag="stat")
             logger.info(
-                "  ✓ 求解器配置完成: 使用 COMSOL 默认配置, 初始温度=%.2fK",
+                "  ✓ 求解器配置完成: canonical thermal solver prepared, 初始温度=%.2fK",
                 initial_temperature_k,
             )
             logger.info("  ✓ 动态模型创建完成")
         except Exception as exc:
             logger.error(f"动态模型创建失败: {exc}", exc_info=True)
-            raise SimulationError(f"动态模型创建失败: {exc}")
+            return SimulationResult(
+                success=False,
+                metrics={
+                    "max_temp": 9999.0,
+                    "min_temp": 9999.0,
+                    "avg_temp": 9999.0,
+                    "temp_gradient": 0.0,
+                },
+                violations=[],
+                raw_data={
+                    "comsol_execution_stage": "model_build_failed",
+                    "model_build_succeeded": False,
+                    "solve_attempted": False,
+                    "solve_succeeded": False,
+                },
+                error_message=f"动态模型创建失败: {exc}",
+            )
 
     def _assign_radiation_boundaries_dynamic(
         self,
@@ -570,92 +667,49 @@ class ComsolModelBuilderMixin:
             logger.warning(f"      外边界选择校验失败，将回退到全边界锚点: {exc}")
             missing_anchor_components = [c.id for c in design_state.components]
 
-        t_surface = float(getattr(self, "surface_temperature_k", 273.15) or 273.15)
         shell_outer_entities = self._select_shell_outer_boundary_entities(design_state=design_state)
-        use_canonical_thermal_path = bool(
-            getattr(self, "_uses_canonical_thermal_path", lambda: False)()
-        )
-        if use_canonical_thermal_path:
-            radiation_bc = ht.feature().create("rad_amb1", "SurfaceToAmbientRadiation", 2)
-            t_surface_sink = float(getattr(self, "surface_temperature_k", 293.15) or 293.15)
-            t_ambient = float(getattr(self, "ambient_temperature_k", t_surface_sink) or t_surface_sink)
-            t_radiation_sink = t_ambient
-            radiation_bc.set("Tamb", f"{t_radiation_sink}[K]")
-            try:
-                radiation_bc.set("Text", f"{t_radiation_sink}[K]")
-            except Exception:
-                pass
-            try:
-                radiation_bc.set("epsilon_rad_mat", "userdef")
-            except Exception:
-                pass
-            try:
-                radiation_bc.set("epsilon_rad", "0.8")
-            except Exception:
-                pass
-            if shell_outer_entities:
-                emissivity_ok = self._ensure_boundary_surface_emissivity_material(
-                    tag="mat_shell_rad",
-                    label="Shell Outer Surface Emissivity",
-                    boundary_entities=shell_outer_entities,
-                    emissivity=0.8,
+        if not shell_outer_entities:
+            raise SimulationError(
+                "canonical_shell_outer_boundary_missing: "
+                + (
+                    ",".join(missing_anchor_components)
+                    if missing_anchor_components
+                    else "unknown_components"
                 )
-                if emissivity_ok:
-                    logger.info("      ✓ 机壳外表面边界材料已补充 Surface Emissivity")
-                radiation_bc.selection().set(shell_outer_entities)
-                logger.info("      ✓ Canonical 辐射边界已绑定到舱体机壳外表面")
-            else:
-                logger.warning(
-                    "      ⚠ Canonical 辐射边界缺少机壳外表面选择，回退到 diagnostic_simplified。"
-                    f" 漏锚组件: {missing_anchor_components if missing_anchor_components else '未知'}"
-                )
-                try:
-                    ht.feature().remove("rad_amb1")
-                except Exception:
-                    pass
-            if shell_outer_entities:
-                logger.info(
-                    "      ✓ SurfaceToAmbientRadiation 已设置: Tamb=%.2fK",
-                    t_radiation_sink,
-                )
-                return
-
-        temp_bc = ht.feature().create("temp1", "TemperatureBoundary")
-        temp_bc.set("T0", f"{t_surface}[K]")
-        logger.info(f"      ✓ 温度边界已设置: T_surface={t_surface}K")
-        mark_profile_simplification = getattr(self, "_mark_profile_simplification", None)
-        if callable(mark_profile_simplification):
-            mark_profile_simplification(DIAGNOSTIC_SIMPLIFICATION_BOUNDARY_TEMPERATURE_ANCHOR)
-
-        logger.info("    - 添加数值稳定锚（微弱对流边界）...")
-        conv_bc = ht.feature().create("conv_stabilizer", "HeatFluxBoundary")
-        h_stabilizer = 0.1 if not self._resolve_shell_geometry(design_state) else 2.0
-        t_ambient = float(getattr(self, "ambient_temperature_k", 293.15) or 293.15)
-        conv_bc.set("q0", f"{h_stabilizer}[W/(m^2*K)]*({t_ambient}[K]-T)")
-        if callable(mark_profile_simplification):
-            mark_profile_simplification(DIAGNOSTIC_SIMPLIFICATION_WEAK_CONVECTION_STABILIZER)
-
-        if shell_outer_entities:
-            temp_bc.selection().set(shell_outer_entities)
-            conv_bc.selection().all()
-            logger.info("      ✓ 热边界已绑定到舱体机壳外表面")
-            logger.info("      ✓ 稳定化弱对流仍作用于全边界，以避免内部悬空域失稳")
-            logger.info(f"      ✓ 数值稳定锚已设置: h={h_stabilizer} W/(m^2*K), T_ambient={t_ambient}K")
-            return
-
-        if selected_entities and not missing_anchor_components:
-            temp_bc.selection().named(sel_name)
-            conv_bc.selection().named(sel_name)
-            logger.info(f"      ✓ 外边界锚点已绑定: {len(selected_entities)} 个边界实体")
-        else:
-            temp_bc.selection().all()
-            conv_bc.selection().all()
-            logger.warning(
-                "      ⚠ 外边界锚点存在漏选，回退到全边界锚点。"
-                f" 漏锚组件: {missing_anchor_components if missing_anchor_components else '未知'}"
             )
 
-        logger.info(f"      ✓ 数值稳定锚已设置: h={h_stabilizer} W/(m^2*K), T_ambient={t_ambient}K")
+        radiation_bc = ht.feature().create("rad_amb1", "SurfaceToAmbientRadiation", 2)
+        t_surface_sink = float(getattr(self, "surface_temperature_k", 293.15) or 293.15)
+        t_ambient = float(getattr(self, "ambient_temperature_k", t_surface_sink) or t_surface_sink)
+        t_radiation_sink = t_ambient
+        radiation_bc.set("Tamb", f"{t_radiation_sink}[K]")
+        try:
+            radiation_bc.set("Text", f"{t_radiation_sink}[K]")
+        except Exception:
+            pass
+        try:
+            radiation_bc.set("epsilon_rad_mat", "userdef")
+        except Exception:
+            pass
+        try:
+            radiation_bc.set("epsilon_rad", "0.8")
+        except Exception:
+            pass
+
+        emissivity_ok = self._ensure_boundary_surface_emissivity_material(
+            tag="mat_shell_rad",
+            label="Shell Outer Surface Emissivity",
+            boundary_entities=shell_outer_entities,
+            emissivity=0.8,
+        )
+        if emissivity_ok:
+            logger.info("      ✓ 机壳外表面边界材料已补充 Surface Emissivity")
+        radiation_bc.selection().set(shell_outer_entities)
+        logger.info("      ✓ Canonical 辐射边界已绑定到舱体机壳外表面")
+        logger.info(
+            "      ✓ SurfaceToAmbientRadiation 已设置: Tamb=%.2fK",
+            t_radiation_sink,
+        )
 
     def _ensure_boundary_surface_emissivity_material(
         self,

@@ -1,0 +1,19 @@
+{
+  "catalog_id": "battery_pack_compact_v1",
+  "family": "battery",
+  "display_name": "Battery Pack Compact",
+  "geometry_profile": {
+    "kind": "box",
+    "size_mm": [125.0, 105.0, 70.0]
+  },
+  "geometry_proxy": {
+    "kind": "aabb",
+    "size_mm": [125.0, 105.0, 70.0],
+    "mount_faces": ["-Z"]
+  },
+  "mass_kg": 4.4,
+  "power_w": 6.0,
+  "material": "aluminum",
+  "mount_faces": ["-Z"],
+  "allowed_orientations": ["+Z", "-Z"]
+}

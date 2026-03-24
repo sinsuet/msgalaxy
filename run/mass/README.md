@@ -1,22 +1,15 @@
-# MaaS L1-L4 Entrypoints
+# mass Runtime
 
-Current active mass scenario scripts:
+Legacy `run_L1.py` ~ `run_L4.py` entry scripts have been removed.
 
-- `run/mass/run_L1.py`
-- `run/mass/run_L2.py`
-- `run/mass/run_L3.py`
-- `run/mass/run_L4.py`
+Use the unified scenario CLI instead:
 
-These scripts are the active `mass` mode entries.
+```powershell
+python run/run_scenario.py --stack mass --scenario optical_remote_sensing_bus
+```
 
-L1-L4 behavior is centralized in:
+The rebuilt mass core now lives behind:
 
-- `config/system/mass/base.yaml`
-- `config/system/mass/level_profiles_l1_l4.yaml`
-- `config/system/mass/level_profiles_l1_l4_real_strict.yaml`
-
-Removed from the active path:
-
-- legacy matrix benchmarks
-- legacy dashboard scripts
-- stage benchmark profiles
+- `workflow/scenario_runtime.py`
+- `workflow/modes/mass/pipeline_service.py`
+- `config/scenarios/registry.yaml`

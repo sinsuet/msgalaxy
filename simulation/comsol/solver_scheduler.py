@@ -21,12 +21,27 @@ logger = get_logger(__name__)
 class ComsolSolverSchedulerMixin:
     """Solve scheduling and fallback control for dynamic COMSOL runs."""
 
+    def _run_primary_thermal_solve(self) -> None:
+        if self.model is None:
+            raise RuntimeError("COMSOL model unavailable")
+
+        try:
+            sol_tags = list(self.model.java.sol().tags())
+        except Exception:
+            sol_tags = []
+
+        if "sol1" in {str(tag) for tag in list(sol_tags or [])}:
+            self.model.java.sol("sol1").runAll()
+            return
+
+        self.model.java.study("std1").run()
+
     def _run_dynamic_simulation(self, request: SimulationRequest) -> SimulationResult:
         """
         Dynamic simulation flow:
         - resolve STEP
         - build model
-        - solve (power ramping)
+        - solve
         - extract multiphysics metrics
         """
         try:
@@ -65,8 +80,10 @@ class ComsolSolverSchedulerMixin:
             def _attach_contract_metadata(
                 raw_data: Dict[str, Any] | None = None,
                 *,
+                thermal_runtime: Dict[str, Any] | None = None,
                 structural_runtime: Dict[str, Any] | None = None,
                 power_runtime: Dict[str, Any] | None = None,
+                coupled_runtime: Dict[str, Any] | None = None,
             ) -> Dict[str, Any]:
                 attach = getattr(self, "_attach_contract_metadata", None)
                 if not callable(attach):
@@ -75,8 +92,10 @@ class ComsolSolverSchedulerMixin:
                     return dict(
                         attach(
                             raw_data=dict(raw_data or {}),
+                            thermal_runtime=dict(thermal_runtime or {}),
                             structural_runtime=dict(structural_runtime or {}),
                             power_runtime=dict(power_runtime or {}),
+                            coupled_runtime=dict(coupled_runtime or {}),
                         )
                     )
                 except Exception as contract_exc:
@@ -94,6 +113,13 @@ class ComsolSolverSchedulerMixin:
                 if self.save_mph_on_failure:
                     saved_path = self._save_mph_model(request, reason="model_build_failed")
                 raw_data = dict(model_build_result.raw_data or {})
+                raw_data["shell_contact_report"] = dict(
+                    getattr(self, "_last_shell_contact_report", {}) or {}
+                )
+                raw_data.setdefault("comsol_execution_stage", "model_build_failed")
+                raw_data.setdefault("model_build_succeeded", False)
+                raw_data.setdefault("solve_attempted", False)
+                raw_data.setdefault("solve_succeeded", False)
                 if saved_path:
                     raw_data["mph_model_path"] = str(saved_path)
                 if self.saved_mph_records:
@@ -101,11 +127,20 @@ class ComsolSolverSchedulerMixin:
                 raw_data["comsol_feature_domain_audit"] = _collect_feature_domain_audit(
                     heat_binding_report=dict(self._last_heat_binding_report or {}),
                 )
-                raw_data = _attach_contract_metadata(raw_data)
+                raw_data = _attach_contract_metadata(
+                    raw_data,
+                    thermal_runtime={
+                        "setup_ok": False,
+                        "study_entered": False,
+                        "study_solved": False,
+                        "error": str(model_build_result.error_message or ""),
+                    },
+                )
                 model_build_result.raw_data = raw_data
                 return model_build_result
 
             heat_binding_report = dict(self._last_heat_binding_report or {})
+            shell_contact_report = dict(getattr(self, "_last_shell_contact_report", {}) or {})
             active_heat_components = int(heat_binding_report.get("active_components", 0))
             assigned_heat_sources = int(heat_binding_report.get("assigned_count", 0))
 
@@ -114,7 +149,14 @@ class ComsolSolverSchedulerMixin:
                 saved_path = ""
                 if self.save_mph_on_failure:
                     saved_path = self._save_mph_model(request, reason="heat_binding_failed")
-                raw_data = {"heat_binding_report": heat_binding_report}
+                raw_data = {
+                    "heat_binding_report": heat_binding_report,
+                    "shell_contact_report": shell_contact_report,
+                    "comsol_execution_stage": "model_build_succeeded",
+                    "model_build_succeeded": True,
+                    "solve_attempted": False,
+                    "solve_succeeded": False,
+                }
                 if saved_path:
                     raw_data["mph_model_path"] = str(saved_path)
                 if self.saved_mph_records:
@@ -122,7 +164,15 @@ class ComsolSolverSchedulerMixin:
                 raw_data["comsol_feature_domain_audit"] = _collect_feature_domain_audit(
                     heat_binding_report=heat_binding_report,
                 )
-                raw_data = _attach_contract_metadata(raw_data)
+                raw_data = _attach_contract_metadata(
+                    raw_data,
+                    thermal_runtime={
+                        "setup_ok": True,
+                        "study_entered": False,
+                        "study_solved": False,
+                        "error": "NO_HEAT_SOURCE_BOUND",
+                    },
+                )
                 return SimulationResult(
                     success=False,
                     metrics={
@@ -136,9 +186,18 @@ class ComsolSolverSchedulerMixin:
                 )
 
             solve_success = False
+            thermal_runtime: Dict[str, Any] = {
+                "enabled": True,
+                "setup_ok": True,
+                "study_entered": False,
+                "study_solved": False,
+                "error": "",
+            }
             structural_runtime: Dict[str, Any] = {
                 "enabled": bool(self.enable_structural_real),
                 "setup_ok": bool(self._structural_setup_ok),
+                "study_entered": False,
+                "study_solved": False,
                 "stat_solved": False,
                 "modal_solved": False,
                 "error": "",
@@ -146,46 +205,26 @@ class ComsolSolverSchedulerMixin:
             power_runtime: Dict[str, Any] = {
                 "enabled": bool(self.enable_power_comsol_real),
                 "setup_ok": bool(self._power_setup_ok),
+                "study_entered": False,
+                "study_solved": False,
                 "stat_solved": False,
                 "error": "",
             }
             coupled_runtime: Dict[str, Any] = {
                 "enabled": bool(self.enable_coupled_multiphysics_real),
                 "setup_ok": bool(self._coupled_setup_ok),
+                "study_entered": False,
+                "study_solved": False,
                 "stat_solved": False,
                 "error": "",
             }
             try:
-                use_power_continuation_ramp = bool(
-                    getattr(self, "_uses_power_continuation_ramp", lambda: True)()
-                )
-                use_diagnostic_power_scaling = bool(
-                    getattr(self, "_uses_diagnostic_power_scaling", lambda: True)()
-                )
-                if use_power_continuation_ramp:
-                    ramping_steps = (
-                        ["0.01", "0.20", "1.0"]
-                        if use_diagnostic_power_scaling
-                        else ["1e-4", "1e-3", "1e-2", "1e-1", "0.2", "0.5", "1.0"]
-                    )
-                    if use_diagnostic_power_scaling:
-                        logger.info("  求解物理场（T⁴ 辐射边界 + 功率斜坡加载）...")
-                    else:
-                        logger.info("  求解物理场（canonical 热边界 + 官方 continuation 功率斜坡）...")
-                    for scale in ramping_steps:
-                        logger.info(f"    - 执行稳态求解 (功率缩放 P_scale = {scale})...")
-                        self.model.java.param().set("P_scale", scale)
-                        self.model.java.study("std1").run()
-                        logger.info(f"      ✓ P_scale={scale} 求解成功")
-                    if use_diagnostic_power_scaling:
-                        logger.info("  ✓ 功率斜坡加载完成，求解成功")
-                    else:
-                        logger.info("  ✓ Canonical continuation 功率斜坡求解完成")
-                else:
-                    logger.info("    - 执行稳态求解 (canonical 直接功率载荷，无 P_scale 斜坡)...")
-                    self.model.java.study("std1").run()
-                    logger.info("      ✓ Canonical 稳态热求解成功")
+                logger.info("    - 执行稳态求解 (canonical 直接功率载荷)...")
+                thermal_runtime["study_entered"] = True
+                self._run_primary_thermal_solve()
+                logger.info("      ✓ Canonical 稳态热求解成功")
                 solve_success = True
+                thermal_runtime["study_solved"] = True
                 if bool(self.enable_power_comsol_real) and bool(self._power_setup_ok):
                     power_runtime = self._run_power_studies()
                 if bool(self.enable_coupled_multiphysics_real) and bool(self._coupled_setup_ok):
@@ -196,6 +235,7 @@ class ComsolSolverSchedulerMixin:
                 logger.warning(f"  ⚠ 求解发散或失败: {solve_error}")
                 logger.warning(f"  Java 异常详情: {str(solve_error)}")
                 logger.warning("  返回惩罚分，不中断优化循环")
+                thermal_runtime["error"] = str(solve_error)
 
             saved_path = ""
             if solve_success and self.save_mph_each_eval:
@@ -237,16 +277,24 @@ class ComsolSolverSchedulerMixin:
                 raw_data = _attach_contract_metadata(
                     {
                         "heat_binding_report": heat_binding_report,
+                        "shell_contact_report": shell_contact_report,
                         "mph_model_path": str(saved_path or self.last_saved_mph_path or ""),
                         "mph_save_records": list(self.saved_mph_records[-5:]),
+                        "comsol_execution_stage": "solve_failed",
+                        "model_build_succeeded": True,
+                        "solve_attempted": bool(thermal_runtime.get("study_entered", False)),
+                        "solve_succeeded": False,
+                        "thermal_runtime": dict(thermal_runtime),
                         "structural_runtime": dict(structural_runtime),
                         "power_runtime": dict(power_runtime),
                         "coupled_runtime": dict(coupled_runtime),
                         "metric_sources": metric_sources,
                         "comsol_feature_domain_audit": feature_domain_audit,
                     },
+                    thermal_runtime=thermal_runtime,
                     structural_runtime=structural_runtime,
                     power_runtime=power_runtime,
+                    coupled_runtime=coupled_runtime,
                 )
                 return SimulationResult(
                     success=False,
@@ -263,6 +311,10 @@ class ComsolSolverSchedulerMixin:
                 coupled_runtime=coupled_runtime,
             )
             logger.info(f"  仿真完成: {metrics}")
+            component_thermal_audit = dict(getattr(self, "_last_component_thermal_audit", {}) or {})
+            dominant_thermal_hotspot = dict(
+                getattr(self, "_last_dominant_thermal_hotspot", {}) or {}
+            )
 
             violations = self.check_constraints(metrics)
             metric_sources = {
@@ -319,18 +371,28 @@ class ComsolSolverSchedulerMixin:
                 coupled_runtime=coupled_runtime,
             )
             raw_data = _attach_contract_metadata(
-                {
-                    "heat_binding_report": heat_binding_report,
-                    "mph_model_path": str(saved_path or self.last_saved_mph_path or ""),
-                    "mph_save_records": list(self.saved_mph_records[-5:]),
+                    {
+                        "heat_binding_report": heat_binding_report,
+                        "shell_contact_report": shell_contact_report,
+                        "mph_model_path": str(saved_path or self.last_saved_mph_path or ""),
+                        "mph_save_records": list(self.saved_mph_records[-5:]),
+                        "comsol_execution_stage": "solve_succeeded",
+                        "model_build_succeeded": True,
+                    "solve_attempted": bool(thermal_runtime.get("study_entered", False)),
+                    "solve_succeeded": True,
+                    "thermal_runtime": dict(thermal_runtime),
                     "structural_runtime": dict(structural_runtime),
                     "power_runtime": dict(power_runtime),
                     "coupled_runtime": dict(coupled_runtime),
                     "metric_sources": metric_sources,
+                    "component_thermal_audit": component_thermal_audit,
+                    "dominant_thermal_hotspot": dominant_thermal_hotspot,
                     "comsol_feature_domain_audit": feature_domain_audit,
                 },
+                thermal_runtime=thermal_runtime,
                 structural_runtime=structural_runtime,
                 power_runtime=power_runtime,
+                coupled_runtime=coupled_runtime,
             )
 
             return SimulationResult(
@@ -345,6 +407,8 @@ class ComsolSolverSchedulerMixin:
             fallback_structural_runtime = {
                 "enabled": bool(self.enable_structural_real),
                 "setup_ok": bool(self._structural_setup_ok),
+                "study_entered": False,
+                "study_solved": False,
                 "stat_solved": False,
                 "modal_solved": False,
                 "error": str(exc),
@@ -352,12 +416,16 @@ class ComsolSolverSchedulerMixin:
             fallback_power_runtime = {
                 "enabled": bool(self.enable_power_comsol_real),
                 "setup_ok": bool(self._power_setup_ok),
+                "study_entered": False,
+                "study_solved": False,
                 "stat_solved": False,
                 "error": str(exc),
             }
             fallback_coupled_runtime = {
                 "enabled": bool(self.enable_coupled_multiphysics_real),
                 "setup_ok": bool(self._coupled_setup_ok),
+                "study_entered": False,
+                "study_solved": False,
                 "stat_solved": False,
                 "error": str(exc),
             }
@@ -385,15 +453,29 @@ class ComsolSolverSchedulerMixin:
                     }
             raw_data = _attach_contract_metadata(
                 {
+                    "shell_contact_report": dict(
+                        getattr(self, "_last_shell_contact_report", {}) or {}
+                    ),
                     "mph_model_path": str(self.last_saved_mph_path or ""),
                     "mph_save_records": list(self.saved_mph_records[-5:]),
+                    "comsol_execution_stage": "runtime_failed",
+                    "model_build_succeeded": False,
+                    "solve_attempted": False,
+                    "solve_succeeded": False,
                     "structural_runtime": fallback_structural_runtime,
                     "power_runtime": fallback_power_runtime,
                     "coupled_runtime": fallback_coupled_runtime,
                     "comsol_feature_domain_audit": feature_domain_audit,
                 },
+                thermal_runtime={
+                    "setup_ok": False,
+                    "study_entered": False,
+                    "study_solved": False,
+                    "error": str(exc),
+                },
                 structural_runtime=fallback_structural_runtime,
                 power_runtime=fallback_power_runtime,
+                coupled_runtime=fallback_coupled_runtime,
             )
             return SimulationResult(
                 success=False,

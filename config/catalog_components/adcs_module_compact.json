@@ -1,0 +1,19 @@
+{
+  "catalog_id": "adcs_module_compact_v1",
+  "family": "adcs",
+  "display_name": "ADCS Module Compact",
+  "geometry_profile": {
+    "kind": "box",
+    "size_mm": [95.0, 95.0, 65.0]
+  },
+  "geometry_proxy": {
+    "kind": "aabb",
+    "size_mm": [95.0, 95.0, 65.0],
+    "mount_faces": ["-Z", "+Z"]
+  },
+  "mass_kg": 2.2,
+  "power_w": 8.0,
+  "material": "aluminum",
+  "mount_faces": ["-Z", "+Z"],
+  "allowed_orientations": ["+Z", "-Z"]
+}

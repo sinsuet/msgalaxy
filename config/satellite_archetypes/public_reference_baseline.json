@@ -239,7 +239,8 @@
             "semantic": "avionics_zone",
             "allowed_categories": [
               "avionics",
-              "adcs"
+              "adcs",
+              "communication"
             ],
             "notes": "ADCS and control electronics close to payload axis."
           },

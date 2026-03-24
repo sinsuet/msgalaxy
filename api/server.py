@@ -1,24 +1,20 @@
-﻿#!/usr/bin/env python
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-REST API服务器
-
-提供HTTP接口用于：
-- 提交优化任务
-- 查询任务状态
-- 获取结果和可视化
-- 管理实验
+Scenario-driven REST API server.
 """
 
-from flask import Flask, request, jsonify, send_file
-from flask_cors import CORS
-from flask_socketio import SocketIO, emit
-import json
-from pathlib import Path
-from typing import Dict, Any
+from __future__ import annotations
+
 import threading
 import uuid
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict
+
+from flask import Flask, jsonify, request, send_file
+from flask_cors import CORS
+from flask_socketio import SocketIO, emit
 
 from api.experiment_index import (
     iter_experiment_dirs,
@@ -28,27 +24,28 @@ from api.experiment_index import (
     resolve_experiments_root,
     serialize_experiment_dir,
 )
-from core.artifact_index import load_artifact_index
-from workflow.orchestrator import WorkflowOrchestrator
 from core.logger import get_logger
-from core.exceptions import SatelliteDesignError
+from domain.satellite.scenario import load_satellite_scenario_spec
+from run.run_scenario import (
+    REGISTRY_PATH,
+    _load_executor,
+    _load_registry,
+    _resolve_abs_path,
+    _resolve_registry_entry,
+)
+from workflow.scenario_runtime import load_runtime_config
+
 
 logger = get_logger("api_server", persist_global=True)
-
-# 创建Flask应用
 app = Flask(__name__)
-CORS(app)  # 启用CORS支持
-
-# 创建SocketIO实例
+CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# 任务存储
 tasks: Dict[str, Dict[str, Any]] = {}
 tasks_lock = threading.Lock()
 
 
 class TaskStatus:
-    """任务状态"""
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -68,120 +65,67 @@ def _serialize_experiment_dir(path_value: str | Path) -> str:
     return serialize_experiment_dir(_experiments_root(), path_value)
 
 
-def _load_json_if_exists(path: Path) -> Dict[str, Any]:
-    return load_json_if_exists(path)
-
-
-def _discover_trace_csv(experiment_path: Path) -> Path:
-    index = load_artifact_index(str(experiment_path))
-    paths = dict(index.get("paths", {}) or {})
-    for key, fallback in (
-        ("agent_loop_trace_csv", "evolution_trace.csv"),
-        ("mass_trace_csv", "mass_trace.csv"),
-    ):
-        raw = str(paths.get(key, "") or fallback)
-        candidate = Path(raw)
-        if not candidate.is_absolute():
-            candidate = experiment_path / candidate
-        if candidate.exists():
-            return candidate
-    return experiment_path / "evolution_trace.csv"
+def _load_registry_entry(stack: str, scenario: str) -> Dict[str, Any]:
+    registry = _load_registry(REGISTRY_PATH)
+    return _resolve_registry_entry(registry, stack=stack, scenario=scenario)
 
 
 def _serialize_task(task: Dict[str, Any]) -> Dict[str, Any]:
     payload = dict(task or {})
     result = payload.get("result")
     if isinstance(result, dict) and result.get("experiment_dir"):
-        result_payload = dict(result)
-        result_payload["experiment_dir"] = _serialize_experiment_dir(
-            str(result_payload.get("experiment_dir", "") or "")
-        )
-        payload["result"] = result_payload
+        serialized = dict(result)
+        serialized["experiment_dir"] = _serialize_experiment_dir(str(serialized.get("experiment_dir", "") or ""))
+        payload["result"] = serialized
     return payload
 
 
 def emit_task_update(task_id: str, event_type: str, data: Dict[str, Any]):
-    """
-    通过WebSocket发送任务更新
-
-    Args:
-        task_id: 任务ID
-        event_type: 事件类型 (status_change, progress, iteration_complete, error)
-        data: 事件数据
-    """
     try:
-        socketio.emit('task_update', {
-            'task_id': task_id,
-            'event_type': event_type,
-            'data': data,
-            'timestamp': datetime.now().isoformat()
-        }, namespace='/tasks')
-        logger.debug(f"Emitted {event_type} for task {task_id}")
-    except Exception as e:
-        logger.error(f"Failed to emit task update: {e}")
+        socketio.emit(
+            "task_update",
+            {
+                "task_id": task_id,
+                "event_type": event_type,
+                "data": data,
+                "timestamp": datetime.now().isoformat(),
+            },
+            namespace="/tasks",
+        )
+    except Exception as exc:
+        logger.error("Failed to emit task update: %s", exc)
 
 
 def run_optimization_task(task_id: str, config: Dict[str, Any]):
-    """
-    在后台运行优化任务
-
-    Args:
-        task_id: 任务ID
-        config: 配置参数
-    """
     try:
-        # 更新任务状态
         with tasks_lock:
             task_ref = tasks.get(task_id)
             if task_ref is None:
-                logger.warning(f"Task {task_id} not found when marking RUNNING; abort worker")
+                logger.warning("Task %s not found when marking RUNNING; abort worker", task_id)
                 return
             task_ref["status"] = TaskStatus.RUNNING
             task_ref["started_at"] = datetime.now().isoformat()
 
-        logger.info(f"Starting optimization task: {task_id}")
+        stack = str(config.get("stack", "mass") or "mass")
+        scenario = str(config.get("scenario", "") or "").strip()
+        entry = _load_registry_entry(stack, scenario)
+        scenario_path = _resolve_abs_path(entry["scenario"])
+        base_config_path = _resolve_abs_path(str(config.get("base_config", "") or entry["base_config"]))
 
-        # 发送状态更新
-        emit_task_update(task_id, 'status_change', {
-            'status': TaskStatus.RUNNING,
-            'message': 'Optimization started'
-        })
-
-        # 创建编排器
-        orchestrator = WorkflowOrchestrator(
-            config_path=config.get("config_path", "config/system/mass/base.yaml")
+        emit_task_update(task_id, "status_change", {"status": TaskStatus.RUNNING, "message": "Scenario execution started"})
+        executor_cls = _load_executor(stack)
+        executor = executor_cls(
+            config=load_runtime_config(base_config_path),
+            run_label=str(config.get("run_label", "") or ""),
         )
+        result = executor.run_scenario(scenario_path=str(scenario_path))
 
-        # 运行优化
-        max_iterations = config.get("max_iterations", 20)
-
-        # 发送进度更新
-        emit_task_update(task_id, 'progress', {
-            'current_iteration': 0,
-            'max_iterations': max_iterations,
-            'progress_percent': 0
-        })
-
-        final_state = orchestrator.run_optimization(
-            bom_file=config.get("bom_file"),
-            max_iterations=max_iterations,
-            convergence_threshold=config.get("convergence_threshold", 0.01)
-        )
-
-        # 生成可视化
-        emit_task_update(task_id, 'progress', {
-            'message': 'Generating visualizations...',
-            'progress_percent': 90
-        })
-
-        from core.visualization import generate_visualizations
-        generate_visualizations(orchestrator.logger.run_dir)
-
-        # 更新任务状态
         result_payload = {
-            "experiment_dir": _serialize_experiment_dir(orchestrator.logger.run_dir),
-            "final_iteration": final_state.iteration,
-            "num_components": len(final_state.components)
+            "experiment_dir": str(result.run_dir),
+            "summary_path": str(result.run_dir / "summary.json"),
+            "scenario_id": str(result.summary.get("scenario_id", "") or scenario),
+            "stack": stack,
+            "status": str(result.summary.get("status", "") or "UNKNOWN"),
         }
         with tasks_lock:
             task_ref = tasks.get(task_id)
@@ -190,158 +134,108 @@ def run_optimization_task(task_id: str, config: Dict[str, Any]):
                 task_ref["completed_at"] = datetime.now().isoformat()
                 task_ref["result"] = dict(result_payload)
 
-        logger.info(f"Optimization task completed: {task_id}")
-
-        # 发送完成通知
-        emit_task_update(task_id, 'status_change', {
-            'status': TaskStatus.COMPLETED,
-            'message': 'Optimization completed successfully',
-            'result': result_payload
-        })
-
-    except Exception as e:
-        logger.error(f"Optimization task failed: {task_id}", exc_info=True)
-
+        emit_task_update(
+            task_id,
+            "status_change",
+            {
+                "status": TaskStatus.COMPLETED,
+                "message": "Scenario execution completed",
+                "result": dict(result_payload),
+            },
+        )
+    except Exception as exc:
+        logger.error("Scenario task failed: %s", task_id, exc_info=True)
         with tasks_lock:
             task_ref = tasks.get(task_id)
             if task_ref is not None:
                 task_ref["status"] = TaskStatus.FAILED
-                task_ref["error"] = str(e)
+                task_ref["error"] = str(exc)
                 task_ref["completed_at"] = datetime.now().isoformat()
-
-        # 发送错误通知
-        emit_task_update(task_id, 'error', {
-            'status': TaskStatus.FAILED,
-            'error': str(e)
-        })
+        emit_task_update(task_id, "error", {"status": TaskStatus.FAILED, "error": str(exc)})
 
 
-# ============ WebSocket事件处理 ============
-
-@socketio.on('connect', namespace='/tasks')
+@socketio.on("connect", namespace="/tasks")
 def handle_connect():
-    """客户端连接"""
-    logger.info(f"Client connected: {request.sid}")
-    emit('connected', {'message': 'Connected to task updates'})
+    logger.info("Client connected: %s", request.sid)
+    emit("connected", {"message": "Connected to task updates"})
 
 
-@socketio.on('disconnect', namespace='/tasks')
+@socketio.on("disconnect", namespace="/tasks")
 def handle_disconnect():
-    """客户端断开连接"""
-    logger.info(f"Client disconnected: {request.sid}")
+    logger.info("Client disconnected: %s", request.sid)
 
 
-@socketio.on('subscribe', namespace='/tasks')
+@socketio.on("subscribe", namespace="/tasks")
 def handle_subscribe(data):
-    """订阅特定任务的更新"""
-    task_id = data.get('task_id')
+    task_id = dict(data or {}).get("task_id")
     if task_id:
-        logger.info(f"Client {request.sid} subscribed to task {task_id}")
-        emit('subscribed', {'task_id': task_id, 'message': f'Subscribed to task {task_id}'})
+        emit("subscribed", {"task_id": task_id, "message": f"Subscribed to task {task_id}"})
     else:
-        emit('error', {'message': 'task_id is required'})
+        emit("error", {"message": "task_id is required"})
 
-
-# ============ API端点 ============
 
 @app.route("/api/health", methods=["GET"])
 def health_check():
-    """健康检查"""
-    return jsonify({
-        "status": "ok",
-        "timestamp": datetime.now().isoformat()
-    })
+    return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
 
 
 @app.route("/api/tasks", methods=["POST"])
 def create_task():
-    """
-    创建优化任务
-
-    请求体:
-    {
-        "bom_file": "config/bom_example.json",
-        "max_iterations": 20,
-        "convergence_threshold": 0.01,
-        "config_path": "config/system/mass/base.yaml"
-    }
-    """
     try:
         data = request.get_json(force=True, silent=True)
-
-        # 验证必需参数
         if not data:
             return jsonify({"error": "Request body is required"}), 400
 
-        # 生成任务ID
-        task_id = str(uuid.uuid4())
+        stack = str(data.get("stack", "mass") or "mass")
+        scenario = str(data.get("scenario", "") or "").strip()
+        if stack != "mass":
+            return jsonify({"error": "stack must be: mass"}), 400
+        if not scenario:
+            return jsonify({"error": "scenario is required"}), 400
 
-        # 创建任务记录
+        task_id = str(uuid.uuid4())
         task = {
             "id": task_id,
             "status": TaskStatus.PENDING,
-            "config": data,
+            "config": dict(data),
             "created_at": datetime.now().isoformat(),
             "started_at": None,
             "completed_at": None,
             "result": None,
-            "error": None
+            "error": None,
         }
-
         with tasks_lock:
             tasks[task_id] = task
 
-        # 在后台线程中运行优化
-        thread = threading.Thread(
-            target=run_optimization_task,
-            args=(task_id, data)
-        )
+        thread = threading.Thread(target=run_optimization_task, args=(task_id, dict(data)))
         thread.daemon = True
         thread.start()
 
-        logger.info(f"Created optimization task: {task_id}")
-
-        return jsonify({
-            "task_id": task_id,
-            "status": task["status"],
-            "created_at": task["created_at"]
-        }), 201
-
-    except Exception as e:
+        return jsonify({"task_id": task_id, "status": task["status"], "created_at": task["created_at"]}), 201
+    except Exception as exc:
         logger.error("Failed to create task", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(exc)}), 500
 
 
 @app.route("/api/tasks/<task_id>", methods=["GET"])
 def get_task(task_id: str):
-    """获取任务状态"""
     with tasks_lock:
         task = tasks.get(task_id)
-
     if not task:
         return jsonify({"error": "Task not found"}), 404
-
     return jsonify(_serialize_task(task))
 
 
 @app.route("/api/tasks", methods=["GET"])
 def list_tasks():
-    """列出所有任务"""
     with tasks_lock:
         task_list = [_serialize_task(item) for item in tasks.values()]
-
-    # 按创建时间倒序排序
-    task_list.sort(key=lambda x: x["created_at"], reverse=True)
-
-    return jsonify({
-        "tasks": task_list,
-        "total": len(task_list)
-    })
+    task_list.sort(key=lambda item: item["created_at"], reverse=True)
+    return jsonify({"tasks": task_list, "total": len(task_list)})
 
 
 @app.route("/api/experiments/latest", methods=["GET"])
 def get_latest_experiment():
-    """Get the latest experiment index."""
     latest_payload = load_latest_index(_experiments_root())
     if not latest_payload:
         return jsonify({"error": "Latest experiment not found"}), 404
@@ -350,81 +244,64 @@ def get_latest_experiment():
 
 @app.route("/api/tasks/<task_id>/result", methods=["GET"])
 def get_task_result(task_id: str):
-    """获取任务结果详情"""
     with tasks_lock:
         task = tasks.get(task_id)
-
     if not task:
         return jsonify({"error": "Task not found"}), 404
-
     if task["status"] != TaskStatus.COMPLETED:
         return jsonify({"error": "Task not completed"}), 400
 
-    # 读取实验结果
     experiment_dir = str(task["result"]["experiment_dir"] or "")
     experiment_path = _resolve_experiment_dir(experiment_dir)
+    summary = load_json_if_exists(experiment_path / "summary.json")
+    result_index = load_json_if_exists(experiment_path / "result_index.json")
 
-    # 读取summary
-    summary = _load_json_if_exists(experiment_path / "summary.json")
-
-    # 读取evolution trace
-    csv_path = _discover_trace_csv(experiment_path)
-    evolution_data = []
-    if csv_path.exists():
-        import csv
-        with csv_path.open('r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            evolution_data = list(reader)
-
-    return jsonify({
-        "task_id": task_id,
-        "summary": summary,
-        "evolution": evolution_data,
-        "experiment_dir": _serialize_experiment_dir(experiment_path)
-    })
+    return jsonify(
+        {
+            "task_id": task_id,
+            "summary": summary,
+            "result_index": result_index,
+            "experiment_dir": _serialize_experiment_dir(experiment_path),
+        }
+    )
 
 
-@app.route("/api/tasks/<task_id>/visualizations/<filename>", methods=["GET"])
-def get_visualization(task_id: str, filename: str):
-    """获取可视化图片"""
+@app.route("/api/tasks/<task_id>/artifacts/<path:relative_path>", methods=["GET"])
+def get_artifact(task_id: str, relative_path: str):
     with tasks_lock:
         task = tasks.get(task_id)
-
     if not task:
         return jsonify({"error": "Task not found"}), 404
-
     if task["status"] != TaskStatus.COMPLETED:
         return jsonify({"error": "Task not completed"}), 400
 
-    # 构建文件路径
     experiment_dir = str(task["result"]["experiment_dir"] or "")
     experiment_path = _resolve_experiment_dir(experiment_dir)
-    viz_path = experiment_path / "visualizations" / filename
-
-    if not viz_path.exists():
-        return jsonify({"error": "Visualization not found"}), 404
-
-    return send_file(viz_path, mimetype='image/png')
+    candidate = (experiment_path / relative_path).resolve()
+    if not str(candidate).startswith(str(experiment_path.resolve())):
+        return jsonify({"error": "Invalid artifact path"}), 400
+    if not candidate.exists() or not candidate.is_file():
+        return jsonify({"error": "Artifact not found"}), 404
+    return send_file(candidate)
 
 
 @app.route("/api/experiments", methods=["GET"])
 def list_experiments():
-    """列出所有实验"""
     experiments_dir = _experiments_root()
-
     if not experiments_dir.exists():
         return jsonify({"experiments": [], "total": 0})
 
     experiments = []
     for exp_dir in iter_experiment_dirs(experiments_dir):
-        summary = _load_json_if_exists(exp_dir / "summary.json")
-        experiments.append({
-            "name": exp_dir.name,
-            "path": _serialize_experiment_dir(exp_dir),
-            "summary": summary
-        })
+        summary = load_json_if_exists(exp_dir / "summary.json")
+        experiments.append(
+            {
+                "name": exp_dir.name,
+                "path": _serialize_experiment_dir(exp_dir),
+                "summary": summary,
+            }
+        )
 
-    # 按时间倒序排序
     experiments.sort(
         key=lambda item: (
             str(dict(item.get("summary", {}) or {}).get("run_started_at", "") or ""),
@@ -432,60 +309,41 @@ def list_experiments():
         ),
         reverse=True,
     )
-
-    return jsonify({
-        "experiments": experiments,
-        "total": len(experiments)
-    })
+    return jsonify({"experiments": experiments, "total": len(experiments)})
 
 
-@app.route("/api/bom/validate", methods=["POST"])
-def validate_bom():
-    """
-    验证BOM文件
-
-    请求体:
-    {
-        "bom_file": "config/bom_example.json"
-    }
-    """
+@app.route("/api/scenarios/validate", methods=["POST"])
+def validate_scenario():
     try:
-        data = request.get_json()
-        bom_file = data.get("bom_file")
+        data = request.get_json(force=True, silent=True)
+        if not data:
+            return jsonify({"error": "Request body is required"}), 400
+        stack = str(data.get("stack", "mass") or "mass")
+        scenario = str(data.get("scenario", "") or "").strip()
+        if stack != "mass":
+            return jsonify({"error": "stack must be: mass"}), 400
+        if not scenario:
+            return jsonify({"error": "scenario is required"}), 400
 
-        if not bom_file:
-            return jsonify({"error": "bom_file is required"}), 400
+        entry = _load_registry_entry(stack, scenario)
+        scenario_path = _resolve_abs_path(entry["scenario"])
+        spec = load_satellite_scenario_spec(scenario_path)
+        return jsonify(
+            {
+                "valid": True,
+                "stack": stack,
+                "scenario": scenario,
+                "scenario_path": str(scenario_path),
+                "archetype_id": spec.archetype_id,
+                "shell_variant": spec.shell_variant,
+                "component_count": len(list(spec.catalog_component_instances or [])),
+                "field_exports": list(spec.field_exports or []),
+            }
+        )
+    except Exception as exc:
+        logger.error("Scenario validation failed", exc_info=True)
+        return jsonify({"error": str(exc)}), 500
 
-        from core.bom_parser import BOMParser
-
-        # 解析BOM
-        components = BOMParser.parse(bom_file)
-
-        # 验证
-        errors = BOMParser.validate(components)
-
-        return jsonify({
-            "valid": len(errors) == 0,
-            "num_components": len(components),
-            "errors": errors,
-            "components": [
-                {
-                    "id": c.id,
-                    "name": c.name,
-                    "mass": c.mass,
-                    "power": c.power,
-                    "category": c.category
-                }
-                for c in components
-            ]
-        })
-
-    except Exception as e:
-        logger.error("BOM validation failed", exc_info=True)
-        return jsonify({"error": str(e)}), 500
-
-
-# ============ 错误处理 ============
 
 @app.errorhandler(404)
 def not_found(error):
@@ -497,18 +355,8 @@ def internal_error(error):
     return jsonify({"error": "Internal server error"}), 500
 
 
-# ============ 主函数 ============
-
 def run_server(host: str = "0.0.0.0", port: int = 5000, debug: bool = False):
-    """
-    运行API服务器
-
-    Args:
-        host: 主机地址
-        port: 端口号
-        debug: 调试模式
-    """
-    logger.info(f"Starting API server with WebSocket support on {host}:{port}")
+    logger.info("Starting scenario API server on %s:%s", host, port)
     socketio.run(app, host=host, port=port, debug=debug, allow_unsafe_werkzeug=True)
 
 

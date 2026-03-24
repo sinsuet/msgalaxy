@@ -90,6 +90,7 @@ class ComponentGeometry(BaseModel):
 
     # === DV2.0: 接触热阻 ===
     thermal_contacts: Dict[str, float] = Field(default_factory=dict)  # {邻接组件ID: 接触热导(W/m²·K)}
+    shell_mount_conductance: Optional[float] = None  # 壳体安装面接触热导(W/m²·K)
 
     # === DV2.0: 附加结构 ===
     heatsink: Optional[Dict[str, Any]] = None   # 散热器参数 {"face": "+Y", "thickness": 2.0, "conductivity": 400}
@@ -273,7 +274,7 @@ class SimulationConfig(BaseModel):
 
 class OptimizationConfig(BaseModel):
     """优化配置"""
-    mode: str = "agent_loop"  # agent_loop | mass
+    mode: str = "mass"
     max_iterations: int = 20
     convergence_threshold: float = 0.01
     pymoo_pop_size: int = 96

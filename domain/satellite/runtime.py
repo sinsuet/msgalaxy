@@ -21,7 +21,11 @@ from .contracts import (
     TaskFaceSemantic,
 )
 from .gate import SatelliteLikenessGate
+from .scenario import SatelliteScenarioSpec
 from .selector import TaskTypeArchetypeSelector
+
+
+CANONICAL_FACES = {"+X", "-X", "+Y", "-Y", "+Z", "-Z"}
 
 
 def _normalize_gate_mode(value: Any, *, default: str = "off") -> str:
@@ -112,6 +116,23 @@ def _normalize_category(value: Any) -> str:
         "experiment": "science",
     }
     return aliases.get(text, text)
+
+
+def _canonical_face_id(value: Any) -> str:
+    face_id = str(value or "").strip().upper()
+    return face_id if face_id in CANONICAL_FACES else ""
+
+
+def _placement_state_by_component(design_state: DesignState) -> Dict[str, Dict[str, Any]]:
+    placement_index: Dict[str, Dict[str, Any]] = {}
+    metadata = dict(getattr(design_state, "metadata", {}) or {})
+    for item in list(metadata.get("placement_state", []) or []):
+        if not isinstance(item, dict):
+            continue
+        component_id = str(item.get("instance_id", "") or "").strip()
+        if component_id:
+            placement_index[component_id] = dict(item)
+    return placement_index
 
 
 def resolve_satellite_bom_context(
@@ -233,6 +254,39 @@ def _pick_component_for_semantic(
     return best_component if best_score > 0.0 else None
 
 
+def _pick_component_with_aperture_site(
+    design_state: DesignState,
+    *,
+    categories: Tuple[str, ...],
+    id_tokens: Tuple[str, ...],
+) -> Optional[ComponentGeometry]:
+    placement_index = _placement_state_by_component(design_state)
+    aperture_components = [
+        comp
+        for comp in list(getattr(design_state, "components", []) or [])
+        if str(dict(placement_index.get(str(getattr(comp, "id", "") or ""), {}) or {}).get("aperture_site", "")).strip()
+    ]
+    if not aperture_components:
+        return None
+
+    best_component: Optional[ComponentGeometry] = None
+    best_score = float("-inf")
+    for comp in aperture_components:
+        text = (
+            str(getattr(comp, "id", "") or "").strip().lower()
+            + " "
+            + str(getattr(comp, "category", "") or "").strip().lower()
+        )
+        score = 0.0
+        if str(getattr(comp, "category", "") or "").strip().lower() in set(categories):
+            score += 10.0
+        score += float(sum(1 for token in id_tokens if token in text)) * 2.0
+        if score > best_score:
+            best_score = score
+            best_component = comp
+    return best_component if best_score > 0.0 else aperture_components[0]
+
+
 def _nearest_boundary_face(component: ComponentGeometry, design_state: DesignState) -> str:
     env_min, env_max = _envelope_bounds(design_state)
     position = component.position
@@ -256,8 +310,23 @@ def _infer_task_face(
 ) -> tuple[Optional[CandidateTaskFace], str]:
     semantic_key = str(semantic_def.semantic or "").strip().lower()
     component: Optional[ComponentGeometry] = None
+    placement_index = _placement_state_by_component(design_state)
 
     if "payload_face" in semantic_key or "experiment_face" in semantic_key:
+        component = _pick_component_with_aperture_site(
+            design_state,
+            categories=("payload", "optics", "science"),
+            id_tokens=("payload", "camera", "optic", "science", "experiment"),
+        )
+        if component is not None:
+            mount_face = _canonical_face_id(
+                dict(placement_index.get(str(getattr(component, "id", "") or ""), {}) or {}).get("mount_face", "")
+            )
+            if mount_face:
+                return (
+                    CandidateTaskFace(semantic=semantic_def.semantic, face_id=mount_face),
+                    "placement_mount_face",
+                )
         component = _pick_component_for_semantic(
             design_state,
             categories=("payload", "optics", "science"),
@@ -502,6 +571,107 @@ def evaluate_satellite_likeness_for_design_state(
     report = gate.evaluate(
         candidate,
         expected_archetype_id=str(context.get("archetype_id", "") or ""),
+    )
+    result["gate_report"] = report.model_dump()
+    result["gate_passed"] = bool(report.passed)
+    return result
+
+
+def evaluate_satellite_likeness_for_scenario(
+    design_state: DesignState,
+    *,
+    scenario: SatelliteScenarioSpec,
+    baseline: Optional[SatelliteReferenceBaseline] = None,
+    default_gate_mode: str = "off",
+) -> Dict[str, Any]:
+    baseline_obj = baseline or load_default_satellite_reference_baseline()
+    gate_mode = _normalize_gate_mode(default_gate_mode, default="off")
+    archetype = baseline_obj.get_archetype(str(scenario.archetype_id or "").strip())
+    catalog_specs = scenario.catalog_specs_by_instance()
+
+    task_type = str(dict(scenario.metadata or {}).get("task_type", "") or "").strip()
+    task_type_source = "scenario_metadata" if task_type else ""
+    if not task_type:
+        task_type = str(scenario.description or scenario.scenario_id or "").strip()
+        task_type_source = "scenario_description" if task_type else ""
+
+    result = {
+        "enabled": archetype is not None,
+        "bom_file": "",
+        "baseline_id": str(baseline_obj.baseline_id),
+        "baseline_version": str(baseline_obj.version),
+        "reference_boundary": str(baseline_obj.reference_boundary),
+        "baseline_reference_boundary": str(baseline_obj.reference_boundary),
+        "task_type": str(task_type),
+        "task_type_source": str(task_type_source),
+        "archetype_id": str(getattr(archetype, "archetype_id", "") or scenario.archetype_id),
+        "archetype_source": "scenario_spec" if archetype is not None else "",
+        "mission_class": str(getattr(getattr(archetype, "mission_class", None), "value", "") or ""),
+        "default_rule_profile": str(scenario.rule_profile or getattr(archetype, "default_rule_profile", "") or ""),
+        "archetype_reference_boundary": str(getattr(archetype, "reference_boundary", "") or ""),
+        "public_reference_notes": list(getattr(archetype, "public_reference_notes", []) or []),
+        "gate_mode": str(gate_mode),
+        "task_face_assignments": list(dict(scenario.metadata or {}).get("task_face_assignments", []) or []),
+        "appendages": list(dict(scenario.metadata or {}).get("appendages", []) or []),
+        "interior_zone_assignments": [
+            {
+                "zone_id": str(instance.zone_id),
+                "component_id": str(instance.instance_id),
+                "component_category": str(getattr(catalog_specs.get(str(instance.instance_id)), "family", "") or ""),
+                "source": "scenario_contract",
+            }
+            for instance in list(scenario.catalog_component_instances or [])
+            if str(instance.zone_id or "").strip()
+        ],
+        "payload_keys": sorted(list(scenario.model_dump().keys())),
+        "candidate": {},
+        "task_face_resolution": [],
+        "interior_zone_resolution": [],
+        "gate_report": {},
+        "gate_passed": None,
+    }
+
+    candidate, resolution = build_satellite_layout_candidate(
+        design_state,
+        context=result,
+        baseline=baseline_obj,
+    )
+    if candidate is not None:
+        result["candidate"] = candidate.model_dump()
+        result["task_face_resolution"] = list(resolution)
+        result["interior_zone_resolution"] = list(
+            dict(candidate.metadata or {}).get("interior_zone_resolution", []) or []
+        )
+
+    if gate_mode == "off":
+        return result
+
+    if candidate is None:
+        report = SatelliteLikenessReport(
+            passed=False,
+            candidate_archetype_id=str(result.get("archetype_id", "") or ""),
+            expected_archetype_id=str(result.get("archetype_id", "") or "") or None,
+            checks=[
+                LikenessGateCheck(
+                    rule_id="archetype_resolution",
+                    passed=False,
+                    message="no satellite archetype could be resolved from scenario metadata",
+                    details={
+                        "scenario_id": str(scenario.scenario_id),
+                        "task_type": str(result.get("task_type", "") or ""),
+                        "task_type_source": str(result.get("task_type_source", "") or ""),
+                    },
+                )
+            ],
+        )
+        result["gate_report"] = report.model_dump()
+        result["gate_passed"] = False
+        return result
+
+    gate = SatelliteLikenessGate(baseline=baseline_obj)
+    report = gate.evaluate(
+        candidate,
+        expected_archetype_id=str(result.get("archetype_id", "") or ""),
     )
     result["gate_report"] = report.model_dump()
     result["gate_passed"] = bool(report.passed)

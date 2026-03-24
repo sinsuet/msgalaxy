@@ -3,20 +3,6 @@ from .baseline import (
     load_default_satellite_reference_baseline,
     load_satellite_reference_baseline,
 )
-from .demo_case import (
-    SINGLE_ARCHETYPE_DEMO_CASE_CONFIG_PATH,
-    SINGLE_ARCHETYPE_DEMO_CASE_DIR,
-    SINGLE_ARCHETYPE_DEMO_CASE_ID,
-    SINGLE_ARCHETYPE_DEMO_CASE_PARAMETERS_PATH,
-    SINGLE_ARCHETYPE_DEMO_DESIGN_STATE_PATH,
-    SINGLE_ARCHETYPE_DEMO_MANIFEST_PATH,
-    evaluate_single_archetype_demo_case,
-    load_single_archetype_demo_candidate,
-    load_single_archetype_demo_case_config,
-    load_single_archetype_demo_case_parameters,
-    load_single_archetype_demo_design_state,
-    load_single_archetype_demo_manifest,
-)
 from .contracts import (
     AppendageInstance,
     AppendageTemplate,
@@ -40,6 +26,17 @@ from .runtime import (
     evaluate_satellite_likeness_for_design_state,
     resolve_satellite_bom_context,
 )
+from .scenario import (
+    PlacementState,
+    SatelliteScenarioSpec,
+    ScenarioComponentInstance,
+    ScenarioConstraintProfile,
+    ScenarioObjectiveSpec,
+    ScenarioSeedProfile,
+    build_v4_object_catalog,
+    load_satellite_scenario_spec,
+)
+from .seed import build_seed_design_state
 from .selector import TaskTypeArchetypeSelector, select_archetype_for_task
 
 __all__ = [
@@ -50,12 +47,6 @@ __all__ = [
     "CandidateTaskFace",
     "CandidateInteriorZoneAssignment",
     "DEFAULT_BASELINE_PATH",
-    "SINGLE_ARCHETYPE_DEMO_CASE_CONFIG_PATH",
-    "SINGLE_ARCHETYPE_DEMO_CASE_DIR",
-    "SINGLE_ARCHETYPE_DEMO_CASE_ID",
-    "SINGLE_ARCHETYPE_DEMO_CASE_PARAMETERS_PATH",
-    "SINGLE_ARCHETYPE_DEMO_DESIGN_STATE_PATH",
-    "SINGLE_ARCHETYPE_DEMO_MANIFEST_PATH",
     "InteriorZoneDefinition",
     "LikenessGateCheck",
     "MissionClass",
@@ -65,18 +56,21 @@ __all__ = [
     "SatelliteLikenessGate",
     "SatelliteLikenessReport",
     "SatelliteReferenceBaseline",
+    "SatelliteScenarioSpec",
+    "ScenarioComponentInstance",
+    "ScenarioConstraintProfile",
+    "ScenarioObjectiveSpec",
+    "ScenarioSeedProfile",
     "TaskFaceSemantic",
     "TaskTypeArchetypeSelector",
     "build_satellite_layout_candidate",
-    "evaluate_single_archetype_demo_case",
+    "build_seed_design_state",
+    "build_v4_object_catalog",
     "evaluate_satellite_likeness_for_design_state",
     "load_default_satellite_reference_baseline",
-    "load_single_archetype_demo_candidate",
-    "load_single_archetype_demo_case_config",
-    "load_single_archetype_demo_case_parameters",
-    "load_single_archetype_demo_design_state",
-    "load_single_archetype_demo_manifest",
+    "load_satellite_scenario_spec",
     "load_satellite_reference_baseline",
     "resolve_satellite_bom_context",
     "select_archetype_for_task",
+    "PlacementState",
 ]

@@ -15,7 +15,7 @@ from simulation.engineering_proxy import (
     estimate_structural_proxy_metrics,
 )
 from simulation.mission_proxy import evaluate_mission_fov_interface
-from simulation.physics_engine import estimate_proxy_thermal_metrics
+from simulation.thermal_proxy import estimate_proxy_thermal_metrics
 from simulation.structural_physics import calculate_cg_offset, calculate_moment_of_inertia
 
 from .codec import DesignStateVectorCodec

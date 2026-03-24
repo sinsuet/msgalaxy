@@ -151,7 +151,25 @@ class OCCSTEPExporter:
                         "role": "component",
                         "geometry_kind": profile_kind,
                         "proxy_kind": catalog_spec.resolved_proxy().normalized_kind(),
-                        "size_mm": list(catalog_spec.geometry_profile.approximate_size_mm()),
+                        "local_bbox_size_mm": list(
+                            catalog_spec.resolved_geometry_truth(
+                                rotation_deg=(
+                                    float(comp.rotation.x),
+                                    float(comp.rotation.y),
+                                    float(comp.rotation.z),
+                                )
+                            ).local_bbox_size_mm
+                        ),
+                        "effective_bbox_size_mm": [
+                            float(comp.dimensions.x),
+                            float(comp.dimensions.y),
+                            float(comp.dimensions.z),
+                        ],
+                        "rotation_deg": [
+                            float(comp.rotation.x),
+                            float(comp.rotation.y),
+                            float(comp.rotation.z),
+                        ],
                     }
                 )
 
@@ -472,7 +490,21 @@ class OCCSTEPExporter:
         """
         profile = catalog_spec.geometry_profile
         shape = self._build_shape_from_profile(profile)
-        return self._translate_shape(shape, (comp.position.x, comp.position.y, comp.position.z))
+        rotation_deg = (
+            float(comp.rotation.x),
+            float(comp.rotation.y),
+            float(comp.rotation.z),
+        )
+        geometry_truth = catalog_spec.resolved_geometry_truth(rotation_deg=rotation_deg)
+        shape = self._rotate_shape_euler_deg(shape, rotation_deg)
+        return self._translate_shape(
+            shape,
+            (
+                float(comp.position.x) - float(geometry_truth.effective_bbox_center_offset_mm[0]),
+                float(comp.position.y) - float(geometry_truth.effective_bbox_center_offset_mm[1]),
+                float(comp.position.z) - float(geometry_truth.effective_bbox_center_offset_mm[2]),
+            ),
+        )
 
     def _build_shape_from_profile(self, profile: GeometryProfileSpec) -> Any:
         kind = profile.normalized_kind()
@@ -593,6 +625,7 @@ class OCCSTEPExporter:
         combined_shape = None
         for child in profile.children:
             child_shape = self._build_shape_from_profile(child.profile)
+            child_shape = self._rotate_shape_euler_deg(child_shape, child.rotation_deg)
             child_shape = self._translate_shape(child_shape, child.offset_mm)
             if combined_shape is None:
                 combined_shape = child_shape
@@ -617,6 +650,35 @@ class OCCSTEPExporter:
             )
         )
         return BRepBuilderAPI_Transform(shape, trsf, True).Shape()
+
+    def _rotate_shape_euler_deg(
+        self,
+        shape: Any,
+        rotation_deg: Tuple[float, float, float] | List[float],
+    ) -> Any:
+        from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
+        from OCC.Core.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf
+
+        rotations = (
+            ("x", float(rotation_deg[0]) if len(rotation_deg) > 0 else 0.0),
+            ("y", float(rotation_deg[1]) if len(rotation_deg) > 1 else 0.0),
+            ("z", float(rotation_deg[2]) if len(rotation_deg) > 2 else 0.0),
+        )
+        origin = gp_Pnt(0.0, 0.0, 0.0)
+        rotated = shape
+        for axis_name, angle_deg in rotations:
+            if abs(float(angle_deg)) <= 1e-9:
+                continue
+            trsf = gp_Trsf()
+            if axis_name == "x":
+                axis = gp_Ax1(origin, gp_Dir(1.0, 0.0, 0.0))
+            elif axis_name == "y":
+                axis = gp_Ax1(origin, gp_Dir(0.0, 1.0, 0.0))
+            else:
+                axis = gp_Ax1(origin, gp_Dir(0.0, 0.0, 1.0))
+            trsf.SetRotation(axis, math.radians(float(angle_deg)))
+            rotated = BRepBuilderAPI_Transform(rotated, trsf, True).Shape()
+        return rotated
 
     def _orient_shape_from_local_z(self, shape: Any, panel_face: str) -> Any:
         from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform

@@ -174,12 +174,24 @@ def component_proxy_entries(design_state: Any) -> List[Dict[str, Any]]:
     from .catalog_geometry import resolve_catalog_component_specs
 
     specs = resolve_catalog_component_specs(design_state)
+    metadata = dict(getattr(design_state, "metadata", {}) or {})
+    truth_index = dict(metadata.get("resolved_geometry_truth", {}) or {})
     entries: List[Dict[str, Any]] = []
     for comp in list(getattr(design_state, "components", []) or []):
         spec = specs.get(str(getattr(comp, "id", "") or ""))
         if spec is None:
             continue
-        proxy = spec.resolved_proxy()
+        resolved_truth = dict(truth_index.get(str(comp.id), {}) or {})
+        if not resolved_truth:
+            rotation_deg = (
+                float(getattr(getattr(comp, "rotation", None), "x", 0.0)),
+                float(getattr(getattr(comp, "rotation", None), "y", 0.0)),
+                float(getattr(getattr(comp, "rotation", None), "z", 0.0)),
+            )
+            resolved_truth = spec.resolved_geometry_truth(rotation_deg=rotation_deg).model_dump()
+        proxy = spec.resolved_proxy(
+            rotation_deg=tuple(resolved_truth.get("rotation_deg", (0.0, 0.0, 0.0))),
+        )
         center = (
             float(getattr(getattr(comp, "position", None), "x", 0.0)) + float(proxy.center_offset_mm[0]),
             float(getattr(getattr(comp, "position", None), "y", 0.0)) + float(proxy.center_offset_mm[1]),
@@ -192,8 +204,18 @@ def component_proxy_entries(design_state: Any) -> List[Dict[str, Any]]:
                 "proxy_kind": proxy.normalized_kind(),
                 "size_mm": list(_safe_float_tuple(proxy.size_mm)),
                 "center_mm": list(center),
+                "effective_bbox_size_mm": list(_safe_float_tuple(resolved_truth.get("effective_bbox_size_mm"))),
+                "effective_bbox_center_offset_mm": list(
+                    _safe_float_tuple(resolved_truth.get("effective_bbox_center_offset_mm"))
+                ),
+                "local_bbox_size_mm": list(_safe_float_tuple(resolved_truth.get("local_bbox_size_mm"))),
+                "local_bbox_center_offset_mm": list(
+                    _safe_float_tuple(resolved_truth.get("local_bbox_center_offset_mm"))
+                ),
+                "rotation_deg": list(_safe_float_tuple(resolved_truth.get("rotation_deg"))),
                 "mount_faces": list(proxy.mount_faces or []),
                 "functional_axis": proxy.functional_axis,
+                "position_semantics": str(resolved_truth.get("position_semantics", "effective_bbox_center") or "effective_bbox_center"),
             }
         )
     return entries

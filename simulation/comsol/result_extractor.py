@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -16,26 +16,47 @@ class ComsolResultExtractorMixin:
 
     @staticmethod
     def _resolve_shell_geometry(design_state) -> Dict[str, float]:
+        try:
+            from geometry.shell_spec import resolve_shell_spec
+
+            shell_spec = resolve_shell_spec(design_state)
+        except Exception:
+            shell_spec = None
+
+        if shell_spec is not None:
+            try:
+                outer_x, outer_y, outer_z = (
+                    float(value) for value in shell_spec.outer_size_mm()
+                )
+                thickness = float(getattr(shell_spec, "thickness_mm", 0.0) or 0.0)
+                if min(outer_x, outer_y, outer_z) > 0.0 and thickness > 0.0:
+                    return {
+                        "outer_x": outer_x,
+                        "outer_y": outer_y,
+                        "outer_z": outer_z,
+                        "thickness": thickness,
+                    }
+            except Exception:
+                pass
+
         metadata = dict(getattr(design_state, "metadata", {}) or {})
-        shell_meta = dict(metadata.get("shell", {}) or {})
-        envelope = getattr(design_state, "envelope", None)
-        if not bool(shell_meta.get("enabled", False)) or envelope is None:
-            return {}
-        outer = getattr(envelope, "outer_size", None)
-        if outer is None:
-            return {}
-        outer_x = float(getattr(outer, "x", 0.0) or 0.0)
-        outer_y = float(getattr(outer, "y", 0.0) or 0.0)
-        outer_z = float(getattr(outer, "z", 0.0) or 0.0)
-        thickness = float(shell_meta.get("thickness_mm", getattr(envelope, "thickness", 0.0)) or 0.0)
-        if min(outer_x, outer_y, outer_z) <= 0.0 or thickness <= 0.0:
-            return {}
-        return {
-            "outer_x": outer_x,
-            "outer_y": outer_y,
-            "outer_z": outer_z,
-            "thickness": thickness,
-        }
+        shell_truth = dict(metadata.get("resolved_shell_truth", {}) or {})
+        outer_size = list(shell_truth.get("outer_size_mm", []) or [])
+        thickness = float(shell_truth.get("thickness_mm", 0.0) or 0.0)
+        if len(outer_size) >= 3 and thickness > 0.0:
+            outer_x, outer_y, outer_z = (
+                float(outer_size[0]),
+                float(outer_size[1]),
+                float(outer_size[2]),
+            )
+            if min(outer_x, outer_y, outer_z) > 0.0:
+                return {
+                    "outer_x": outer_x,
+                    "outer_y": outer_y,
+                    "outer_z": outer_z,
+                    "thickness": thickness,
+                }
+        return {}
 
     def _select_power_terminal_components(self, design_state) -> Tuple[Optional[Any], Optional[Any]]:
         components = list(getattr(design_state, "components", []) or [])
@@ -501,6 +522,8 @@ class ComsolResultExtractorMixin:
         runtime: Dict[str, Any] = {
             "enabled": bool(self.enable_power_comsol_real),
             "setup_ok": bool(self._power_setup_ok),
+            "study_entered": False,
+            "study_solved": False,
             "stat_solved": False,
             "error": "",
         }
@@ -511,8 +534,10 @@ class ComsolResultExtractorMixin:
             return runtime
 
         try:
+            runtime["study_entered"] = True
             self.model.java.study("std_power").run()
             runtime["stat_solved"] = True
+            runtime["study_solved"] = True
         except Exception as exc:
             runtime["error"] = f"power_stationary_failed:{exc}"
             logger.warning("  ⚠ 电学稳态求解失败，将回退网络求解: %s", exc)
@@ -522,6 +547,8 @@ class ComsolResultExtractorMixin:
         runtime: Dict[str, Any] = {
             "enabled": bool(self.enable_coupled_multiphysics_real),
             "setup_ok": bool(self._coupled_setup_ok),
+            "study_entered": False,
+            "study_solved": False,
             "stat_solved": False,
             "error": "",
         }
@@ -532,8 +559,10 @@ class ComsolResultExtractorMixin:
             return runtime
 
         try:
+            runtime["study_entered"] = True
             self.model.java.study("std_coupled").run()
             runtime["stat_solved"] = True
+            runtime["study_solved"] = True
         except Exception as exc:
             runtime["error"] = f"coupled_stationary_failed:{exc}"
             logger.warning("  ⚠ 耦合稳态求解失败，将保留分支求解结果: %s", exc)
@@ -543,6 +572,8 @@ class ComsolResultExtractorMixin:
         runtime: Dict[str, Any] = {
             "enabled": bool(self.enable_structural_real),
             "setup_ok": bool(self._structural_setup_ok),
+            "study_entered": False,
+            "study_solved": False,
             "stat_solved": False,
             "modal_solved": False,
             "error": "",
@@ -555,6 +586,7 @@ class ComsolResultExtractorMixin:
             return runtime
 
         try:
+            runtime["study_entered"] = True
             self.model.java.study("std_struct").run()
             runtime["stat_solved"] = True
         except Exception as exc:
@@ -565,6 +597,7 @@ class ComsolResultExtractorMixin:
         try:
             self.model.java.study("std_modal").run()
             runtime["modal_solved"] = True
+            runtime["study_solved"] = True
         except Exception as exc:
             runtime["error"] = f"modal_failed:{exc}"
             logger.warning("  ⚠ 模态求解失败，频率指标回退: %s", exc)
@@ -624,6 +657,144 @@ class ComsolResultExtractorMixin:
             "voltage_drop": float(voltage_drop),
         }
 
+    def _extract_component_thermal_audit(
+        self,
+        *,
+        design_state=None,
+        dataset_candidates: Optional[List[Optional[str]]] = None,
+    ) -> Dict[str, Any]:
+        if self.model is None or design_state is None:
+            return {
+                "enabled": False,
+                "expected_component_count": 0,
+                "evaluated_component_count": 0,
+                "dataset_candidates": [],
+                "components": [],
+                "dominant_hotspot": {},
+            }
+
+        temperature_field = get_field_spec("temperature")
+        raw_candidates = list(dataset_candidates or self._build_dataset_candidates(prefer_modal=False))
+        ordered_datasets: List[Optional[str]] = []
+        explicit_candidates: List[str] = []
+        seen_explicit: set[str] = set()
+        seen_default = False
+        for item in raw_candidates:
+            if item is None:
+                if not seen_default:
+                    ordered_datasets.append(None)
+                    seen_default = True
+                continue
+            tag = str(item).strip()
+            if not tag or tag in seen_explicit:
+                continue
+            seen_explicit.add(tag)
+            ordered_datasets.append(tag)
+            explicit_candidates.append(tag)
+        if not ordered_datasets:
+            ordered_datasets = [None]
+
+        components_payload: List[Dict[str, Any]] = []
+        for index, comp in enumerate(list(getattr(design_state, "components", []) or [])):
+            binding = self._resolve_component_domain_binding(
+                comp=comp,
+                comp_index=index,
+                selection_tag=f"boxsel_comp_audit_{index}",
+            )
+            item: Dict[str, Any] = {
+                "component_id": str(getattr(comp, "id", "") or ""),
+                "category": str(getattr(comp, "category", "") or ""),
+                "power_w": float(getattr(comp, "power", 0.0) or 0.0),
+                "position_mm": [
+                    float(getattr(comp.position, "x", 0.0) or 0.0),
+                    float(getattr(comp.position, "y", 0.0) or 0.0),
+                    float(getattr(comp.position, "z", 0.0) or 0.0),
+                ],
+                "dimensions_mm": [
+                    float(getattr(comp.dimensions, "x", 0.0) or 0.0),
+                    float(getattr(comp.dimensions, "y", 0.0) or 0.0),
+                    float(getattr(comp.dimensions, "z", 0.0) or 0.0),
+                ],
+                "selection_name": str(binding.get("selection_name", "") or ""),
+                "selection_status": str(binding.get("selection_status", "") or ""),
+                "selection_condition": str(binding.get("selection_condition", "") or ""),
+                "domain_ids": [int(value) for value in list(binding.get("domain_ids", []) or [])],
+                "domain_count": int(binding.get("domain_count", 0) or 0),
+                "resolution_method": str(binding.get("resolution_method", "") or ""),
+                "distance_mm": binding.get("distance_mm", None),
+                "size_error": binding.get("size_error", None),
+                "evaluated": False,
+            }
+            domain_ids = [int(value) for value in list(binding.get("domain_ids", []) or []) if int(value) > 0]
+            if not domain_ids:
+                item["error"] = "domain_unresolved"
+                components_payload.append(item)
+                continue
+
+            max_temp_k = self._evaluate_expression_candidates_on_selection(
+                expressions=list(temperature_field.expression_candidates),
+                unit=temperature_field.unit,
+                datasets=list(ordered_datasets),
+                reducer="max",
+                selection_entities=domain_ids,
+                entity_dim=3,
+            )
+            min_temp_k = self._evaluate_expression_candidates_on_selection(
+                expressions=list(temperature_field.expression_candidates),
+                unit=temperature_field.unit,
+                datasets=list(ordered_datasets),
+                reducer="min",
+                selection_entities=domain_ids,
+                entity_dim=3,
+            )
+            avg_temp_k = self._evaluate_expression_candidates_on_selection(
+                expressions=list(temperature_field.expression_candidates),
+                unit=temperature_field.unit,
+                datasets=list(ordered_datasets),
+                reducer="mean",
+                selection_entities=domain_ids,
+                entity_dim=3,
+            )
+            if max_temp_k is None or min_temp_k is None or avg_temp_k is None:
+                item["error"] = "temperature_eval_failed"
+                components_payload.append(item)
+                continue
+
+            item["evaluated"] = True
+            item["max_temp_c"] = float(max_temp_k - 273.15)
+            item["min_temp_c"] = float(min_temp_k - 273.15)
+            item["avg_temp_c"] = float(avg_temp_k - 273.15)
+            item["temp_gradient_k"] = float(max(max_temp_k - min_temp_k, 0.0))
+            components_payload.append(item)
+
+        evaluated_components = [
+            dict(item)
+            for item in list(components_payload or [])
+            if bool(item.get("evaluated", False))
+        ]
+        evaluated_components.sort(
+            key=lambda item: (
+                -float(item.get("max_temp_c", -9999.0) or -9999.0),
+                str(item.get("component_id", "") or ""),
+            )
+        )
+        components_payload.sort(
+            key=lambda item: (
+                0 if bool(item.get("evaluated", False)) else 1,
+                -float(item.get("max_temp_c", -9999.0) or -9999.0),
+                str(item.get("component_id", "") or ""),
+            )
+        )
+        dominant_hotspot = dict(evaluated_components[0]) if evaluated_components else {}
+        return {
+            "enabled": True,
+            "expected_component_count": int(len(list(getattr(design_state, "components", []) or []))),
+            "evaluated_component_count": int(len(evaluated_components)),
+            "dataset_candidates": [str(item) for item in list(explicit_candidates or [])],
+            "components": list(components_payload),
+            "dominant_hotspot": dominant_hotspot,
+        }
+
     def _extract_dynamic_results(
         self,
         *,
@@ -637,6 +808,8 @@ class ComsolResultExtractorMixin:
         """
         metrics: Dict[str, float] = {}
         logger.info("  开始提取多物理结果...")
+        self._last_component_thermal_audit = {}
+        self._last_dominant_thermal_hotspot = {}
 
         dataset_candidates = self._build_dataset_candidates(prefer_modal=False)
         modal_dataset_candidates = self._build_dataset_candidates(prefer_modal=True)
@@ -673,6 +846,14 @@ class ComsolResultExtractorMixin:
             metrics["min_temp"] = float(min_temp_k - 273.15)
             metrics["avg_temp"] = float(avg_temp_k - 273.15)
             metrics["temp_gradient"] = float(max(max_temp_k - min_temp_k, 0.0))
+            component_thermal_audit = self._extract_component_thermal_audit(
+                design_state=design_state,
+                dataset_candidates=list(dataset_candidates),
+            )
+            self._last_component_thermal_audit = dict(component_thermal_audit or {})
+            self._last_dominant_thermal_hotspot = dict(
+                component_thermal_audit.get("dominant_hotspot", {}) or {}
+            )
 
         runtime = dict(structural_runtime or {})
         if bool(self.enable_structural_real) and bool(runtime.get("stat_solved", False)):

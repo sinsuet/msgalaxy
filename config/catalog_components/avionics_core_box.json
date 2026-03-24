@@ -1,0 +1,19 @@
+{
+  "catalog_id": "avionics_core_box_v1",
+  "family": "avionics",
+  "display_name": "Avionics Core Box",
+  "geometry_profile": {
+    "kind": "box",
+    "size_mm": [110.0, 90.0, 55.0]
+  },
+  "geometry_proxy": {
+    "kind": "aabb",
+    "size_mm": [110.0, 90.0, 55.0],
+    "mount_faces": ["-Z", "+Z"]
+  },
+  "mass_kg": 1.9,
+  "power_w": 11.0,
+  "material": "aluminum",
+  "mount_faces": ["-Z", "+Z"],
+  "allowed_orientations": ["+Z", "-Z"]
+}

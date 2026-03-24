@@ -22,12 +22,77 @@
           "top_radius_mm": 18.0,
           "height_mm": 60.0
         }
+      },
+      {
+        "placement_id": "camera_mount_post_px_py",
+        "offset_mm": [58.0, 44.0, 81.0],
+        "profile": {
+          "kind": "box",
+          "size_mm": [12.0, 12.0, 52.0]
+        }
+      },
+      {
+        "placement_id": "camera_mount_post_px_ny",
+        "offset_mm": [58.0, -44.0, 81.0],
+        "profile": {
+          "kind": "box",
+          "size_mm": [12.0, 12.0, 52.0]
+        }
+      },
+      {
+        "placement_id": "camera_mount_post_nx_py",
+        "offset_mm": [-58.0, 44.0, 81.0],
+        "profile": {
+          "kind": "box",
+          "size_mm": [12.0, 12.0, 52.0]
+        }
+      },
+      {
+        "placement_id": "camera_mount_post_nx_ny",
+        "offset_mm": [-58.0, -44.0, 81.0],
+        "profile": {
+          "kind": "box",
+          "size_mm": [12.0, 12.0, 52.0]
+        }
+      },
+      {
+        "placement_id": "camera_mount_pad_px_py",
+        "offset_mm": [58.0, 44.0, 99.0],
+        "profile": {
+          "kind": "box",
+          "size_mm": [20.0, 16.0, 16.0]
+        }
+      },
+      {
+        "placement_id": "camera_mount_pad_px_ny",
+        "offset_mm": [58.0, -44.0, 99.0],
+        "profile": {
+          "kind": "box",
+          "size_mm": [20.0, 16.0, 16.0]
+        }
+      },
+      {
+        "placement_id": "camera_mount_pad_nx_py",
+        "offset_mm": [-58.0, 44.0, 99.0],
+        "profile": {
+          "kind": "box",
+          "size_mm": [20.0, 16.0, 16.0]
+        }
+      },
+      {
+        "placement_id": "camera_mount_pad_nx_ny",
+        "offset_mm": [-58.0, -44.0, 99.0],
+        "profile": {
+          "kind": "box",
+          "size_mm": [20.0, 16.0, 16.0]
+        }
       }
     ]
   },
   "geometry_proxy": {
     "kind": "aabb",
-    "size_mm": [140.0, 120.0, 200.0],
+    "size_mm": [140.0, 120.0, 170.0],
+    "center_offset_mm": [0.0, 0.0, 30.0],
     "functional_axis": "+Z",
     "mount_faces": ["-Z"]
   },

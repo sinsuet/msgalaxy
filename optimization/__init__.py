@@ -1,10 +1,10 @@
 ﻿"""
 优化引擎模块
 
-实现基于LLM的三层神经符号协同优化架构：
-- 战略层: Meta-Reasoner（元推理器）
-- 战术层: Multi-Agent System（多智能体系统）
-- 执行层: Tool Integration（工具集成）
+当前主线为 mass 单栈的神经符号优化组件集合：
+- 建模意图与约束编译
+- pymoo 数值搜索与审计
+- operator / meta-policy 辅助模块
 """
 
 from .protocol import (
@@ -44,7 +44,6 @@ from .protocol import (
     ToolCall,
     ToolResult,
 )
-from .modes.agent_loop import AgentCoordinator, GeometryAgent, PowerAgent, StructuralAgent, ThermalAgent
 from .modes.mass.maas_audit import select_top_pareto_indices
 from .modes.mass.maas_compiler import compile_intent_to_problem_spec, formulate_modeling_intent
 from .modes.mass.maas_mcts import (
@@ -100,11 +99,6 @@ __all__ = [
     "ExecutionResult",
     "ToolCall",
     "ToolResult",
-    "AgentCoordinator",
-    "GeometryAgent",
-    "ThermalAgent",
-    "StructuralAgent",
-    "PowerAgent",
     "validate_modeling_intent",
     "compile_intent_to_problem_spec",
     "formulate_modeling_intent",

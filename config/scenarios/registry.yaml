@@ -1,81 +1,11 @@
-﻿version: 2
+version: 3
 
 stacks:
   mass:
-    description: "MaaS baseline stack (mass)"
+    description: "Catalog-first satellite scenario runtime"
     mode: "mass"
     base_config: "config/system/mass/base.yaml"
-    levels:
-      L1:
-        runner: "run.mass.run_L1"
-        bom: "config/bom/mass/level_L1_foundation_stack.json"
-        max_iterations: 4
-        deterministic_intent: true
-      L2:
-        runner: "run.mass.run_L2"
-        bom: "config/bom/mass/level_L2_thermal_power_stack.json"
-        max_iterations: 5
-        deterministic_intent: true
-      L3:
-        runner: "run.mass.run_L3"
-        bom: "config/bom/mass/level_L3_structural_mission_stack.json"
-        max_iterations: 6
-        deterministic_intent: true
-      L4:
-        runner: "run.mass.run_L4"
-        bom: "config/bom/mass/level_L4_full_stack_operator.json"
-        max_iterations: 7
-        deterministic_intent: true
-
-  agent_loop:
-    description: "agent_loop stack"
-    mode: "agent_loop"
-    base_config: "config/system/agent_loop/base.yaml"
-    levels:
-      L1:
-        runner: "run.agent_loop.run_L1"
-        bom: "config/bom/agent_loop/level_L1_foundation_stack.json"
-        max_iterations: 4
-        deterministic_intent: false
-      L2:
-        runner: "run.agent_loop.run_L2"
-        bom: "config/bom/agent_loop/level_L2_thermal_power_stack.json"
-        max_iterations: 5
-        deterministic_intent: false
-      L3:
-        runner: "run.agent_loop.run_L3"
-        bom: "config/bom/agent_loop/level_L3_structural_mission_stack.json"
-        max_iterations: 6
-        deterministic_intent: false
-      L4:
-        runner: "run.agent_loop.run_L4"
-        bom: "config/bom/agent_loop/level_L4_full_stack_operator.json"
-        max_iterations: 7
-        deterministic_intent: false
-
-  vop_maas:
-    description: "Verified operator-policy MaaS experimental stack"
-    mode: "vop_maas"
-    base_config: "config/system/vop_maas/base.yaml"
-    levels:
-      L1:
-        runner: "run.vop_maas.run_L1"
-        bom: "config/bom/mass/level_L1_foundation_stack.json"
-        max_iterations: 4
-        deterministic_intent: false
-      L2:
-        runner: "run.vop_maas.run_L2"
-        bom: "config/bom/mass/level_L2_thermal_power_stack.json"
-        max_iterations: 5
-        deterministic_intent: false
-      L3:
-        runner: "run.vop_maas.run_L3"
-        bom: "config/bom/mass/level_L3_structural_mission_stack.json"
-        max_iterations: 6
-        deterministic_intent: false
-      L4:
-        runner: "run.vop_maas.run_L4"
-        bom: "config/bom/mass/level_L4_full_stack_operator.json"
-        max_iterations: 7
-        deterministic_intent: false
-
+    scenarios:
+      optical_remote_sensing_bus:
+        description: "Optical remote sensing bus with shell/aperture/catalog contracts"
+        scenario: "config/scenarios/optical_remote_sensing_bus.yaml"

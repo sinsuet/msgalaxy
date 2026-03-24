@@ -44,7 +44,6 @@ from simulation.comsol.physics_profiles import (
     build_physics_profile_manifest,
     build_source_claim,
     materialize_contract_payload,
-    normalize_diagnostic_simplifications,
     normalize_physics_profile,
 )
 
@@ -83,7 +82,6 @@ class ComsolDriver(
         self.ambient_temperature_k = float(
             config.get("ambient_temperature_k", self.initial_temperature_k)
         )
-        self._active_profile_simplifications: list[str] = []
         self._field_export_registry = build_field_registry_manifest()
         self._physics_profile_contract = build_physics_profile_manifest()
         self._source_claim: Dict[str, Any] = {}
@@ -94,7 +92,19 @@ class ComsolDriver(
             "ambiguous_components": [],
             "disambiguated_components": [],
             "failed_components": [],
+            "component_domain_bindings": [],
         }
+        self._last_shell_contact_report: Dict[str, Any] = {
+            "enabled": True,
+            "geometry_is_assembly": False,
+            "shell_domain_ids": [],
+            "components": [],
+            "required_count": 0,
+            "applied_count": 0,
+            "unresolved_count": 0,
+        }
+        self._last_component_thermal_audit: Dict[str, Any] = {}
+        self._last_dominant_thermal_hotspot: Dict[str, Any] = {}
         self.last_saved_mph_path: str = ""
         self.saved_mph_records: list[Dict[str, Any]] = []
         self.enable_structural_real = bool(config.get("enable_structural_real", True))
@@ -141,50 +151,50 @@ class ComsolDriver(
         )
         if not requested:
             return False
-        return bool(self.config.get("enable_canonical_thermal_path", False))
-
-    def _uses_diagnostic_power_scaling(self) -> bool:
-        return not self._uses_canonical_thermal_path()
-
-    def _uses_power_continuation_ramp(self) -> bool:
-        configured = self.config.get("enable_power_continuation_ramp", None)
-        if configured is not None:
-            return bool(configured)
-        return True
+        return bool(self.config.get("enable_canonical_thermal_path", True))
 
     def _heat_source_power_density_expression(self, power_density_w_m3: float) -> str:
-        if self._uses_power_continuation_ramp():
-            return f"{power_density_w_m3} * P_scale [W/m^3]"
         return f"{power_density_w_m3}[W/m^3]"
 
     def _reset_profile_contract_state(self) -> None:
         self.physics_profile = self.requested_physics_profile
-        self._active_profile_simplifications = []
         self._source_claim = self._build_source_claim()
-
-    def _mark_profile_simplification(self, marker: str) -> None:
-        normalized = normalize_diagnostic_simplifications([marker])
-        for item in normalized:
-            if item not in self._active_profile_simplifications:
-                self._active_profile_simplifications.append(item)
+        self._last_shell_contact_report = {
+            "enabled": True,
+            "geometry_is_assembly": False,
+            "shell_domain_ids": [],
+            "components": [],
+            "required_count": 0,
+            "applied_count": 0,
+            "unresolved_count": 0,
+        }
+        self._last_component_thermal_audit = {}
+        self._last_dominant_thermal_hotspot = {}
 
     def _build_source_claim(
         self,
         *,
+        thermal_runtime: Optional[Dict[str, Any]] = None,
         structural_runtime: Optional[Dict[str, Any]] = None,
         power_runtime: Optional[Dict[str, Any]] = None,
+        coupled_runtime: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        thermal_rt = dict(thermal_runtime or {})
         struct_rt = dict(structural_runtime or {})
         power_rt = dict(power_runtime or {})
+        coupled_rt = dict(coupled_runtime or {})
         claim = build_source_claim(
             requested_profile=self.requested_physics_profile,
-            active_simplifications=list(self._active_profile_simplifications),
             orbital_thermal_loads_available=bool(self.orbital_thermal_loads_available),
             structural_enabled=bool(self.enable_structural_real),
             structural_setup_ok=struct_rt.get("setup_ok", self._structural_setup_ok),
             power_comsol_enabled=bool(self.enable_power_comsol_real),
             power_setup_ok=power_rt.get("setup_ok", self._power_setup_ok),
             power_network_enabled=bool(self.enable_power_network_real),
+            thermal_runtime=thermal_rt,
+            structural_runtime=struct_rt,
+            power_runtime=power_rt,
+            coupled_runtime=coupled_rt,
         )
         self.physics_profile = str(claim.get("physics_profile", self.requested_physics_profile))
         self._source_claim = dict(claim)
@@ -203,13 +213,17 @@ class ComsolDriver(
         self,
         raw_data: Optional[Dict[str, Any]] = None,
         *,
+        thermal_runtime: Optional[Dict[str, Any]] = None,
         structural_runtime: Optional[Dict[str, Any]] = None,
         power_runtime: Optional[Dict[str, Any]] = None,
+        coupled_runtime: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         payload = dict(raw_data or {})
         claim = self._build_source_claim(
+            thermal_runtime=thermal_runtime,
             structural_runtime=structural_runtime,
             power_runtime=power_runtime,
+            coupled_runtime=coupled_runtime,
         )
         payload["source_claim"] = dict(claim)
         return materialize_contract_payload(

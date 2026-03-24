@@ -11,6 +11,688 @@ logger = get_logger(__name__)
 class ComsolThermalOperatorMixin:
     """Heat-source binding and thermal operator execution helpers."""
 
+    @staticmethod
+    def _shell_contact_mount_face_index(design_state) -> Dict[str, str]:
+        metadata = dict(getattr(design_state, "metadata", {}) or {})
+        placements = list(metadata.get("placement_state", []) or [])
+        mapping: Dict[str, str] = {}
+        for item in placements:
+            if not isinstance(item, dict):
+                continue
+            comp_id = str(item.get("instance_id", "") or "").strip()
+            if not comp_id:
+                continue
+            placement_meta = dict(item.get("metadata", {}) or {})
+            shell_contact_required = bool(placement_meta.get("shell_contact_required", False))
+            if not shell_contact_required:
+                continue
+            mapping[comp_id] = str(item.get("mount_face", "") or "").strip().upper()
+        return mapping
+
+    @staticmethod
+    def _default_mount_contact_conductance(comp: Any) -> float:
+        override = getattr(comp, "shell_mount_conductance", None)
+        try:
+            if override is not None and float(override) > 0.0:
+                return float(override)
+        except Exception:
+            pass
+        category = str(getattr(comp, "category", "") or "").strip().lower()
+        baseline = {
+            "payload": 140.0,
+            "avionics": 125.0,
+            "adcs": 115.0,
+            "battery": 170.0,
+            "communication": 95.0,
+        }
+        return float(baseline.get(category, 110.0))
+
+    def _remove_selection_if_exists(self, selection_tag: str) -> None:
+        if self.model is None:
+            return
+        tag = str(selection_tag or "").strip()
+        if not tag:
+            return
+        try:
+            self.model.java.selection().remove(tag)
+        except Exception:
+            pass
+
+    def _create_explicit_domain_selection(
+        self,
+        *,
+        selection_tag: str,
+        domain_ids: list[int],
+    ) -> str:
+        if self.model is None:
+            raise RuntimeError("model_unavailable")
+        tag = str(selection_tag or "").strip()
+        if not tag:
+            raise ValueError("empty_selection_tag")
+        normalized = [int(value) for value in list(domain_ids or []) if int(value) > 0]
+        if not normalized:
+            raise ValueError("empty_domain_ids")
+        self._remove_selection_if_exists(tag)
+        explicit_sel = self.model.java.selection().create(tag, "Explicit")
+        try:
+            explicit_sel.geom("geom1", 3)
+        except Exception:
+            pass
+        explicit_sel.set(normalized)
+        return tag
+
+    def _create_explicit_boundary_selection(
+        self,
+        *,
+        selection_tag: str,
+        boundary_ids: list[int],
+    ) -> str:
+        if self.model is None:
+            raise RuntimeError("model_unavailable")
+        tag = str(selection_tag or "").strip()
+        if not tag:
+            raise ValueError("empty_selection_tag")
+        normalized = [int(value) for value in list(boundary_ids or []) if int(value) > 0]
+        if not normalized:
+            raise ValueError("empty_boundary_ids")
+        self._remove_selection_if_exists(tag)
+        explicit_sel = self.model.java.selection().create(tag, "Explicit")
+        try:
+            explicit_sel.geom("geom1", 2)
+        except Exception:
+            pass
+        explicit_sel.set(normalized)
+        return tag
+
+    def _geometry_is_assembly(self) -> bool:
+        if self.model is None:
+            return False
+        try:
+            return bool(self.model.java.geom("geom1").isAssembly())
+        except Exception:
+            return False
+
+    def _boundary_domain_adjacency(self) -> Dict[int, list[int]]:
+        if self.model is None:
+            return {}
+        try:
+            up_down = self.model.java.geom("geom1").getUpDown()
+        except Exception:
+            return {}
+        try:
+            upper = [int(value) for value in list(up_down[0])]
+            lower = [int(value) for value in list(up_down[1])]
+        except Exception:
+            return {}
+
+        mapping: Dict[int, list[int]] = {}
+        for boundary_id, (up_value, down_value) in enumerate(zip(upper, lower), start=1):
+            domains = []
+            for domain_id in (int(up_value), int(down_value)):
+                if domain_id <= 0 or domain_id in domains:
+                    continue
+                domains.append(int(domain_id))
+            mapping[int(boundary_id)] = domains
+        return mapping
+
+    def _resolve_component_domain_index(self, design_state: Any) -> Dict[str, list[int]]:
+        domain_index: Dict[str, list[int]] = {}
+        heat_report = dict(getattr(self, "_last_heat_binding_report", {}) or {})
+        for item in list(heat_report.get("component_domain_bindings", []) or []):
+            if not isinstance(item, dict):
+                continue
+            comp_id = str(item.get("component_id", "") or "").strip()
+            domain_ids = [int(value) for value in list(item.get("domain_ids", []) or []) if int(value) > 0]
+            if comp_id and domain_ids:
+                domain_index[comp_id] = domain_ids
+
+        for index, comp in enumerate(list(getattr(design_state, "components", []) or [])):
+            comp_id = str(getattr(comp, "id", "") or "").strip()
+            if not comp_id or comp_id in domain_index:
+                continue
+            binding = self._resolve_component_domain_binding(
+                comp=comp,
+                comp_index=index,
+                selection_tag=f"boxsel_comp_contact_domain_{index}",
+            )
+            domain_ids = [int(value) for value in list(binding.get("domain_ids", []) or []) if int(value) > 0]
+            if domain_ids:
+                domain_index[comp_id] = domain_ids
+        return domain_index
+
+    def _infer_shell_domain_ids(
+        self,
+        *,
+        component_domain_index: Dict[str, list[int]],
+    ) -> list[int]:
+        all_domains = set(self._list_domain_ids())
+        component_domains = {
+            int(domain_id)
+            for domain_ids in list(component_domain_index.values())
+            for domain_id in list(domain_ids or [])
+            if int(domain_id) > 0
+        }
+        return sorted(int(domain_id) for domain_id in all_domains - component_domains if int(domain_id) > 0)
+
+    @staticmethod
+    def _filter_shared_interface_boundary_ids(
+        *,
+        shell_boundary_ids: list[int],
+        component_boundary_ids: list[int],
+        shell_domain_ids: list[int],
+        component_domain_ids: list[int],
+        boundary_adjacency: Dict[int, list[int]],
+        geometry_is_assembly: bool,
+    ) -> Dict[str, Any]:
+        shell_ids = sorted({int(value) for value in list(shell_boundary_ids or []) if int(value) > 0})
+        component_ids = sorted({int(value) for value in list(component_boundary_ids or []) if int(value) > 0})
+        shell_domains = {int(value) for value in list(shell_domain_ids or []) if int(value) > 0}
+        component_domains = {int(value) for value in list(component_domain_ids or []) if int(value) > 0}
+
+        overlap_ids = sorted(set(shell_ids) & set(component_ids))
+        adjacency_ids: list[int] = []
+        if not geometry_is_assembly and shell_domains and component_domains:
+            for boundary_id in sorted(set(shell_ids) | set(component_ids)):
+                adjacent_domains = {
+                    int(value)
+                    for value in list(boundary_adjacency.get(int(boundary_id), []) or [])
+                    if int(value) > 0
+                }
+                if not adjacent_domains:
+                    continue
+                if adjacent_domains.isdisjoint(shell_domains):
+                    continue
+                if adjacent_domains.isdisjoint(component_domains):
+                    continue
+                adjacency_ids.append(int(boundary_id))
+
+        effective_ids = sorted(set(overlap_ids) & set(adjacency_ids))
+        if not effective_ids:
+            effective_ids = list(adjacency_ids)
+
+        return {
+            "shell_boundary_ids": list(shell_ids),
+            "component_boundary_ids": list(component_ids),
+            "overlap_boundary_ids": list(overlap_ids),
+            "adjacency_boundary_ids": list(adjacency_ids),
+            "effective_boundary_ids": list(effective_ids),
+            "shell_domain_ids": sorted(shell_domains),
+            "component_domain_ids": sorted(component_domains),
+            "geometry_is_assembly": bool(geometry_is_assembly),
+        }
+
+    def _resolve_component_domain_binding(
+        self,
+        *,
+        comp: Any,
+        comp_index: int,
+        selection_tag: str,
+    ) -> Dict[str, Any]:
+        selection_name = str(selection_tag or f"boxsel_comp_{int(comp_index)}").strip()
+        if self.model is None:
+            return {
+                "component_id": str(getattr(comp, "id", "") or ""),
+                "selection_name": selection_name,
+                "selection_ready": False,
+                "bindable_single_domain": False,
+                "selection_status": "model_unavailable",
+                "selection_condition": "",
+                "domain_ids": [],
+                "domain_count": 0,
+                "ambiguous_domain_ids": [],
+                "resolution_method": "",
+                "distance_mm": None,
+                "size_error": None,
+                "box_bounds_mm": {},
+            }
+
+        pos = comp.position
+        dim = comp.dimensions
+        tolerance = 1e-3
+        x_min = float(pos.x - dim.x / 2.0 - tolerance)
+        x_max = float(pos.x + dim.x / 2.0 + tolerance)
+        y_min = float(pos.y - dim.y / 2.0 - tolerance)
+        y_max = float(pos.y + dim.y / 2.0 + tolerance)
+        z_min = float(pos.z - dim.z / 2.0 - tolerance)
+        z_max = float(pos.z + dim.z / 2.0 + tolerance)
+        box_bounds = {
+            "xmin": float(x_min),
+            "xmax": float(x_max),
+            "ymin": float(y_min),
+            "ymax": float(y_max),
+            "zmin": float(z_min),
+            "zmax": float(z_max),
+        }
+
+        for tag in (
+            selection_name,
+            f"{selection_name}_recovered",
+            f"{selection_name}_resolved",
+        ):
+            self._remove_selection_if_exists(tag)
+
+        resolve_meta: Dict[str, Any] = {}
+        condition_used = "inside"
+        selection_status = "missing_domain"
+        selected_entities: list[int] = []
+        ambiguous_candidates: list[int] = []
+
+        try:
+            box_sel = self.model.java.selection().create(selection_name, "Box")
+            box_sel.set("entitydim", "3")
+            box_sel.set("xmin", f"{x_min}[mm]")
+            box_sel.set("xmax", f"{x_max}[mm]")
+            box_sel.set("ymin", f"{y_min}[mm]")
+            box_sel.set("ymax", f"{y_max}[mm]")
+            box_sel.set("zmin", f"{z_min}[mm]")
+            box_sel.set("zmax", f"{z_max}[mm]")
+            box_sel.set("condition", "inside")
+
+            selected_entities = self._normalize_entity_ids(box_sel.entities())
+            if len(selected_entities) == 1:
+                selection_status = "inside_box_exact"
+            if not selected_entities:
+                box_sel.set("condition", "intersects")
+                condition_used = "intersects"
+                selected_entities = self._normalize_entity_ids(box_sel.entities())
+                if len(selected_entities) == 1:
+                    selection_status = "intersects_box_exact"
+
+            if not selected_entities:
+                resolved_domain, resolve_meta = self._resolve_missing_heat_domain(
+                    comp=comp,
+                    comp_index=comp_index,
+                )
+                if resolved_domain is not None:
+                    selection_name = self._create_explicit_domain_selection(
+                        selection_tag=f"{selection_name}_recovered",
+                        domain_ids=[int(resolved_domain)],
+                    )
+                    selected_entities = [int(resolved_domain)]
+                    condition_used = "explicit_recovered"
+                    selection_status = "recovered_missing_domain"
+
+            if len(selected_entities) > 1:
+                ambiguous_candidates = list(selected_entities)
+                box_sel.set("condition", "allvertices")
+                condition_used = "allvertices"
+                selected_entities = self._normalize_entity_ids(box_sel.entities())
+                if len(selected_entities) == 1:
+                    selection_status = "allvertices_box_exact"
+                elif not selected_entities and ambiguous_candidates:
+                    selected_entities = list(ambiguous_candidates)
+                    condition_used = "intersects_fallback"
+
+            if len(selected_entities) > 1:
+                ambiguous_candidates = list(selected_entities)
+                resolved_domain, resolve_meta = self._resolve_ambiguous_heat_domain(
+                    comp=comp,
+                    comp_index=comp_index,
+                    domain_ids=selected_entities,
+                )
+                if resolved_domain is not None:
+                    selection_name = self._create_explicit_domain_selection(
+                        selection_tag=f"{selection_name}_resolved",
+                        domain_ids=[int(resolved_domain)],
+                    )
+                    selected_entities = [int(resolved_domain)]
+                    condition_used = "explicit_resolved"
+                    selection_status = "resolved_ambiguous_domain"
+                else:
+                    selection_status = "ambiguous_multi_domain"
+        except Exception as exc:
+            return {
+                "component_id": str(getattr(comp, "id", "") or ""),
+                "selection_name": selection_name,
+                "selection_ready": False,
+                "bindable_single_domain": False,
+                "selection_status": "selection_runtime_error",
+                "selection_condition": condition_used,
+                "domain_ids": [],
+                "domain_count": 0,
+                "ambiguous_domain_ids": list(ambiguous_candidates),
+                "resolution_method": "",
+                "distance_mm": None,
+                "size_error": None,
+                "box_bounds_mm": dict(box_bounds),
+                "error": str(exc),
+            }
+
+        if len(selected_entities) == 1 and selection_status not in {
+            "recovered_missing_domain",
+            "resolved_ambiguous_domain",
+            "inside_box_exact",
+            "intersects_box_exact",
+            "allvertices_box_exact",
+        }:
+            selection_status = "single_domain_exact"
+        if not selected_entities and selection_status != "selection_runtime_error":
+            selection_status = "missing_domain"
+
+        return {
+            "component_id": str(getattr(comp, "id", "") or ""),
+            "selection_name": selection_name,
+            "selection_ready": bool(selected_entities),
+            "bindable_single_domain": len(selected_entities) == 1,
+            "selection_status": str(selection_status),
+            "selection_condition": str(condition_used),
+            "domain_ids": [int(value) for value in list(selected_entities or [])],
+            "domain_count": int(len(selected_entities)),
+            "ambiguous_domain_ids": [int(value) for value in list(ambiguous_candidates or [])],
+            "resolution_method": str(resolve_meta.get("method", "") or ""),
+            "distance_mm": (
+                float(resolve_meta["distance_mm"])
+                if resolve_meta.get("distance_mm") is not None
+                else None
+            ),
+            "size_error": (
+                float(resolve_meta["size_error"])
+                if resolve_meta.get("size_error") is not None
+                else None
+            ),
+            "box_bounds_mm": dict(box_bounds),
+        }
+
+    def _create_component_face_box_selection(
+        self,
+        comp: Any,
+        sel_name: str,
+        *,
+        face: str,
+        band_mm: float = 1.0,
+    ) -> None:
+        pos = comp.position
+        dim = comp.dimensions
+        face_name = str(face or "").strip().upper()
+        tol = max(float(band_mm), 0.5)
+        x_min = float(pos.x - dim.x / 2.0) - tol
+        x_max = float(pos.x + dim.x / 2.0) + tol
+        y_min = float(pos.y - dim.y / 2.0) - tol
+        y_max = float(pos.y + dim.y / 2.0) + tol
+        z_min = float(pos.z - dim.z / 2.0) - tol
+        z_max = float(pos.z + dim.z / 2.0) + tol
+
+        if face_name == "+X":
+            x_min = float(pos.x + dim.x / 2.0) - tol
+            x_max = float(pos.x + dim.x / 2.0) + tol
+        elif face_name == "-X":
+            x_min = float(pos.x - dim.x / 2.0) - tol
+            x_max = float(pos.x - dim.x / 2.0) + tol
+        elif face_name == "+Y":
+            y_min = float(pos.y + dim.y / 2.0) - tol
+            y_max = float(pos.y + dim.y / 2.0) + tol
+        elif face_name == "-Y":
+            y_min = float(pos.y - dim.y / 2.0) - tol
+            y_max = float(pos.y - dim.y / 2.0) + tol
+        elif face_name == "+Z":
+            z_min = float(pos.z + dim.z / 2.0) - tol
+            z_max = float(pos.z + dim.z / 2.0) + tol
+        elif face_name == "-Z":
+            z_min = float(pos.z - dim.z / 2.0) - tol
+            z_max = float(pos.z - dim.z / 2.0) + tol
+
+        box_sel = self.model.java.selection().create(sel_name, "Box")
+        box_sel.set("entitydim", "2")
+        box_sel.set("condition", "intersects")
+        box_sel.set("xmin", f"{x_min}[mm]")
+        box_sel.set("xmax", f"{x_max}[mm]")
+        box_sel.set("ymin", f"{y_min}[mm]")
+        box_sel.set("ymax", f"{y_max}[mm]")
+        box_sel.set("zmin", f"{z_min}[mm]")
+        box_sel.set("zmax", f"{z_max}[mm]")
+
+    def _select_shell_mount_face_boundaries(
+        self,
+        *,
+        design_state: Any,
+        mount_face: str,
+        selection_tag: str,
+    ) -> list[int]:
+        if self.model is None:
+            return []
+        shell = self._resolve_shell_geometry(design_state)
+        if not shell:
+            return []
+
+        outer_x = float(shell["outer_x"])
+        outer_y = float(shell["outer_y"])
+        outer_z = float(shell["outer_z"])
+        thickness = float(shell["thickness"])
+        inner_x = max(outer_x - 2.0 * thickness, 1e-6)
+        inner_y = max(outer_y - 2.0 * thickness, 1e-6)
+        inner_z = max(outer_z - 2.0 * thickness, 1e-6)
+        half_outer_x = outer_x / 2.0
+        half_outer_y = outer_y / 2.0
+        half_outer_z = outer_z / 2.0
+        half_inner_x = inner_x / 2.0
+        half_inner_y = inner_y / 2.0
+        half_inner_z = inner_z / 2.0
+        tol = max(min(thickness * 0.35, 2.0), 0.5)
+        face = str(mount_face or "").strip().upper()
+
+        try:
+            self.model.java.selection().remove(selection_tag)
+        except Exception:
+            pass
+        box_sel = self.model.java.selection().create(selection_tag, "Box")
+        box_sel.set("entitydim", "2")
+        box_sel.set("condition", "intersects")
+
+        if face == "+X":
+            box_sel.set("xmin", f"{half_inner_x - tol}[mm]")
+            box_sel.set("xmax", f"{half_inner_x + tol}[mm]")
+            box_sel.set("ymin", f"{-half_outer_y - 1.0}[mm]")
+            box_sel.set("ymax", f"{half_outer_y + 1.0}[mm]")
+            box_sel.set("zmin", f"{-half_outer_z - 1.0}[mm]")
+            box_sel.set("zmax", f"{half_outer_z + 1.0}[mm]")
+        elif face == "-X":
+            box_sel.set("xmin", f"{-half_inner_x - tol}[mm]")
+            box_sel.set("xmax", f"{-half_inner_x + tol}[mm]")
+            box_sel.set("ymin", f"{-half_outer_y - 1.0}[mm]")
+            box_sel.set("ymax", f"{half_outer_y + 1.0}[mm]")
+            box_sel.set("zmin", f"{-half_outer_z - 1.0}[mm]")
+            box_sel.set("zmax", f"{half_outer_z + 1.0}[mm]")
+        elif face == "+Y":
+            box_sel.set("xmin", f"{-half_outer_x - 1.0}[mm]")
+            box_sel.set("xmax", f"{half_outer_x + 1.0}[mm]")
+            box_sel.set("ymin", f"{half_inner_y - tol}[mm]")
+            box_sel.set("ymax", f"{half_inner_y + tol}[mm]")
+            box_sel.set("zmin", f"{-half_outer_z - 1.0}[mm]")
+            box_sel.set("zmax", f"{half_outer_z + 1.0}[mm]")
+        elif face == "-Y":
+            box_sel.set("xmin", f"{-half_outer_x - 1.0}[mm]")
+            box_sel.set("xmax", f"{half_outer_x + 1.0}[mm]")
+            box_sel.set("ymin", f"{-half_inner_y - tol}[mm]")
+            box_sel.set("ymax", f"{-half_inner_y + tol}[mm]")
+            box_sel.set("zmin", f"{-half_outer_z - 1.0}[mm]")
+            box_sel.set("zmax", f"{half_outer_z + 1.0}[mm]")
+        elif face == "+Z":
+            box_sel.set("xmin", f"{-half_outer_x - 1.0}[mm]")
+            box_sel.set("xmax", f"{half_outer_x + 1.0}[mm]")
+            box_sel.set("ymin", f"{-half_outer_y - 1.0}[mm]")
+            box_sel.set("ymax", f"{half_outer_y + 1.0}[mm]")
+            box_sel.set("zmin", f"{half_inner_z - tol}[mm]")
+            box_sel.set("zmax", f"{half_inner_z + tol}[mm]")
+        elif face == "-Z":
+            box_sel.set("xmin", f"{-half_outer_x - 1.0}[mm]")
+            box_sel.set("xmax", f"{half_outer_x + 1.0}[mm]")
+            box_sel.set("ymin", f"{-half_outer_y - 1.0}[mm]")
+            box_sel.set("ymax", f"{half_outer_y + 1.0}[mm]")
+            box_sel.set("zmin", f"{-half_inner_z - tol}[mm]")
+            box_sel.set("zmax", f"{-half_inner_z + tol}[mm]")
+        else:
+            return []
+
+        return self._normalize_entity_ids(box_sel.entities())
+
+    def _apply_default_shell_mount_contact(
+        self,
+        *,
+        design_state: Any,
+        ht: Any,
+        comp: Any,
+        comp_index: int,
+        mount_face: str,
+        component_domain_index: Optional[Dict[str, list[int]]] = None,
+        shell_domain_ids: Optional[list[int]] = None,
+        boundary_adjacency: Optional[Dict[int, list[int]]] = None,
+        geometry_is_assembly: Optional[bool] = None,
+        shell_contact_report: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        comp_id = str(getattr(comp, "id", "") or "").strip()
+        face = str(mount_face or "").strip().upper()
+        entry: Dict[str, Any] = {
+            "component_id": comp_id,
+            "mount_face": face,
+            "selection_status": "",
+            "geometry_is_assembly": bool(geometry_is_assembly) if geometry_is_assembly is not None else False,
+            "shell_domain_ids": [int(value) for value in list(shell_domain_ids or []) if int(value) > 0],
+            "component_domain_ids": [
+                int(value)
+                for value in list((component_domain_index or {}).get(comp_id, []) or [])
+                if int(value) > 0
+            ],
+            "shell_boundary_ids": [],
+            "component_boundary_ids": [],
+            "overlap_boundary_ids": [],
+            "adjacency_boundary_ids": [],
+            "effective_boundary_ids": [],
+            "conductance_w_m2k": None,
+            "applied": False,
+        }
+        if face not in {"+X", "-X", "+Y", "-Y", "+Z", "-Z"}:
+            entry["selection_status"] = "invalid_mount_face"
+            if isinstance(shell_contact_report, dict):
+                shell_contact_report.setdefault("components", []).append(dict(entry))
+            return False
+
+        shell_sel_name = f"boxsel_tc_shell_face_{comp_index}"
+        comp_sel_name = f"boxsel_tc_shell_comp_{comp_index}"
+        shell_entities = self._select_shell_mount_face_boundaries(
+            design_state=design_state,
+            mount_face=face,
+            selection_tag=shell_sel_name,
+        )
+        entry["shell_boundary_ids"] = [int(value) for value in list(shell_entities or [])]
+        if not shell_entities:
+            logger.warning("      ⚠ 默认 shell mount contact 缺少 shell 边界: %s", comp.id)
+            entry["selection_status"] = "shell_selection_empty"
+            if isinstance(shell_contact_report, dict):
+                shell_contact_report.setdefault("components", []).append(dict(entry))
+            return False
+
+        try:
+            self._create_component_face_box_selection(comp, comp_sel_name, face=face, band_mm=1.0)
+            comp_entities = self._normalize_entity_ids(self.model.java.selection(comp_sel_name).entities())
+        except Exception as exc:
+            logger.warning("      ⚠ 默认 shell mount contact 组件边界选择失败: %s (%s)", comp.id, exc)
+            entry["selection_status"] = "component_selection_runtime_error"
+            entry["error"] = str(exc)
+            if isinstance(shell_contact_report, dict):
+                shell_contact_report.setdefault("components", []).append(dict(entry))
+            return False
+        entry["component_boundary_ids"] = [int(value) for value in list(comp_entities or [])]
+        if not comp_entities:
+            logger.warning("      ⚠ 默认 shell mount contact 缺少组件边界: %s", comp.id)
+            entry["selection_status"] = "component_selection_empty"
+            if isinstance(shell_contact_report, dict):
+                shell_contact_report.setdefault("components", []).append(dict(entry))
+            return False
+
+        if geometry_is_assembly is None:
+            geometry_is_assembly = self._geometry_is_assembly()
+        if boundary_adjacency is None:
+            boundary_adjacency = self._boundary_domain_adjacency()
+        if component_domain_index is None:
+            component_domain_index = self._resolve_component_domain_index(design_state)
+        if shell_domain_ids is None:
+            shell_domain_ids = self._infer_shell_domain_ids(
+                component_domain_index=component_domain_index,
+            )
+
+        filtered = self._filter_shared_interface_boundary_ids(
+            shell_boundary_ids=shell_entities,
+            component_boundary_ids=comp_entities,
+            shell_domain_ids=list(shell_domain_ids or []),
+            component_domain_ids=list(component_domain_index.get(comp_id, []) or []),
+            boundary_adjacency=dict(boundary_adjacency or {}),
+            geometry_is_assembly=bool(geometry_is_assembly),
+        )
+        entry.update(filtered)
+        entry["geometry_is_assembly"] = bool(geometry_is_assembly)
+
+        effective_entities = [int(value) for value in list(filtered.get("effective_boundary_ids", []) or []) if int(value) > 0]
+        if bool(geometry_is_assembly):
+            logger.warning(
+                "      ⚠ 默认 shell mount contact 当前仅支持 Union 共享边界，assembly pair 模式未接入: %s",
+                comp.id,
+            )
+            entry["selection_status"] = "assembly_pair_required"
+            if isinstance(shell_contact_report, dict):
+                shell_contact_report.setdefault("components", []).append(dict(entry))
+            return False
+        if not entry["component_domain_ids"]:
+            logger.warning("      ⚠ 默认 shell mount contact 缺少组件域解析: %s", comp.id)
+            entry["selection_status"] = "component_domain_unresolved"
+            if isinstance(shell_contact_report, dict):
+                shell_contact_report.setdefault("components", []).append(dict(entry))
+            return False
+        if not entry["shell_domain_ids"]:
+            logger.warning("      ⚠ 默认 shell mount contact 缺少 shell 域解析: %s", comp.id)
+            entry["selection_status"] = "shell_domain_unresolved"
+            if isinstance(shell_contact_report, dict):
+                shell_contact_report.setdefault("components", []).append(dict(entry))
+            return False
+        if not effective_entities:
+            logger.warning(
+                "      ⚠ 默认 shell mount contact 未找到真实共享界面: %s face=%s overlap=%d adjacency=%d",
+                comp.id,
+                face,
+                len(list(entry.get("overlap_boundary_ids", []) or [])),
+                len(list(entry.get("adjacency_boundary_ids", []) or [])),
+            )
+            entry["selection_status"] = "no_shared_interface"
+            if isinstance(shell_contact_report, dict):
+                shell_contact_report.setdefault("components", []).append(dict(entry))
+            return False
+
+        try:
+            tc_name = f"tc_shell_{comp_index}"
+            thermal_contact = ht.feature().create(tc_name, "ThermalContact")
+            conductance = self._default_mount_contact_conductance(comp)
+            entry["conductance_w_m2k"] = float(conductance)
+            set_ok, set_desc, attempt_errors = self._set_thermal_contact_conductance(
+                thermal_contact,
+                conductance,
+            )
+            if not set_ok:
+                raise ValueError(" | ".join(attempt_errors[-4:]))
+            contact_sel_name = self._create_explicit_boundary_selection(
+                selection_tag=f"sel_tc_shell_iface_{comp_index}",
+                boundary_ids=effective_entities,
+            )
+            thermal_contact.selection().named(contact_sel_name)
+            entry["applied"] = True
+            entry["selection_status"] = "shared_interface_applied"
+            logger.info(
+                "      ✓ 默认 shell mount contact 已设置: %s face=%s, h=%.1f (%s), shared_boundaries=%d",
+                comp.id,
+                face,
+                conductance,
+                set_desc,
+                len(effective_entities),
+            )
+            if isinstance(shell_contact_report, dict):
+                shell_contact_report.setdefault("components", []).append(dict(entry))
+            return True
+        except Exception as exc:
+            logger.warning("      ⚠ 默认 shell mount contact 设置失败: %s (%s)", comp.id, exc)
+            entry["selection_status"] = "contact_feature_failed"
+            entry["error"] = str(exc)
+            if isinstance(shell_contact_report, dict):
+                shell_contact_report.setdefault("components", []).append(dict(entry))
+            return False
+
     def _assign_heat_sources_dynamic(
         self,
         design_state,
@@ -29,6 +711,7 @@ class ComsolThermalOperatorMixin:
         disambiguated_heat_sources = []
         failed_heat_sources = []
         active_heat_components = 0
+        component_domain_bindings = []
 
         for i, comp in enumerate(design_state.components):
             if comp.power <= 0:
@@ -37,139 +720,91 @@ class ComsolThermalOperatorMixin:
 
             logger.info(f"    - 为组件 {comp.id} 创建热源 ({comp.power}W)")
 
-            pos = comp.position
-            dim = comp.dimensions
-            tolerance = 1e-3
-            x_min = pos.x - dim.x / 2 - tolerance
-            x_max = pos.x + dim.x / 2 + tolerance
-            y_min = pos.y - dim.y / 2 - tolerance
-            y_max = pos.y + dim.y / 2 + tolerance
-            z_min = pos.z - dim.z / 2 - tolerance
-            z_max = pos.z + dim.z / 2 + tolerance
+            binding = self._resolve_component_domain_binding(
+                comp=comp,
+                comp_index=i,
+                selection_tag=f"boxsel_comp_{i}",
+            )
+            binding["power_w"] = float(comp.power)
+            binding["heat_source_assigned"] = False
+            component_domain_bindings.append(binding)
 
-            sel_name = f"boxsel_comp_{i}"
-            box_sel = self.model.java.selection().create(sel_name, "Box")
-            box_sel.set("entitydim", "3")
-            box_sel.set("xmin", f"{x_min}[mm]")
-            box_sel.set("xmax", f"{x_max}[mm]")
-            box_sel.set("ymin", f"{y_min}[mm]")
-            box_sel.set("ymax", f"{y_max}[mm]")
-            box_sel.set("zmin", f"{z_min}[mm]")
-            box_sel.set("zmax", f"{z_max}[mm]")
-            box_sel.set("condition", "inside")
+            selected_entities = list(binding.get("domain_ids", []) or [])
+            num_selected = int(binding.get("domain_count", len(selected_entities)))
+            logger.info(
+                "      Box Selection 解析结果: %d 个域 (%s)",
+                num_selected,
+                str(binding.get("selection_status", "") or "unknown"),
+            )
 
-            selection_name = sel_name
-            try:
-                selected_entities = self._normalize_entity_ids(box_sel.entities())
-                num_selected = len(selected_entities)
-                logger.info(f"      Box Selection 选中 {num_selected} 个域")
-
-                if num_selected == 0:
-                    logger.warning(f"      ⚠️ inside 条件选中 0 个域，回退到 intersects: {comp.id}")
-                    box_sel.set("condition", "intersects")
-                    selected_entities = self._normalize_entity_ids(box_sel.entities())
-                    num_selected = len(selected_entities)
-                    logger.info(f"      intersects 回退后选中 {num_selected} 个域")
-
-                if num_selected == 0:
-                    resolved_domain, resolve_meta = self._resolve_missing_heat_domain(
-                        comp=comp,
-                        comp_index=i,
-                    )
-                    if resolved_domain is not None:
-                        resolved_sel_name = f"{sel_name}_recovered"
-                        recovered_sel = self.model.java.selection().create(resolved_sel_name, "Explicit")
-                        recovered_sel.geom("geom1", 3)
-                        recovered_sel.set([int(resolved_domain)])
-                        selection_name = resolved_sel_name
-                        selected_entities = [int(resolved_domain)]
-                        num_selected = 1
-                        disambiguated_heat_sources.append(comp.id)
-                        logger.warning(
-                            "      ⚠️ 0-hit 已自动恢复: "
-                            f"{comp.id} -> domain {resolved_domain} "
-                            f"(method={resolve_meta.get('method')}, "
-                            f"distance_mm={resolve_meta.get('distance_mm')}, "
-                            f"size_error={resolve_meta.get('size_error')})"
-                        )
-
-                if num_selected > 1:
-                    ambiguous_candidates = list(selected_entities)
-                    logger.warning(f"      ⚠️ 选中 {num_selected} 个域，尝试 allvertices 收紧: {comp.id}")
-                    box_sel.set("condition", "allvertices")
-                    selected_entities = self._normalize_entity_ids(box_sel.entities())
-                    num_selected = len(selected_entities)
-                    logger.info(f"      allvertices 收紧后选中 {num_selected} 个域")
-                    if num_selected == 0 and ambiguous_candidates:
-                        selected_entities = ambiguous_candidates
-                        num_selected = len(selected_entities)
-                        logger.warning(
-                            "      ⚠️ allvertices 收紧为空，回退到 intersects 候选并执行域歧义收敛: %s",
-                            comp.id,
-                        )
-
-                if num_selected > 1:
-                    resolved_domain, resolve_meta = self._resolve_ambiguous_heat_domain(
-                        comp=comp,
-                        comp_index=i,
-                        domain_ids=selected_entities,
-                    )
-                    if resolved_domain is None:
-                        logger.error(
-                            f"      ✗ 热源绑定拒绝: 组件 {comp.id} 仍歧义命中 {num_selected} 个域，跳过该热源"
-                        )
-                        ambiguous_heat_sources.append(comp.id)
-                        failed_heat_sources.append(comp.id)
-                        continue
-
-                    resolved_sel_name = f"{sel_name}_resolved"
-                    try:
-                        resolved_sel = self.model.java.selection().create(resolved_sel_name, "Explicit")
-                        resolved_sel.geom("geom1", 3)
-                        resolved_sel.set([int(resolved_domain)])
-                        selection_name = resolved_sel_name
-                        disambiguated_heat_sources.append(comp.id)
-                        logger.warning(
-                            "      ⚠️ 多域歧义已自动收敛: "
-                            f"{comp.id} -> domain {resolved_domain} "
-                            f"(method={resolve_meta.get('method')}, "
-                            f"distance_mm={resolve_meta.get('distance_mm')})"
-                        )
-                    except Exception as resolve_bind_error:
-                        logger.error(
-                            f"      ✗ 歧义域收敛后绑定失败: {comp.id}, error={resolve_bind_error}"
-                        )
-                        ambiguous_heat_sources.append(comp.id)
-                        failed_heat_sources.append(comp.id)
-                        continue
-
-                if num_selected == 0:
-                    logger.warning(f"      ⚠️ 严重警告: 热源 Box Selection 失败！组件 {comp.id} 未选中任何域！")
-                    logger.warning(
-                        f"      Box 范围: X[{x_min:.1f}, {x_max:.1f}], "
-                        f"Y[{y_min:.1f}, {y_max:.1f}], Z[{z_min:.1f}, {z_max:.1f}] mm"
-                    )
-                    logger.warning(f"      组件位置: [{pos.x:.1f}, {pos.y:.1f}, {pos.z:.1f}] mm")
-                    logger.warning(f"      组件尺寸: [{dim.x:.1f}, {dim.y:.1f}, {dim.z:.1f}] mm")
-                    logger.error(f"      ✗ 热源绑定彻底失败！{comp.power}W 热源未施加到组件 {comp.id}！")
-                    failed_heat_sources.append(comp.id)
-                    continue
-            except Exception as sel_check_error:
-                logger.warning(f"      无法检查选中域数量: {sel_check_error}")
+            selection_status = str(binding.get("selection_status", "") or "")
+            if selection_status == "recovered_missing_domain":
+                disambiguated_heat_sources.append(comp.id)
+                logger.warning(
+                    "      ⚠️ 0-hit 已自动恢复: %s -> domain %s (method=%s, distance_mm=%s, size_error=%s)",
+                    comp.id,
+                    ",".join(str(item) for item in list(selected_entities or [])),
+                    binding.get("resolution_method"),
+                    binding.get("distance_mm"),
+                    binding.get("size_error"),
+                )
+            elif selection_status == "resolved_ambiguous_domain":
+                disambiguated_heat_sources.append(comp.id)
+                logger.warning(
+                    "      ⚠️ 多域歧义已自动收敛: %s -> domain %s (method=%s, distance_mm=%s)",
+                    comp.id,
+                    ",".join(str(item) for item in list(selected_entities or [])),
+                    binding.get("resolution_method"),
+                    binding.get("distance_mm"),
+                )
+            elif selection_status == "ambiguous_multi_domain":
+                logger.error(
+                    "      ✗ 热源绑定拒绝: 组件 %s 仍歧义命中 %d 个域，跳过该热源",
+                    comp.id,
+                    num_selected,
+                )
+                ambiguous_heat_sources.append(comp.id)
+                failed_heat_sources.append(comp.id)
+                continue
+            elif not bool(binding.get("selection_ready", False)):
+                box_bounds = dict(binding.get("box_bounds_mm", {}) or {})
+                logger.warning(f"      ⚠️ 严重警告: 热源 Box Selection 失败！组件 {comp.id} 未选中任何域！")
+                logger.warning(
+                    "      Box 范围: X[%.1f, %.1f], Y[%.1f, %.1f], Z[%.1f, %.1f] mm",
+                    float(box_bounds.get("xmin", 0.0)),
+                    float(box_bounds.get("xmax", 0.0)),
+                    float(box_bounds.get("ymin", 0.0)),
+                    float(box_bounds.get("ymax", 0.0)),
+                    float(box_bounds.get("zmin", 0.0)),
+                    float(box_bounds.get("zmax", 0.0)),
+                )
+                logger.warning(
+                    "      组件位置: [%.1f, %.1f, %.1f] mm",
+                    float(comp.position.x),
+                    float(comp.position.y),
+                    float(comp.position.z),
+                )
+                logger.warning(
+                    "      组件尺寸: [%.1f, %.1f, %.1f] mm",
+                    float(comp.dimensions.x),
+                    float(comp.dimensions.y),
+                    float(comp.dimensions.z),
+                )
+                logger.error(f"      ✗ 热源绑定彻底失败！{comp.power}W 热源未施加到组件 {comp.id}！")
                 failed_heat_sources.append(comp.id)
                 continue
 
             hs_name = f"hs_{i}"
             heat_source = ht.feature().create(hs_name, "HeatSource")
-            heat_source.selection().named(selection_name)
+            heat_source.selection().named(str(binding.get("selection_name", "")))
 
-            volume = (dim.x * dim.y * dim.z) / 1e9
+            volume = (comp.dimensions.x * comp.dimensions.y * comp.dimensions.z) / 1e9
             power_density = comp.power / volume if volume > 0 else 0
             power_expr_builder = getattr(self, "_heat_source_power_density_expression", None)
             heat_source_expr = (
                 power_expr_builder(power_density)
                 if callable(power_expr_builder)
-                else f"{power_density} * P_scale [W/m^3]"
+                else f"{power_density}[W/m^3]"
             )
             heat_source.set("Q0", heat_source_expr)
             logger.info(
@@ -177,6 +812,7 @@ class ComsolThermalOperatorMixin:
                 heat_source_expr,
                 power_density,
             )
+            binding["heat_source_assigned"] = True
             total_heat_sources_assigned += 1
 
         if total_heat_sources_assigned == 0:
@@ -203,6 +839,7 @@ class ComsolThermalOperatorMixin:
             "ambiguous_components": list(ambiguous_heat_sources),
             "disambiguated_components": list(disambiguated_heat_sources),
             "failed_components": list(failed_heat_sources),
+            "component_domain_bindings": list(component_domain_bindings),
         }
 
     def _normalize_entity_ids(self, entities: Any) -> list[int]:
@@ -512,6 +1149,23 @@ class ComsolThermalOperatorMixin:
         _ = geom
         coating_count = 0
         contact_count = 0
+        mount_face_index = self._shell_contact_mount_face_index(design_state)
+        component_domain_index = self._resolve_component_domain_index(design_state)
+        shell_domain_ids = self._infer_shell_domain_ids(
+            component_domain_index=component_domain_index,
+        )
+        geometry_is_assembly = self._geometry_is_assembly()
+        boundary_adjacency = self._boundary_domain_adjacency()
+        shell_contact_report: Dict[str, Any] = {
+            "enabled": True,
+            "geometry_is_assembly": bool(geometry_is_assembly),
+            "shell_domain_ids": [int(value) for value in list(shell_domain_ids or []) if int(value) > 0],
+            "components": [],
+            "required_count": int(len(list(mount_face_index or {}))),
+            "applied_count": 0,
+            "unresolved_count": 0,
+        }
+        self._last_shell_contact_report = shell_contact_report
 
         for i, comp in enumerate(design_state.components):
             has_custom_coating = (
@@ -624,5 +1278,30 @@ class ComsolThermalOperatorMixin:
                         contact_count += 1
                     except Exception as exc:
                         logger.warning(f"      ⚠ 接触热阻设置失败: {exc}")
+            elif self._apply_default_shell_mount_contact(
+                design_state=design_state,
+                ht=ht,
+                comp=comp,
+                comp_index=i,
+                mount_face=mount_face_index.get(str(comp.id), ""),
+                component_domain_index=component_domain_index,
+                shell_domain_ids=shell_domain_ids,
+                boundary_adjacency=boundary_adjacency,
+                geometry_is_assembly=geometry_is_assembly,
+                shell_contact_report=shell_contact_report,
+            ):
+                contact_count += 1
 
+        shell_contact_components = list(shell_contact_report.get("components", []) or [])
+        shell_contact_report["applied_count"] = int(
+            sum(1 for item in shell_contact_components if bool(dict(item or {}).get("applied", False)))
+        )
+        shell_contact_report["unresolved_count"] = int(
+            sum(
+                1
+                for item in shell_contact_components
+                if not bool(dict(item or {}).get("applied", False))
+            )
+        )
+        self._last_shell_contact_report = shell_contact_report
         logger.info(f"  ✓ 热学属性应用完成: {coating_count} 个涂层, {contact_count} 个接触热阻")

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import numpy as np
 
@@ -177,9 +177,12 @@ class ComsolDatasetEvaluatorMixin:
         self,
         *,
         expression: str,
-        dataset: str,
+        dataset: Optional[str],
         unit: Optional[str] = None,
         reducer: str = "max",
+        selection_entities: Optional[Sequence[int]] = None,
+        selection_named: Optional[str] = None,
+        entity_dim: int = 3,
     ) -> Optional[float]:
         """
         Evaluate an explicit COMSOL solution dataset through Derived Values.
@@ -192,27 +195,59 @@ class ComsolDatasetEvaluatorMixin:
             return None
 
         dataset_tag = str(dataset or "").strip()
-        if not dataset_tag:
-            return None
 
         numerical_type = {
             "max": "MaxVolume",
             "min": "MinVolume",
+            "mean": "AvVolume",
         }.get(str(reducer or "").strip().lower())
         if not numerical_type:
             return None
 
-        numeric_tag = f"drv_{abs(hash((dataset_tag, expression, reducer, datetime.now().timestamp()))) % 10_000_000}"
+        numeric_tag = (
+            f"drv_{abs(hash((dataset_tag, expression, reducer, datetime.now().timestamp()))) % 10_000_000}"
+        )
         node = None
         numerical_root = None
         try:
             numerical_root = self.model.java.result().numerical()
             node = numerical_root.create(numeric_tag, numerical_type)
-            node.set("data", dataset_tag)
+            if dataset_tag:
+                node.set("data", dataset_tag)
+            selection = None
             try:
-                node.selection().all()
+                selection = node.selection()
             except Exception:
-                pass
+                selection = None
+            selection_applied = False
+            if selection is not None:
+                if selection_named:
+                    try:
+                        selection.named(str(selection_named))
+                        selection_applied = True
+                    except Exception:
+                        selection_applied = False
+                if (not selection_applied) and selection_entities:
+                    normalized_entities = [
+                        int(value)
+                        for value in list(selection_entities or [])
+                        if int(value) > 0
+                    ]
+                    if normalized_entities:
+                        try:
+                            selection.geom("geom1", int(entity_dim))
+                        except Exception:
+                            pass
+                        try:
+                            selection.set(normalized_entities)
+                            selection_applied = True
+                        except Exception:
+                            selection_applied = False
+                if not selection_applied:
+                    try:
+                        selection.all()
+                    except Exception:
+                        pass
             node.setIndex("expr", str(expression), 0)
             if unit:
                 try:
@@ -225,6 +260,8 @@ class ComsolDatasetEvaluatorMixin:
                 return None
             if reducer == "min":
                 return float(min(values))
+            if reducer == "mean":
+                return float(sum(values) / len(values))
             return float(max(values))
         except Exception:
             return None
@@ -234,6 +271,52 @@ class ComsolDatasetEvaluatorMixin:
                     numerical_root.remove(numeric_tag)
                 except Exception:
                     pass
+
+    def _evaluate_expression_candidates_on_selection(
+        self,
+        *,
+        expressions: list[str],
+        unit: Optional[str] = None,
+        datasets: Optional[list[Optional[str]]] = None,
+        reducer: str = "max",
+        selection_entities: Optional[Sequence[int]] = None,
+        selection_named: Optional[str] = None,
+        entity_dim: int = 3,
+    ) -> Optional[float]:
+        if self.model is None:
+            return None
+
+        dataset_candidates: list[Optional[str]] = []
+        seen: set[str] = set()
+        seen_none = False
+        for item in list(datasets or [None]):
+            if item is None:
+                if not seen_none:
+                    dataset_candidates.append(None)
+                    seen_none = True
+                continue
+            tag = str(item or "").strip()
+            if not tag or tag in seen:
+                continue
+            seen.add(tag)
+            dataset_candidates.append(tag)
+        if not dataset_candidates:
+            dataset_candidates = [None]
+
+        for expr in list(expressions or []):
+            for dataset in dataset_candidates:
+                value = self._evaluate_dataset_derived_value(
+                    expression=str(expr),
+                    dataset=dataset,
+                    unit=unit,
+                    reducer=reducer,
+                    selection_entities=selection_entities,
+                    selection_named=selection_named,
+                    entity_dim=entity_dim,
+                )
+                if value is not None:
+                    return float(value)
+        return None
 
     def _probe_modal_dataset_frequency(self, dataset: str) -> Optional[float]:
         if self.model is None:
@@ -459,7 +542,7 @@ class ComsolDatasetEvaluatorMixin:
             for dset in dataset_candidates:
                 if dset is not None and dset in failed:
                     continue
-                if dset is not None and reducer in {"max", "min"}:
+                if dset is not None and reducer in {"max", "min", "mean"}:
                     derived_value = self._evaluate_dataset_derived_value(
                         expression=str(expr),
                         dataset=str(dset),

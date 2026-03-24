@@ -1,8 +1,7 @@
-﻿"""
-mass mode runner exports.
+"""
+mass mode exports.
 """
 
 from .pipeline_service import MaaSPipelineService
-from .runner import MassRunner
 
-__all__ = ["MaaSPipelineService", "MassRunner"]
+__all__ = ["MaaSPipelineService"]

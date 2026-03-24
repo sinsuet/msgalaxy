@@ -2,95 +2,86 @@
 
 - status: accepted
 - date: 2026-03-10
+- updated: 2026-03-13
 - deciders: msgalaxy-core
 - cross-reference:
-  - `R42_comsol_canonical_satellite_physics_20260310`
+  - `0015-same-repo-single-core-scenario-runtime`
   - `R41_catalog_shell_geometry_upgrade_20260310`
-  - `R44_iteration_review_package_20260310`
 
 ## Context
 
-MsGalaxy 当前 COMSOL 主链已经能完成热、结构、电学的可执行薄切片，但真实状态是“canonical 与 simplified 路径混杂共存”：
+MsGalaxy 的 COMSOL 主链已经进入 `mass` 单栈 scenario runtime，但历史上曾长期混用两类语义：
 
-- 当前热场中存在 `TemperatureBoundary`、弱对流稳定锚、`P_scale` 功率缩放等简化数值策略；
-- 当前结构、电学与耦合支路已具备骨架，但并未形成面向卫星领域的正式 profile 治理；
-- 当前没有把“真实卫星热环境”和“诊断级简化环境”明确区分为不同合同；
-- 历史调试中存在非规范命名和局部自定义表达，容易让外部误解为“真实物理配置”。
+- 一类是面向正式 source claim 的 canonical COMSOL 接口；
+- 另一类是调试期遗留的简化热路，包括 `P_scale`、`TemperatureBoundary`、弱对流稳定锚等。
 
-随着机壳、开窗、卫星原型进入主链，COMSOL 物理路径必须升级为“官方接口优先、profile 显式分层、source claim 可审计”的正式合同。
+这种混用会造成两个直接问题：
+
+- 配置表面看似请求 canonical profile，但运行时仍可能落入旧简化热路；
+- 下游 summary / report / field manifest 难以稳定表达“这次 run 到底用了什么物理合同”。
+
+在 `mass` 主线收敛到 shell/aperture/catalog-first 后，COMSOL 也必须同步收敛到 canonical-only 可审计合同。
 
 ## Problem Statement
 
 需要明确：
 
-- 什么配置可以被称为 canonical satellite physics；
-- 什么配置只能作为 diagnostic simplified path；
-- 轨道热、表面对表面辐射、电热耦合、热-结构耦合如何在 profile 层明确；
-- 如何防止旧的调试性物理设置继续被误用为 release-grade 结论；
-- 如何让字段名、单位、dataset/export 形成稳定合同，服务后续三场审阅包。
+- 哪些 profile 是 active mainline；
+- 哪些历史简化热路不再允许作为主链兜底；
+- 轨道热模块缺失时如何做显式、可审计的 canonical 内部降级；
+- 如何让 source claim、profile manifest、field/export contract 在活跃代码中保持一致。
 
 ## Decision
 
-### 1. 正式引入 4 类 COMSOL 物理 profile
+### 1. Active COMSOL profile 固定为 3 个 canonical profile
 
-下一阶段正式 profile 固定为：
+主链只保留以下 profile：
 
 1. `thermal_static_canonical`
 2. `thermal_orbital_canonical`
 3. `electro_thermo_structural_canonical`
-4. `diagnostic_simplified`
 
-### 2. canonical profile 必须优先使用官方 COMSOL 接口
+不再把 `diagnostic_simplified` 作为 active profile、默认 profile 或可执行主链合同的一部分。
 
-canonical path 的建模优先级固定为：
+### 2. Canonical profile 必须优先使用官方 COMSOL 接口
+
+canonical path 的接口优先级固定为：
 
 - 热场：`Heat Transfer in Solids`
-- 需要辐射时：`Heat Transfer with Surface-to-Surface Radiation`
-- 需要轨道热载荷时：`Orbital Thermal Loads`
+- 辐射：`Heat Transfer with Surface-to-Surface Radiation`
+- 轨道热载荷：`Orbital Thermal Loads`
 - 电学：`Electric Currents`
 - 结构：`Solid Mechanics`
-- 耦合：使用官方多物理耦合接口而非自造命名路径
+- 耦合：官方 multiphysics 接口
 
-### 3. `diagnostic_simplified` 与 canonical 路径显式隔离
+### 3. 历史简化热路从主线代码面退出
 
-以下能力只允许保留在 `diagnostic_simplified`：
+以下旧路径不再作为主链可执行兜底：
 
-- `P_scale` 之类的调试缩放；
-- 仅为数值稳定存在的弱对流锚；
-- 简化边界温度锚点；
-- 任何未经过 profile 命名和来源标签治理的临时自定义物理开关。
+- `P_scale` 功率 continuation
+- `TemperatureBoundary` 边界温度锚
+- 仅为数值稳定存在的弱对流边界锚
+- 任何以“diagnostic profile”名义暴露给 active runtime 的旧热路开关
 
-`diagnostic_simplified` 结果必须显式标注为：
+### 4. Canonical request 缺少 shell outer boundary 时必须 fail-fast
 
-- 非 release-grade；
-- 非轨道真实热环境；
-- 非最终 teacher 展示证据，除非用户明确接受 diagnostic 演示。
+若 canonical 辐射边界缺少机壳外表面选择：
 
-### 4. 禁止继续扩散非规范物理命名
+- 直接阻断本次 canonical thermal build；
+- 不再回退到全边界温度锚或弱对流稳定锚；
+- 审计信息必须保留缺失原因。
 
-今后不再把下列风格的名字写成主链合同：
+### 5. 轨道热模块缺失只允许 canonical 内部显式降级
 
-- 自定义“辐射场模式”命名；
-- 自定义“功率阶跃模式”命名；
-- 任何未映射到 COMSOL 官方物理接口/study 类型的内部术语。
+当 `thermal_orbital_canonical` 缺少 `Orbital Thermal Loads` 能力时：
 
-若需要时变功率或切换工况，必须归入以下正式机制之一：
+- 允许显式回落到 `thermal_static_canonical`
+- 不允许静默冒充 `thermal_orbital_canonical`
+- 不允许再借由旧 `diagnostic_simplified` profile 逃逸
 
-- `Time Dependent Study`
-- `Parametric Sweep`
-- 正式函数/载荷曲线
+### 6. 字段、单位和导出合同保持统一
 
-### 5. 机壳实体必须进入三场求解
-
-teacher/release profile 下：
-
-- 机壳必须作为真实实体进入热场与结构场；
-- aperture 与 panel variant 必须参与热边界、结构载荷路径和网格生成；
-- 不允许再以“透明壳渲染”替代物理实体机壳。
-
-### 6. 字段名、单位和导出合同固定
-
-字段与单位合同至少固定：
+字段与单位合同继续固定：
 
 - 温度：`T` / `K`
 - 位移模：`solid.disp` / `m`
@@ -98,62 +89,81 @@ teacher/release profile 下：
 - von Mises：`solid.mises` / `Pa`
 - 模态频率：`Hz`
 
-任何出图、tensor、审阅包都必须引用同一 registry，而不能在不同脚本中各自猜测单位或量纲。
+同一套 field registry / unit contract 必须服务 summary、field export、tensor 与下游消费者。
 
-### 7. 模块许可与降级必须显式审计
+### 7. Source claim 必须区分 requested 与 effective
 
-如果 `Orbital Thermal Loads` 或相关模块不可用：
+source claim 至少要稳定给出：
 
-- 允许显式降级到 `thermal_static_canonical`；
-- 不允许静默冒充 `thermal_orbital_canonical`；
-- 审计产物必须写出降级原因与模块缺失说明。
+- `requested_physics_profile`
+- `physics_profile`
+- `canonical_request_preserved`
+- `requested_profile_release_grade`
+- `effective_profile_release_grade`
+- `thermal_realness_level`
+- `structural_realness_level`
+- `power_realness_level`
+- `thermal_setup_ok / thermal_study_entered / thermal_study_solved`
+- `structural_setup_ok / structural_study_entered / structural_study_solved`
+- `power_setup_ok / power_study_entered / power_study_solved`
+- `coupled_setup_ok / coupled_study_entered / coupled_study_solved`
+- `degradation_reason`
 
-## Implemented / Accepted Target / Deferred
+## Implemented / Deferred
 
-### Implemented（截至 2026-03-10 的真实实现）
+### Implemented（截至 2026-03-13）
 
-- COMSOL 热/结构/电学薄切片可执行；
-- 结构、电学与耦合 study 有执行骨架；
-- 现有导出脚本已能导出 `T / displacement / stress`。
+- active profile manifest 已收敛为 3 个 canonical profile；
+- 默认 COMSOL profile 已切到 `electro_thermo_structural_canonical`；
+- `thermal_orbital_canonical` 缺模块时显式回落到 `thermal_static_canonical`；
+- 主链已移除 `diagnostic_simplified` profile 与旧热路兜底代码；
+- canonical thermal path 缺少 shell outer boundary 时会 strict block。
+- shell 外表面与 feature/domain audit 已优先消费 shell contract truth，而不再只依赖 legacy metadata；
+- solver scheduler / result extractor 已显式记录 model-build 与 solve 的阶段差异；
+- source claim 已能区分 canonical request preserved 与实际 study entered / solved 状态；
+- shell mount `Thermal Contact` 已按官方 COMSOL boundary/pair 语义重新收敛：
+  - Union 几何下只绑定真实共享内边界；
+  - assembly pair 路径当前不在主线内静默兜底；
+  - `summary / report / result_index / comsol_raw_data` 已稳定沉淀 `shell_contact_audit`；
+- `payload_camera` 的目录件几何合同已补齐真实安装接触特征：
+  - 保持 `140 x 120 x 170 mm` 有效包络不变；
+  - 在不遮挡 `camera_window` 的前提下新增 `4` 个安装柱和 `4` 个 shell contact pad；
+- 受控 real COMSOL smoke 在当前代码上已能稳定证明：
+  - runtime probe 成功
+  - STEP import 成功
+  - canonical model build 成功
+  - shell outer boundary selection 非空
+  - 能诚实区分“contact feature 创建成功”与“真实共享界面存在”
+  - `optical_remote_sensing_bus` 最新主线 run（`experiments/20260313/231429_mass_optical_remote_sensing_bus`）已出现：
+    - `payload_camera.selection_status = shared_interface_applied`
+    - `shell_contact_audit.applied_count = 5`
+    - `real_feasible = true`
+    - `final_metrics.max_temp = 50.10 degC`
+  - 该证据说明 geometry-first contact fix 可以在不放松 canonical contract 的前提下恢复热可行性。
 
-### Accepted Target（本 ADR 接受的目标架构）
-
-- 建立 4 类正式 profile；
-- canonical 与 simplified path 显式分层；
-- 机壳/aperture 进入三场真实求解；
-- 字段名、单位与 dataset/export 合同统一治理。
-
-### Deferred（明确延后）
+### Deferred
 
 - 不在本 ADR 中声称已完成轨道热高保真全链实现；
-- 不在本 ADR 中立刻删除所有 simplified 逻辑；
-- 不在本 ADR 中一次性补齐所有 mission/EMC 高保真物理域。
+- 不在本 ADR 中声称真实 COMSOL canonical 已完成多次独立复跑后的 release-grade 验证；
+- 不在本 ADR 中一次性补齐 mission/EMC 等更高保真物理域。
 
 ## Consequences
 
 ### Positive
 
-- 后续三场审阅包与 teacher 演示将有稳定、可信的物理来源标签；
-- “真实卫星热/结构/电学”与“诊断级近似”不再混淆；
-- COMSOL 物理链的命名和验收将显著规范化。
+- active runtime、配置和 source claim 的口径终于一致；
+- 下游不再把旧简化热路误读为 canonical 主链；
+- 下游不再把“box selection 命中附近边界”误读为“存在真实传热界面”；
+- geometry-first 的真实安装接触修复已在 active bus 主线证明有效；
+- profile manifest 更接近真实工程可审计合同。
 
 ### Negative
 
-- canonical profile 的接线与模块依赖更复杂；
-- 部分历史实验会因为 source claim 不满足而降级；
-- profile 治理和导出 registry 需要额外维护成本。
+- 某些历史案例会因为失去旧兜底热路而更容易 fail-fast；
+- 某些挂载语义会因缺少真实共享界面而暴露为 `required_shell_contacts_effective=false`；
+- 真实 COMSOL 垂直 smoke 需要重新积累 canonical-only 证据；
+- 历史测试和 sidecar 文档需要继续清仓。
 
-### Neutral / Tradeoff
+### Tradeoff
 
-- 该决策优先保证 source claim 的严谨性，而不是追求所有案例都能无门槛跑通；
-- simplified path 仍保留，但其地位从“默认主链”降为“受控诊断工具”。
-
-## Follow-up
-
-后续实施至少应覆盖：
-
-1. 定义 canonical/simplified profile schema；
-2. 为机壳/aperture 引入 profile-aware 边界与选择逻辑；
-3. 建立字段/单位/dataset/export registry；
-4. 在 summary/report/review package 中写出 source claim；
-5. 将模块许可检查和降级原因纳入审计产物。
+- 该决策优先保证 source claim 的真实性，而不是保留“更容易跑通”的旧调试热路。

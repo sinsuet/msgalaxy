@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Optional, Sequence
+from typing import Any, Dict, Mapping, Optional
 
 from simulation.comsol.field_registry import (
     COMSOL_FIELD_REGISTRY_VERSION,
@@ -12,45 +12,52 @@ from simulation.comsol.metric_contracts import (
     build_simulation_metric_unit_contract,
 )
 
-COMSOL_CONTRACT_BUNDLE_VERSION = "1.0"
-COMSOL_PHYSICS_PROFILE_CONTRACT_VERSION = "1.0"
-COMSOL_PROFILE_AUDIT_DIGEST_VERSION = "1.0"
+COMSOL_CONTRACT_BUNDLE_VERSION = "2.0"
+COMSOL_PHYSICS_PROFILE_CONTRACT_VERSION = "2.0"
+COMSOL_PROFILE_AUDIT_DIGEST_VERSION = "2.0"
 
 PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL = "thermal_static_canonical"
 PHYSICS_PROFILE_THERMAL_ORBITAL_CANONICAL = "thermal_orbital_canonical"
 PHYSICS_PROFILE_ELECTRO_THERMO_STRUCTURAL_CANONICAL = "electro_thermo_structural_canonical"
-PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED = "diagnostic_simplified"
 
-DEFAULT_COMSOL_PHYSICS_PROFILE = PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED
+DEFAULT_COMSOL_PHYSICS_PROFILE = PHYSICS_PROFILE_ELECTRO_THERMO_STRUCTURAL_CANONICAL
 
-REALNESS_LEVEL_DIAGNOSTIC_SIMPLIFIED = "diagnostic_simplified"
 REALNESS_LEVEL_OFFICIAL_INTERFACE_THIN_SLICE = "official_interface_thin_slice"
 REALNESS_LEVEL_NETWORK_SOLVER_FALLBACK = "network_solver_fallback"
 REALNESS_LEVEL_PROXY_FALLBACK = "proxy_fallback"
 REALNESS_LEVEL_DISABLED = "disabled"
 REALNESS_LEVEL_SETUP_INCOMPLETE = "setup_incomplete"
 
-DIAGNOSTIC_SIMPLIFICATION_P_SCALE = "P_scale"
-DIAGNOSTIC_SIMPLIFICATION_WEAK_CONVECTION_STABILIZER = "weak_convection_stabilizer"
-DIAGNOSTIC_SIMPLIFICATION_BOUNDARY_TEMPERATURE_ANCHOR = "simplified_boundary_temperature_anchor"
-
-DIAGNOSTIC_SIMPLIFICATION_TAGS = (
-    DIAGNOSTIC_SIMPLIFICATION_P_SCALE,
-    DIAGNOSTIC_SIMPLIFICATION_WEAK_CONVECTION_STABILIZER,
-    DIAGNOSTIC_SIMPLIFICATION_BOUNDARY_TEMPERATURE_ANCHOR,
-)
-
 CONTRACT_BUNDLE_CLAIM_FIELDS = (
     "requested_physics_profile",
     "physics_profile",
     "requested_profile_release_grade",
     "effective_profile_release_grade",
+    "canonical_request_preserved",
     "thermal_realness_level",
     "structural_realness_level",
     "power_realness_level",
     "orbital_thermal_loads_available",
     "degradation_reason",
-    "diagnostic_simplifications",
+    "thermal_requested",
+    "thermal_setup_ok",
+    "thermal_study_entered",
+    "thermal_study_solved",
+    "structural_requested",
+    "structural_enabled",
+    "structural_setup_ok",
+    "structural_study_entered",
+    "structural_study_solved",
+    "power_requested",
+    "power_comsol_enabled",
+    "power_setup_ok",
+    "power_study_entered",
+    "power_study_solved",
+    "power_network_enabled",
+    "coupled_requested",
+    "coupled_setup_ok",
+    "coupled_study_entered",
+    "coupled_study_solved",
     "requested_profile_interfaces",
     "effective_profile_interfaces",
 )
@@ -60,10 +67,15 @@ CONTRACT_BUNDLE_PROMOTED_FIELDS = (
     "physics_profile",
     "requested_profile_release_grade",
     "effective_profile_release_grade",
+    "canonical_request_preserved",
     "thermal_realness_level",
     "structural_realness_level",
     "power_realness_level",
     "degradation_reason",
+    "thermal_study_solved",
+    "structural_study_solved",
+    "power_study_solved",
+    "coupled_study_solved",
 )
 
 
@@ -115,18 +127,6 @@ _PHYSICS_PROFILES: Dict[str, ComsolPhysicsProfile] = {
         release_grade=True,
         description="Multiphysics canonical profile spanning thermal, electrical, and structural fields.",
     ),
-    PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED: ComsolPhysicsProfile(
-        name=PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED,
-        label="Diagnostic Simplified",
-        official_interfaces=(
-            "Heat Transfer in Solids",
-            "TemperatureBoundary",
-            "HeatFluxBoundary",
-            "Stationary Study",
-        ),
-        release_grade=False,
-        description="Diagnostic-only simplified profile with explicit stabilization anchors.",
-    ),
 }
 
 
@@ -158,19 +158,6 @@ def build_physics_profile_manifest() -> Dict[str, Dict[str, Any]]:
     }
 
 
-def normalize_diagnostic_simplifications(values: Sequence[Any] | None) -> list[str]:
-    seen: set[str] = set()
-    normalized: list[str] = []
-    valid = set(DIAGNOSTIC_SIMPLIFICATION_TAGS)
-    for raw in list(values or []):
-        tag = str(raw or "").strip()
-        if not tag or tag in seen or tag not in valid:
-            continue
-        seen.add(tag)
-        normalized.append(tag)
-    return normalized
-
-
 def _resolve_branch_realness(
     *,
     enabled: bool,
@@ -186,50 +173,57 @@ def _resolve_branch_realness(
     return str(fallback_level)
 
 
+def _bool_or_none(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    return bool(value)
+
+
 def build_source_claim(
     *,
     requested_profile: Any,
-    active_simplifications: Sequence[Any] | None = None,
     orbital_thermal_loads_available: bool = False,
     structural_enabled: bool = False,
     structural_setup_ok: Optional[bool] = None,
     power_comsol_enabled: bool = False,
     power_setup_ok: Optional[bool] = None,
     power_network_enabled: bool = False,
+    thermal_runtime: Mapping[str, Any] | None = None,
+    structural_runtime: Mapping[str, Any] | None = None,
+    power_runtime: Mapping[str, Any] | None = None,
+    coupled_runtime: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     requested_name = normalize_physics_profile(requested_profile)
     requested = get_physics_profile(requested_name)
-    simplifications = normalize_diagnostic_simplifications(active_simplifications)
+    thermal_rt = dict(thermal_runtime or {})
+    struct_rt = dict(structural_runtime or {})
+    power_rt = dict(power_runtime or {})
+    coupled_rt = dict(coupled_runtime or {})
 
     degradation_reasons: list[str] = []
     thermal_realness_level = REALNESS_LEVEL_OFFICIAL_INTERFACE_THIN_SLICE
     effective_profile_name = requested.name
+    effective_profile_release_grade = bool(requested.release_grade)
 
     if requested.name == PHYSICS_PROFILE_THERMAL_ORBITAL_CANONICAL and not bool(
         orbital_thermal_loads_available
     ):
         degradation_reasons.append(
-            "Orbital Thermal Loads unavailable in current minimal slice"
+            "Orbital Thermal Loads unavailable; fallback to thermal_static_canonical"
         )
-
-    if simplifications:
-        thermal_realness_level = REALNESS_LEVEL_DIAGNOSTIC_SIMPLIFIED
-        degradation_reasons.append(
-            "thermal path uses diagnostic_simplified operators: "
-            + ", ".join(simplifications)
+        effective_profile_name = PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL
+        effective_profile_release_grade = bool(
+            get_physics_profile(effective_profile_name).release_grade
         )
-
-    if degradation_reasons:
-        effective_profile_name = PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED
 
     structural_realness_level = _resolve_branch_realness(
         enabled=bool(structural_enabled),
-        setup_ok=structural_setup_ok,
+        setup_ok=struct_rt.get("setup_ok", structural_setup_ok),
         fallback_level=REALNESS_LEVEL_PROXY_FALLBACK,
     )
     power_realness_level = _resolve_branch_realness(
         enabled=bool(power_comsol_enabled),
-        setup_ok=power_setup_ok,
+        setup_ok=power_rt.get("setup_ok", power_setup_ok),
         fallback_level=(
             REALNESS_LEVEL_NETWORK_SOLVER_FALLBACK
             if bool(power_network_enabled)
@@ -242,18 +236,32 @@ def build_source_claim(
         "requested_physics_profile": requested.name,
         "physics_profile": effective.name,
         "requested_profile_release_grade": bool(requested.release_grade),
-        "effective_profile_release_grade": bool(effective.release_grade),
+        "effective_profile_release_grade": bool(effective_profile_release_grade),
+        "canonical_request_preserved": bool(requested.name == effective.name),
         "thermal_realness_level": str(thermal_realness_level),
         "structural_realness_level": str(structural_realness_level),
         "power_realness_level": str(power_realness_level),
         "orbital_thermal_loads_available": bool(orbital_thermal_loads_available),
+        "thermal_requested": True,
+        "thermal_setup_ok": _bool_or_none(thermal_rt.get("setup_ok", True)),
+        "thermal_study_entered": bool(thermal_rt.get("study_entered", False)),
+        "thermal_study_solved": bool(thermal_rt.get("study_solved", False)),
+        "structural_requested": bool(structural_enabled),
         "structural_enabled": bool(structural_enabled),
-        "structural_setup_ok": None if structural_setup_ok is None else bool(structural_setup_ok),
+        "structural_setup_ok": _bool_or_none(struct_rt.get("setup_ok", structural_setup_ok)),
+        "structural_study_entered": bool(struct_rt.get("study_entered", False)),
+        "structural_study_solved": bool(struct_rt.get("study_solved", False)),
+        "power_requested": bool(power_comsol_enabled),
         "power_comsol_enabled": bool(power_comsol_enabled),
-        "power_setup_ok": None if power_setup_ok is None else bool(power_setup_ok),
+        "power_setup_ok": _bool_or_none(power_rt.get("setup_ok", power_setup_ok)),
+        "power_study_entered": bool(power_rt.get("study_entered", False)),
+        "power_study_solved": bool(power_rt.get("study_solved", False)),
         "power_network_enabled": bool(power_network_enabled),
+        "coupled_requested": bool(coupled_rt.get("enabled", False)),
+        "coupled_setup_ok": _bool_or_none(coupled_rt.get("setup_ok", None)),
+        "coupled_study_entered": bool(coupled_rt.get("study_entered", False)),
+        "coupled_study_solved": bool(coupled_rt.get("study_solved", False)),
         "degradation_reason": "; ".join(str(item) for item in degradation_reasons if str(item).strip()),
-        "diagnostic_simplifications": list(simplifications),
         "requested_profile_interfaces": list(requested.official_interfaces),
         "effective_profile_interfaces": list(effective.official_interfaces),
     }
@@ -264,25 +272,38 @@ def build_profile_audit_digest(claim: Mapping[str, Any] | None) -> Dict[str, Any
     requested_profile = str(payload.get("requested_physics_profile", "") or "")
     effective_profile = str(payload.get("physics_profile", "") or "")
     degradation_reason = str(payload.get("degradation_reason", "") or "")
-    diagnostic_simplifications = normalize_diagnostic_simplifications(
-        payload.get("diagnostic_simplifications", [])
-    )
     requested_release_grade = bool(payload.get("requested_profile_release_grade", False))
     effective_release_grade = bool(payload.get("effective_profile_release_grade", False))
+    canonical_request_preserved = bool(
+        payload.get(
+            "canonical_request_preserved",
+            bool(
+                requested_profile
+                and effective_profile
+                and requested_profile == effective_profile
+                and requested_release_grade
+                and effective_release_grade
+            ),
+        )
+    )
     return {
         "requested_physics_profile": requested_profile,
         "physics_profile": effective_profile,
         "requested_profile_release_grade": requested_release_grade,
         "effective_profile_release_grade": effective_release_grade,
+        "canonical_request_preserved": canonical_request_preserved,
         "canonical_request_degraded": bool(
-            requested_profile and effective_profile and requested_profile != effective_profile
+            requested_release_grade
+            and (
+                (requested_profile and effective_profile and requested_profile != effective_profile)
+                or not effective_release_grade
+            )
         ),
         "release_grade_blocked": bool(requested_release_grade and not effective_release_grade),
         "thermal_realness_level": str(payload.get("thermal_realness_level", "") or ""),
         "structural_realness_level": str(payload.get("structural_realness_level", "") or ""),
         "power_realness_level": str(payload.get("power_realness_level", "") or ""),
         "orbital_thermal_loads_available": bool(payload.get("orbital_thermal_loads_available", False)),
-        "diagnostic_simplifications": list(diagnostic_simplifications),
         "has_degradation": bool(degradation_reason.strip()),
         "degradation_reason": degradation_reason,
         "requested_profile_interfaces": list(payload.get("requested_profile_interfaces", []) or []),
@@ -299,20 +320,49 @@ def build_contract_bundle(
     simulation_metric_unit_contract_version: str = COMSOL_SIMULATION_METRIC_UNIT_CONTRACT_VERSION,
 ) -> Dict[str, Any]:
     payload = dict(claim or {})
+    canonical_request_preserved = bool(
+        payload.get(
+            "canonical_request_preserved",
+            bool(
+                str(payload.get("requested_physics_profile", "") or "")
+                and str(payload.get("requested_physics_profile", "") or "")
+                == str(payload.get("physics_profile", "") or "")
+                and bool(payload.get("requested_profile_release_grade", False))
+                and bool(payload.get("effective_profile_release_grade", False))
+            ),
+        )
+    )
     return {
         "bundle_version": COMSOL_CONTRACT_BUNDLE_VERSION,
         "requested_physics_profile": str(payload.get("requested_physics_profile", "") or ""),
         "physics_profile": str(payload.get("physics_profile", "") or ""),
         "requested_profile_release_grade": bool(payload.get("requested_profile_release_grade", False)),
         "effective_profile_release_grade": bool(payload.get("effective_profile_release_grade", False)),
+        "canonical_request_preserved": canonical_request_preserved,
         "thermal_realness_level": str(payload.get("thermal_realness_level", "") or ""),
         "structural_realness_level": str(payload.get("structural_realness_level", "") or ""),
         "power_realness_level": str(payload.get("power_realness_level", "") or ""),
         "orbital_thermal_loads_available": bool(payload.get("orbital_thermal_loads_available", False)),
+        "thermal_requested": bool(payload.get("thermal_requested", False)),
+        "thermal_setup_ok": _bool_or_none(payload.get("thermal_setup_ok")),
+        "thermal_study_entered": bool(payload.get("thermal_study_entered", False)),
+        "thermal_study_solved": bool(payload.get("thermal_study_solved", False)),
+        "structural_requested": bool(payload.get("structural_requested", False)),
+        "structural_enabled": bool(payload.get("structural_enabled", False)),
+        "structural_setup_ok": _bool_or_none(payload.get("structural_setup_ok")),
+        "structural_study_entered": bool(payload.get("structural_study_entered", False)),
+        "structural_study_solved": bool(payload.get("structural_study_solved", False)),
+        "power_requested": bool(payload.get("power_requested", False)),
+        "power_comsol_enabled": bool(payload.get("power_comsol_enabled", False)),
+        "power_setup_ok": _bool_or_none(payload.get("power_setup_ok")),
+        "power_study_entered": bool(payload.get("power_study_entered", False)),
+        "power_study_solved": bool(payload.get("power_study_solved", False)),
+        "power_network_enabled": bool(payload.get("power_network_enabled", False)),
+        "coupled_requested": bool(payload.get("coupled_requested", False)),
+        "coupled_setup_ok": _bool_or_none(payload.get("coupled_setup_ok")),
+        "coupled_study_entered": bool(payload.get("coupled_study_entered", False)),
+        "coupled_study_solved": bool(payload.get("coupled_study_solved", False)),
         "degradation_reason": str(payload.get("degradation_reason", "") or ""),
-        "diagnostic_simplifications": normalize_diagnostic_simplifications(
-            payload.get("diagnostic_simplifications", [])
-        ),
         "requested_profile_interfaces": list(payload.get("requested_profile_interfaces", []) or []),
         "effective_profile_interfaces": list(payload.get("effective_profile_interfaces", []) or []),
         "profile_audit_digest": build_profile_audit_digest(payload),

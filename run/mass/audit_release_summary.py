@@ -135,13 +135,11 @@ def _write_markdown(path: Path, rows: List[dict], rollup: dict) -> None:
     lines.append("")
     lines.append("## Runs")
     lines.append("")
-    lines.append(
-        "| Run | Mode | Level | Audit | Diagnosis | Gap | First feasible | COMSOL calls | VOP rounds |"
-    )
-    lines.append("| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: |")
+    lines.append("| Run | Mode | Level | Audit | Diagnosis | Gap | First feasible | COMSOL calls |")
+    lines.append("| --- | --- | --- | --- | --- | --- | ---: | ---: |")
     for row in rows:
         lines.append(
-            "| {run_dir} | {run_mode}->{execution_mode} | {level} | {audit} | {diag_status}:{diag_reason} | {gap} | {first_feasible} | {comsol_calls} | {vop_rounds} |".format(
+            "| {run_dir} | {run_mode}->{execution_mode} | {level} | {audit} | {diag_status}:{diag_reason} | {gap} | {first_feasible} | {comsol_calls} |".format(
                 run_dir=str(row.get("run_dir", "") or ""),
                 run_mode=str(row.get("run_mode", "") or ""),
                 execution_mode=str(row.get("execution_mode", "") or ""),
@@ -152,31 +150,21 @@ def _write_markdown(path: Path, rows: List[dict], rollup: dict) -> None:
                 gap=str(row.get("gap_category", "") or ""),
                 first_feasible=str(row.get("first_feasible_eval", "") or ""),
                 comsol_calls=str(row.get("comsol_calls_to_first_feasible", "") or ""),
-                vop_rounds=str(row.get("vop_round_count", "") or ""),
             )
         )
     observable_rows = [
-        row
-        for row in rows
-        if str(row.get("runtime_feature_fingerprint_path", "") or "").strip()
-        or str(row.get("llm_final_summary_zh_path", "") or "").strip()
-        or str(row.get("vop_round_audit_table", "") or "").strip()
+        row for row in rows if str(row.get("release_audit_table", "") or "").strip()
     ]
     lines.append("")
-    lines.append("## Observability Links")
+    lines.append("## Audit Tables")
     lines.append("")
     if observable_rows:
-        lines.append(
-            "| Run | Fingerprint | 中文总结 | VOP Round Audit | Release Audit |"
-        )
-        lines.append("| --- | --- | --- | --- | --- |")
+        lines.append("| Run | Release Audit |")
+        lines.append("| --- | --- |")
         for row in observable_rows:
             lines.append(
-                "| {run_dir} | {fingerprint} | {summary_zh} | {vop_rounds} | {release_audit} |".format(
+                "| {run_dir} | {release_audit} |".format(
                     run_dir=str(row.get("run_dir", "") or ""),
-                    fingerprint=str(row.get("runtime_feature_fingerprint_path", "") or ""),
-                    summary_zh=str(row.get("llm_final_summary_zh_path", "") or ""),
-                    vop_rounds=str(row.get("vop_round_audit_table", "") or ""),
                     release_audit=str(row.get("release_audit_table", "") or ""),
                 )
             )
@@ -273,8 +261,7 @@ def main() -> int:
                 f"diag={row['diagnosis_status']}:{row['diagnosis_reason']} | "
                 f"gap={row.get('gap_category', '')} | "
                 f"first_feasible={row['first_feasible_eval']} | "
-                f"comsol_calls={row['comsol_calls_to_first_feasible']} | "
-                f"vop_rounds={row['vop_round_count']}"
+                f"comsol_calls={row['comsol_calls_to_first_feasible']}"
             )
         if args.output_csv:
             print(f"[OK] wrote {Path(args.output_csv).as_posix()}")

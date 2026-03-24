@@ -50,37 +50,6 @@ _TABLE_HEADER_PRIORITY: Dict[str, List[str]] = {
         "replan_reason",
         "feedback_aware_fidelity_reason",
     ],
-    "vop_rounds": _COMMON_OBSERVABILITY_JOIN_KEYS
-    + [
-        "stage",
-        "policy_id",
-        "trigger_reason",
-        "feedback_aware_fidelity_plan",
-        "feedback_aware_fidelity_reason",
-        "candidate_policy_id",
-        "final_policy_id",
-        "selected_operator_program_id",
-        "selected_candidate_dsl_version",
-        "selected_candidate_scoring_basis",
-        "selected_candidate_realization_status",
-        "selected_candidate_has_stub_realization",
-        "selected_semantic_program_id",
-        "operator_actions",
-        "selected_candidate_stubbed_actions",
-        "semantic_operator_actions",
-        "search_space_override",
-        "decision_rationale",
-        "change_summary",
-        "runtime_overrides",
-        "fidelity_plan",
-        "expected_effects",
-        "observed_effects",
-        "effectiveness_summary",
-        "confidence",
-        "policy_applied",
-        "mass_rerun_executed",
-        "skipped_reason",
-    ],
     "release_audit": [
         "run_id",
         "run_mode",
@@ -181,55 +150,6 @@ def _json_ready(value: Any) -> Any:
     if hasattr(value, "model_dump"):
         return _json_ready(value.model_dump())
     return str(value)
-
-
-def _normalize_vop_round_rows(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    normalized: List[Dict[str, Any]] = []
-    json_columns = {
-        "feedback_aware_fidelity_plan",
-        "operator_actions",
-        "selected_candidate_stubbed_actions",
-        "semantic_operator_actions",
-        "change_summary",
-        "runtime_overrides",
-        "fidelity_plan",
-        "expected_effects",
-        "observed_effects",
-        "effectiveness_summary",
-        "vop_decision_summary",
-        "vop_delegated_effect_summary",
-    }
-    for row in rows:
-        payload = dict(row or {})
-        if not payload:
-            continue
-        for column in json_columns:
-            if column not in payload:
-                continue
-            payload[column] = json.dumps(
-                _json_ready(payload.get(column)),
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-        normalized.append(payload)
-    return normalized
-
-
-def persist_vop_round_events(run_dir: str, rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
-    base = Path(run_dir)
-    events_dir = base / "events"
-    events_dir.mkdir(parents=True, exist_ok=True)
-    path = events_dir / "vop_round_events.jsonl"
-
-    materialized = [dict(_json_ready(row) or {}) for row in list(rows or []) if dict(row or {})]
-    with path.open("w", encoding="utf-8") as f:
-        for row in materialized:
-            f.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
-
-    return {
-        "vop_round_events": int(len(materialized)),
-        "vop_round_events_path": serialize_run_path(base, path),
-    }
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -452,7 +372,6 @@ def materialize_observability_tables(run_dir: str) -> Dict[str, Any]:
     physics = _read_jsonl(events_dir / "physics_events.jsonl")
     candidates = _read_jsonl(events_dir / "candidate_events.jsonl")
     phases = _read_jsonl(events_dir / "phase_events.jsonl")
-    vop_rounds = _read_jsonl(events_dir / "vop_round_events.jsonl")
     layouts = _read_jsonl(events_dir / "layout_events.jsonl")
     layout_deltas = _build_layout_delta_rows(base, layouts)
     release_audit = _build_release_audit_rows(base)
@@ -472,11 +391,6 @@ def materialize_observability_tables(run_dir: str) -> Dict[str, Any]:
             phases,
             preferred_headers=_TABLE_HEADER_PRIORITY.get("phases"),
         ),
-        "vop_rounds": _write_csv(
-            tables_dir / "vop_rounds.csv",
-            _normalize_vop_round_rows(vop_rounds),
-            preferred_headers=_TABLE_HEADER_PRIORITY.get("vop_rounds"),
-        ),
         "layouts": _write_csv(tables_dir / "layout_timeline.csv", layouts),
         "layout_deltas": _write_csv(tables_dir / "layout_deltas.csv", layout_deltas),
         "release_audit": _write_csv(
@@ -486,7 +400,6 @@ def materialize_observability_tables(run_dir: str) -> Dict[str, Any]:
         ),
     }
     counts["tables_dir"] = serialize_run_path(base, tables_dir)
-    counts["vop_rounds_path"] = serialize_run_path(base, tables_dir / "vop_rounds.csv")
     counts["release_audit_path"] = serialize_run_path(
         base, tables_dir / "release_audit.csv"
     )

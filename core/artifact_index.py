@@ -1,5 +1,5 @@
 """
-Helpers for mode-scoped raw artifact layout and artifact index persistence.
+Helpers for mode-scoped artifact layout and artifact index persistence.
 """
 
 from __future__ import annotations
@@ -12,14 +12,11 @@ from typing import Any, Dict
 from core.path_policy import serialize_run_path
 
 
-ARTIFACT_LAYOUT_VERSION = 2
+ARTIFACT_LAYOUT_VERSION = 3
 ARTIFACT_INDEX_REL_PATH = Path("events") / "artifact_index.json"
 
 _KNOWN_SCOPES = {
-    "agent_loop",
     "mass",
-    "vop_maas",
-    "delegated_mass",
     "legacy",
 }
 
@@ -28,25 +25,21 @@ def normalize_artifact_scope(scope: Any, default: str = "legacy") -> str:
     normalized = str(scope or "").strip().lower()
     if normalized in _KNOWN_SCOPES:
         return normalized
-    return str(default or "legacy").strip().lower() or "legacy"
+    fallback = str(default or "legacy").strip().lower() or "legacy"
+    return fallback if fallback in _KNOWN_SCOPES else "legacy"
 
 
 def default_raw_scope_for_run_mode(run_mode: Any) -> str:
     normalized = str(run_mode or "").strip().lower()
-    if normalized == "vop_maas":
-        return "delegated_mass"
-    if normalized in {"agent_loop", "mass"}:
-        return normalized
+    if normalized == "mass":
+        return "mass"
     return "legacy"
 
 
 def scope_relative_root(scope: Any) -> str:
     normalized = normalize_artifact_scope(scope)
     mapping = {
-        "agent_loop": "artifacts/agent_loop",
         "mass": "artifacts/mass",
-        "vop_maas": "artifacts/vop_maas",
-        "delegated_mass": "artifacts/vop_maas/delegated_mass",
         "legacy": "artifacts/legacy",
     }
     return str(mapping.get(normalized, mapping["legacy"]))
@@ -60,10 +53,7 @@ def build_scope_payload(scope: Any) -> Dict[str, Any]:
         "llm_interactions_dir": f"{root}/llm_interactions",
         "trace_dir": f"{root}/trace",
     }
-    if normalized == "agent_loop":
-        payload["evolution_trace_csv"] = f"{root}/evolution_trace.csv"
-        payload["snapshots_dir"] = f"{root}/snapshots"
-    if normalized in {"mass", "delegated_mass"}:
+    if normalized == "mass":
         payload["mass_trace_csv"] = f"{root}/mass_trace.csv"
         payload["snapshots_dir"] = f"{root}/snapshots"
         payload["step_files_dir"] = f"{root}/step_files"
@@ -81,27 +71,16 @@ def build_artifact_index_payload(
     run_path = Path(run_dir)
     raw_scope = default_raw_scope_for_run_mode(run_mode)
     llm_scopes: Dict[str, str] = {}
-    if str(run_mode or "").strip().lower() == "vop_maas":
-        llm_scopes["vop_maas"] = scope_relative_root("vop_maas") + "/llm_interactions"
-        llm_scopes["delegated_mass"] = scope_relative_root("delegated_mass") + "/llm_interactions"
-    elif str(run_mode or "").strip().lower() in {"agent_loop", "mass"}:
-        llm_scopes[str(run_mode).strip().lower()] = (
-            scope_relative_root(run_mode) + "/llm_interactions"
-        )
 
-    scopes: Dict[str, Dict[str, Any]] = {}
+    normalized_mode = str(run_mode or "").strip().lower()
+    if normalized_mode == "mass":
+        llm_scopes["mass"] = scope_relative_root("mass") + "/llm_interactions"
+
     active_scopes = {"legacy", raw_scope}
-    if str(run_mode or "").strip().lower() == "vop_maas":
-        active_scopes.add("vop_maas")
-        active_scopes.add("delegated_mass")
-    elif str(run_mode or "").strip().lower() == "agent_loop":
-        active_scopes.add("agent_loop")
-    elif str(run_mode or "").strip().lower() == "mass":
+    if normalized_mode == "mass":
         active_scopes.add("mass")
 
-    for scope in sorted(active_scopes):
-        scopes[scope] = build_scope_payload(scope)
-
+    scopes = {scope: build_scope_payload(scope) for scope in sorted(active_scopes)}
     payload = {
         "artifact_layout_version": int(ARTIFACT_LAYOUT_VERSION),
         "run_mode": str(run_mode or ""),
@@ -115,6 +94,9 @@ def build_artifact_index_payload(
             "events_dir": "events",
             "tables_dir": "tables",
             "visualizations_dir": "visualizations",
+            "figures_dir": "figures",
+            "fields_dir": "fields",
+            "step_dir": "step",
             "mph_models_dir": "mph_models",
             "run_log_path": "run_log.txt",
             "run_log_debug_path": "run_log_debug.txt" if (run_path / "run_log_debug.txt").exists() else "",
@@ -122,7 +104,6 @@ def build_artifact_index_payload(
         "scopes": scopes,
         "paths": {
             "llm_interactions": dict(llm_scopes),
-            "agent_loop_trace_csv": scopes.get("agent_loop", {}).get("evolution_trace_csv", ""),
             "mass_trace_csv": scopes.get(raw_scope, {}).get("mass_trace_csv", ""),
             "trace_dir": scopes.get(raw_scope, {}).get("trace_dir", ""),
             "snapshots_dir": scopes.get(raw_scope, {}).get("snapshots_dir", ""),
@@ -186,18 +167,9 @@ def materialize_legacy_artifacts_into_layout_v2(
             llm_target = str(default_scope_payload.get("llm_interactions_dir", "") or "")
             if llm_target:
                 llm_map[default_raw_scope] = llm_target
-        for scope_name, rel_path in list(llm_map.items()):
-            if not rel_path:
-                continue
-            _copy_dir_if_exists(run_path / "llm_interactions", run_path / rel_path)
-
-    legacy_agent_trace = run_path / "evolution_trace.csv"
-    if legacy_agent_trace.exists():
-        agent_scope = _ensure_scope("agent_loop")
-        evolution_target = str(agent_scope.get("evolution_trace_csv", "") or "")
-        if evolution_target:
-            _copy_file_if_exists(legacy_agent_trace, run_path / evolution_target)
-            paths["agent_loop_trace_csv"] = evolution_target
+        for _, rel_path in list(llm_map.items()):
+            if rel_path:
+                _copy_dir_if_exists(run_path / "llm_interactions", run_path / rel_path)
 
     legacy_artifact_files = {
         "mass_trace_csv": run_path / "mass_trace.csv",
@@ -205,9 +177,8 @@ def materialize_legacy_artifacts_into_layout_v2(
     }
     for key, source_path in legacy_artifact_files.items():
         rel_path = str(default_scope_payload.get(key, "") or "")
-        if rel_path:
-            if _copy_file_if_exists(source_path, run_path / rel_path):
-                paths[key] = rel_path
+        if rel_path and _copy_file_if_exists(source_path, run_path / rel_path):
+            paths[key] = rel_path
 
     legacy_artifact_dirs = {
         "trace_dir": run_path / "trace",
@@ -216,9 +187,8 @@ def materialize_legacy_artifacts_into_layout_v2(
     }
     for key, source_path in legacy_artifact_dirs.items():
         rel_path = str(default_scope_payload.get(key, "") or "")
-        if rel_path:
-            if _copy_dir_if_exists(source_path, run_path / rel_path):
-                paths[key] = rel_path
+        if rel_path and _copy_dir_if_exists(source_path, run_path / rel_path):
+            paths[key] = rel_path
 
     paths["llm_interactions"] = llm_map
     normalized_payload["scopes"] = scopes

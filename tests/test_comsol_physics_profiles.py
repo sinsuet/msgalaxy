@@ -25,21 +25,17 @@ from simulation.comsol.physics_profiles import (
     COMSOL_CONTRACT_BUNDLE_VERSION,
     COMSOL_PHYSICS_PROFILE_CONTRACT_VERSION,
     COMSOL_PROFILE_AUDIT_DIGEST_VERSION,
-    DIAGNOSTIC_SIMPLIFICATION_BOUNDARY_TEMPERATURE_ANCHOR,
-    DIAGNOSTIC_SIMPLIFICATION_P_SCALE,
-    DIAGNOSTIC_SIMPLIFICATION_WEAK_CONVECTION_STABILIZER,
-    PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED,
+    DEFAULT_COMSOL_PHYSICS_PROFILE,
     PHYSICS_PROFILE_ELECTRO_THERMO_STRUCTURAL_CANONICAL,
     PHYSICS_PROFILE_THERMAL_ORBITAL_CANONICAL,
     PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL,
-    REALNESS_LEVEL_DIAGNOSTIC_SIMPLIFIED,
     REALNESS_LEVEL_NETWORK_SOLVER_FALLBACK,
     REALNESS_LEVEL_OFFICIAL_INTERFACE_THIN_SLICE,
     build_contract_bundle,
-    materialize_contract_payload,
-    build_profile_audit_digest,
     build_physics_profile_manifest,
+    build_profile_audit_digest,
     build_source_claim,
+    materialize_contract_payload,
     resolve_contract_bundle,
 )
 from simulation.comsol_driver import ComsolDriver
@@ -90,20 +86,19 @@ def test_field_registry_minimal_slice_covers_required_fields():
     assert COMSOL_FIELD_REGISTRY_VERSION == "1.0"
 
 
-def test_physics_profile_manifest_covers_minimal_profile_contract():
+def test_physics_profile_manifest_covers_canonical_profiles_only():
     manifest = build_physics_profile_manifest()
 
     assert set(manifest) == {
         PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL,
         PHYSICS_PROFILE_THERMAL_ORBITAL_CANONICAL,
         PHYSICS_PROFILE_ELECTRO_THERMO_STRUCTURAL_CANONICAL,
-        PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED,
     }
     assert manifest[PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL]["release_grade"] is True
-    assert "Heat Transfer in Solids" in manifest[PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL]["official_interfaces"]
-    assert manifest[PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED]["release_grade"] is False
-    assert "TemperatureBoundary" in manifest[PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED]["official_interfaces"]
-    assert COMSOL_PHYSICS_PROFILE_CONTRACT_VERSION == "1.0"
+    assert manifest[PHYSICS_PROFILE_THERMAL_ORBITAL_CANONICAL]["release_grade"] is True
+    assert manifest[PHYSICS_PROFILE_ELECTRO_THERMO_STRUCTURAL_CANONICAL]["release_grade"] is True
+    assert DEFAULT_COMSOL_PHYSICS_PROFILE == PHYSICS_PROFILE_ELECTRO_THERMO_STRUCTURAL_CANONICAL
+    assert COMSOL_PHYSICS_PROFILE_CONTRACT_VERSION == "2.0"
 
 
 def test_simulation_metric_unit_contract_covers_driver_summary_units():
@@ -120,29 +115,30 @@ def test_simulation_metric_unit_contract_covers_driver_summary_units():
     assert COMSOL_SIMULATION_METRIC_UNIT_CONTRACT_VERSION == "1.0"
 
 
-def test_profile_audit_digest_summarizes_degraded_request():
-    digest = build_profile_audit_digest(
-        build_source_claim(
-            requested_profile=PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL,
-            active_simplifications=[DIAGNOSTIC_SIMPLIFICATION_P_SCALE],
-            structural_enabled=True,
-            structural_setup_ok=True,
-        )
+def test_profile_audit_digest_marks_orbital_fallback_as_degraded():
+    claim = build_source_claim(
+        requested_profile=PHYSICS_PROFILE_THERMAL_ORBITAL_CANONICAL,
+        orbital_thermal_loads_available=False,
+        structural_enabled=True,
+        structural_setup_ok=True,
     )
+    digest = build_profile_audit_digest(claim)
 
-    assert digest["requested_physics_profile"] == PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL
-    assert digest["physics_profile"] == PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED
+    assert claim["requested_physics_profile"] == PHYSICS_PROFILE_THERMAL_ORBITAL_CANONICAL
+    assert claim["physics_profile"] == PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL
+    assert claim["requested_profile_release_grade"] is True
+    assert claim["effective_profile_release_grade"] is True
+    assert claim["canonical_request_preserved"] is False
+    assert "fallback to thermal_static_canonical" in claim["degradation_reason"]
     assert digest["canonical_request_degraded"] is True
-    assert digest["release_grade_blocked"] is True
+    assert digest["release_grade_blocked"] is False
     assert digest["has_degradation"] is True
-    assert digest["diagnostic_simplifications"] == [DIAGNOSTIC_SIMPLIFICATION_P_SCALE]
-    assert COMSOL_PROFILE_AUDIT_DIGEST_VERSION == "1.0"
+    assert COMSOL_PROFILE_AUDIT_DIGEST_VERSION == "2.0"
 
 
 def test_contract_bundle_summarizes_versions_and_payload_refs():
     claim = build_source_claim(
-        requested_profile=PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL,
-        active_simplifications=[DIAGNOSTIC_SIMPLIFICATION_P_SCALE],
+        requested_profile=PHYSICS_PROFILE_ELECTRO_THERMO_STRUCTURAL_CANONICAL,
         structural_enabled=True,
         structural_setup_ok=True,
         power_comsol_enabled=True,
@@ -153,10 +149,12 @@ def test_contract_bundle_summarizes_versions_and_payload_refs():
     bundle = build_contract_bundle(claim)
 
     assert bundle["bundle_version"] == COMSOL_CONTRACT_BUNDLE_VERSION
-    assert bundle["physics_profile"] == PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED
+    assert bundle["physics_profile"] == PHYSICS_PROFILE_ELECTRO_THERMO_STRUCTURAL_CANONICAL
     assert bundle["requested_profile_release_grade"] is True
-    assert bundle["effective_profile_release_grade"] is False
-    assert bundle["profile_audit_digest"]["release_grade_blocked"] is True
+    assert bundle["effective_profile_release_grade"] is True
+    assert bundle["canonical_request_preserved"] is True
+    assert bundle["power_realness_level"] == REALNESS_LEVEL_NETWORK_SOLVER_FALLBACK
+    assert bundle["profile_audit_digest"]["canonical_request_degraded"] is False
     assert bundle["contract_versions"]["field_export_registry"] == COMSOL_FIELD_REGISTRY_VERSION
     assert (
         bundle["contract_versions"]["simulation_metric_unit_contract"]
@@ -170,11 +168,12 @@ def test_resolve_contract_bundle_backfills_partial_source_claim_from_payload_top
     bundle = resolve_contract_bundle(
         {
             "source_claim": {
-                "requested_physics_profile": PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED,
-                "physics_profile": PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED,
-                "requested_profile_release_grade": False,
-                "effective_profile_release_grade": False,
-                "thermal_realness_level": REALNESS_LEVEL_DIAGNOSTIC_SIMPLIFIED,
+                "requested_physics_profile": PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL,
+                "physics_profile": PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL,
+                "requested_profile_release_grade": True,
+                "effective_profile_release_grade": True,
+                "canonical_request_preserved": True,
+                "thermal_realness_level": REALNESS_LEVEL_OFFICIAL_INTERFACE_THIN_SLICE,
             },
             "structural_realness_level": REALNESS_LEVEL_OFFICIAL_INTERFACE_THIN_SLICE,
             "power_realness_level": REALNESS_LEVEL_NETWORK_SOLVER_FALLBACK,
@@ -192,11 +191,12 @@ def test_materialize_contract_payload_backfills_default_contract_sections():
     payload = materialize_contract_payload(
         {
             "source_claim": {
-                "requested_physics_profile": PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED,
-                "physics_profile": PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED,
-                "requested_profile_release_grade": False,
-                "effective_profile_release_grade": False,
-                "thermal_realness_level": REALNESS_LEVEL_DIAGNOSTIC_SIMPLIFIED,
+                "requested_physics_profile": PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL,
+                "physics_profile": PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL,
+                "requested_profile_release_grade": True,
+                "effective_profile_release_grade": True,
+                "canonical_request_preserved": True,
+                "thermal_realness_level": REALNESS_LEVEL_OFFICIAL_INTERFACE_THIN_SLICE,
             }
         }
     )
@@ -210,9 +210,11 @@ def test_materialize_contract_payload_backfills_default_contract_sections():
         == COMSOL_SIMULATION_METRIC_UNIT_CONTRACT_VERSION
     )
     assert payload["field_export_registry"]["temperature"]["unit"] == "K"
-    assert payload["physics_profile_contract"][PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED]["release_grade"] is False
+    assert payload["physics_profile_contract"][
+        PHYSICS_PROFILE_ELECTRO_THERMO_STRUCTURAL_CANONICAL
+    ]["release_grade"] is True
     assert payload["simulation_metric_unit_contract"]["max_stress"]["summary_unit"] == "MPa"
-    assert payload["contract_bundle"]["physics_profile"] == PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED
+    assert payload["contract_bundle"]["physics_profile"] == PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL
 
 
 def test_materialize_contract_payload_prefers_source_payload_for_promoted_profile_fields():
@@ -222,97 +224,39 @@ def test_materialize_contract_payload_prefers_source_payload_for_promoted_profil
             "structural_realness_level": "",
         },
         claim={
-            "requested_physics_profile": PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED,
-            "physics_profile": PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED,
-            "requested_profile_release_grade": False,
-            "effective_profile_release_grade": False,
-            "thermal_realness_level": REALNESS_LEVEL_DIAGNOSTIC_SIMPLIFIED,
+            "requested_physics_profile": PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL,
+            "physics_profile": PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL,
+            "requested_profile_release_grade": True,
+            "effective_profile_release_grade": True,
+            "canonical_request_preserved": True,
+            "thermal_realness_level": REALNESS_LEVEL_OFFICIAL_INTERFACE_THIN_SLICE,
         },
         source_payload={
-            "physics_profile": PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED,
+            "physics_profile": PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL,
             "structural_realness_level": REALNESS_LEVEL_OFFICIAL_INTERFACE_THIN_SLICE,
             "power_realness_level": REALNESS_LEVEL_NETWORK_SOLVER_FALLBACK,
             "degradation_reason": "source payload truth",
         },
     )
 
-    assert payload["physics_profile"] == PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED
+    assert payload["physics_profile"] == PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL
     assert payload["structural_realness_level"] == REALNESS_LEVEL_OFFICIAL_INTERFACE_THIN_SLICE
     assert payload["power_realness_level"] == REALNESS_LEVEL_NETWORK_SOLVER_FALLBACK
     assert payload["contract_bundle"]["degradation_reason"] == "source payload truth"
 
 
-def test_build_source_claim_degrades_canonical_request_when_diagnostic_simplifications_are_active():
-    claim = build_source_claim(
-        requested_profile=PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL,
-        active_simplifications=[
-            DIAGNOSTIC_SIMPLIFICATION_P_SCALE,
-            DIAGNOSTIC_SIMPLIFICATION_WEAK_CONVECTION_STABILIZER,
-            DIAGNOSTIC_SIMPLIFICATION_BOUNDARY_TEMPERATURE_ANCHOR,
-        ],
-        structural_enabled=True,
-        structural_setup_ok=True,
-        power_comsol_enabled=True,
-        power_setup_ok=False,
-        power_network_enabled=True,
-    )
-
-    assert claim["requested_physics_profile"] == PHYSICS_PROFILE_THERMAL_STATIC_CANONICAL
-    assert claim["physics_profile"] == PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED
-    assert claim["requested_profile_release_grade"] is True
-    assert claim["effective_profile_release_grade"] is False
-    assert claim["thermal_realness_level"] == REALNESS_LEVEL_DIAGNOSTIC_SIMPLIFIED
-    assert claim["structural_realness_level"] == REALNESS_LEVEL_OFFICIAL_INTERFACE_THIN_SLICE
-    assert claim["power_realness_level"] == REALNESS_LEVEL_NETWORK_SOLVER_FALLBACK
-    assert claim["orbital_thermal_loads_available"] is False
-    assert claim["structural_enabled"] is True
-    assert claim["structural_setup_ok"] is True
-    assert claim["power_comsol_enabled"] is True
-    assert claim["power_setup_ok"] is False
-    assert claim["power_network_enabled"] is True
-    assert DIAGNOSTIC_SIMPLIFICATION_P_SCALE in claim["degradation_reason"]
-    assert claim["diagnostic_simplifications"] == [
-        DIAGNOSTIC_SIMPLIFICATION_P_SCALE,
-        DIAGNOSTIC_SIMPLIFICATION_WEAK_CONVECTION_STABILIZER,
-        DIAGNOSTIC_SIMPLIFICATION_BOUNDARY_TEMPERATURE_ANCHOR,
-    ]
-
-
-def test_build_source_claim_flags_orbital_profile_as_degraded_when_module_is_unavailable():
-    claim = build_source_claim(
-        requested_profile=PHYSICS_PROFILE_THERMAL_ORBITAL_CANONICAL,
-        active_simplifications=[],
-        orbital_thermal_loads_available=False,
-    )
-
-    assert claim["requested_physics_profile"] == PHYSICS_PROFILE_THERMAL_ORBITAL_CANONICAL
-    assert claim["physics_profile"] == PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED
-    assert claim["requested_profile_release_grade"] is True
-    assert claim["effective_profile_release_grade"] is False
-    assert claim["orbital_thermal_loads_available"] is False
-    assert "Orbital Thermal Loads unavailable" in claim["degradation_reason"]
-
-
-def test_canonical_thermal_path_requires_explicit_opt_in():
-    default_driver = ComsolDriver(
+def test_canonical_thermal_path_is_enabled_by_default():
+    driver = ComsolDriver(
         config={
             "physics_profile": PHYSICS_PROFILE_ELECTRO_THERMO_STRUCTURAL_CANONICAL,
         }
     )
-    assert default_driver._uses_canonical_thermal_path() is False
-    assert default_driver._uses_power_continuation_ramp() is True
 
-    opt_in_driver = ComsolDriver(
-        config={
-            "physics_profile": PHYSICS_PROFILE_ELECTRO_THERMO_STRUCTURAL_CANONICAL,
-            "enable_canonical_thermal_path": True,
-        }
-    )
-    assert opt_in_driver._uses_canonical_thermal_path() is True
-    assert opt_in_driver._uses_power_continuation_ramp() is True
+    assert driver._uses_canonical_thermal_path() is True
+    assert driver._heat_source_power_density_expression(12.5) == "12.5[W/m^3]"
 
 
-def test_run_dynamic_simulation_heat_binding_failure_includes_source_claim_and_export_registry():
+def test_run_dynamic_simulation_heat_binding_failure_includes_canonical_source_claim():
     driver = ComsolDriver(
         config={
             "physics_profile": PHYSICS_PROFILE_ELECTRO_THERMO_STRUCTURAL_CANONICAL,
@@ -333,9 +277,6 @@ def test_run_dynamic_simulation_heat_binding_failure_includes_source_claim_and_e
 
     def _patched_create_dynamic_model(step_file, design_state):
         _ = step_file, design_state
-        driver._mark_profile_simplification(DIAGNOSTIC_SIMPLIFICATION_P_SCALE)
-        driver._mark_profile_simplification(DIAGNOSTIC_SIMPLIFICATION_WEAK_CONVECTION_STABILIZER)
-        driver._mark_profile_simplification(DIAGNOSTIC_SIMPLIFICATION_BOUNDARY_TEMPERATURE_ANCHOR)
         driver._last_heat_binding_report = {
             "active_components": 1,
             "assigned_count": 0,
@@ -360,7 +301,7 @@ def test_run_dynamic_simulation_heat_binding_failure_includes_source_claim_and_e
     profile_audit_digest = dict(raw_data.get("profile_audit_digest", {}) or {})
 
     assert raw_data["contract_bundle_version"] == COMSOL_CONTRACT_BUNDLE_VERSION
-    assert raw_data["physics_profile"] == PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED
+    assert raw_data["physics_profile"] == PHYSICS_PROFILE_ELECTRO_THERMO_STRUCTURAL_CANONICAL
     assert raw_data["field_export_registry_version"] == COMSOL_FIELD_REGISTRY_VERSION
     assert raw_data["physics_profile_contract_version"] == COMSOL_PHYSICS_PROFILE_CONTRACT_VERSION
     assert raw_data["profile_audit_digest_version"] == COMSOL_PROFILE_AUDIT_DIGEST_VERSION
@@ -369,33 +310,34 @@ def test_run_dynamic_simulation_heat_binding_failure_includes_source_claim_and_e
         == COMSOL_SIMULATION_METRIC_UNIT_CONTRACT_VERSION
     )
     assert raw_data["requested_profile_release_grade"] is True
-    assert raw_data["effective_profile_release_grade"] is False
-    assert raw_data["thermal_realness_level"] == REALNESS_LEVEL_DIAGNOSTIC_SIMPLIFIED
+    assert raw_data["effective_profile_release_grade"] is True
+    assert raw_data["canonical_request_preserved"] is True
+    assert raw_data["thermal_realness_level"] == REALNESS_LEVEL_OFFICIAL_INTERFACE_THIN_SLICE
     assert raw_data["structural_realness_level"] == REALNESS_LEVEL_OFFICIAL_INTERFACE_THIN_SLICE
     assert raw_data["power_realness_level"] == REALNESS_LEVEL_NETWORK_SOLVER_FALLBACK
+    assert raw_data["thermal_study_solved"] is False
+    assert raw_data["structural_study_solved"] is False
+    assert raw_data["power_study_solved"] is False
     assert source_claim["requested_physics_profile"] == PHYSICS_PROFILE_ELECTRO_THERMO_STRUCTURAL_CANONICAL
     assert source_claim["requested_profile_release_grade"] is True
-    assert source_claim["effective_profile_release_grade"] is False
+    assert source_claim["effective_profile_release_grade"] is True
+    assert source_claim["canonical_request_preserved"] is True
     assert source_claim["structural_enabled"] is True
     assert source_claim["structural_setup_ok"] is True
+    assert source_claim["structural_study_solved"] is False
     assert source_claim["power_comsol_enabled"] is True
     assert source_claim["power_setup_ok"] is False
+    assert source_claim["power_study_solved"] is False
     assert source_claim["power_network_enabled"] is True
-    assert contract_bundle["physics_profile"] == PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED
+    assert contract_bundle["physics_profile"] == PHYSICS_PROFILE_ELECTRO_THERMO_STRUCTURAL_CANONICAL
     assert (
         contract_bundle["contract_versions"]["physics_profile_contract"]
         == COMSOL_PHYSICS_PROFILE_CONTRACT_VERSION
     )
-    assert contract_bundle["profile_audit_digest"]["canonical_request_degraded"] is True
+    assert contract_bundle["profile_audit_digest"]["canonical_request_degraded"] is False
     assert PHYSICS_PROFILE_ELECTRO_THERMO_STRUCTURAL_CANONICAL in physics_profile_contract
-    assert physics_profile_contract[PHYSICS_PROFILE_DIAGNOSTIC_SIMPLIFIED]["release_grade"] is False
-    assert profile_audit_digest["canonical_request_degraded"] is True
-    assert profile_audit_digest["release_grade_blocked"] is True
-    assert source_claim["diagnostic_simplifications"] == [
-        DIAGNOSTIC_SIMPLIFICATION_P_SCALE,
-        DIAGNOSTIC_SIMPLIFICATION_WEAK_CONVECTION_STABILIZER,
-        DIAGNOSTIC_SIMPLIFICATION_BOUNDARY_TEMPERATURE_ANCHOR,
-    ]
+    assert profile_audit_digest["canonical_request_degraded"] is False
+    assert profile_audit_digest["release_grade_blocked"] is False
     assert "temperature" in field_export_registry
     assert "displacement_magnitude" in field_export_registry
     assert "displacement_u" in field_export_registry

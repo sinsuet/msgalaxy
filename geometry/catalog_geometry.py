@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import math
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+
+import numpy as np
 
 from pydantic import BaseModel, Field
 
@@ -51,6 +55,117 @@ def _float_triplet(values: Sequence[Any]) -> Tuple[float, float, float]:
     return float(values[0]), float(values[1]), float(values[2])
 
 
+def _centered_bounds(size_mm: Sequence[Any]) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    sx, sy, sz = _float_triplet(size_mm)
+    return (
+        (-sx / 2.0, -sy / 2.0, -sz / 2.0),
+        (sx / 2.0, sy / 2.0, sz / 2.0),
+    )
+
+
+def _rotation_matrix_from_euler_deg(rotation_deg: Sequence[Any]) -> np.ndarray:
+    rx_deg, ry_deg, rz_deg = _float_triplet(rotation_deg or (0.0, 0.0, 0.0))
+    rx = math.radians(rx_deg)
+    ry = math.radians(ry_deg)
+    rz = math.radians(rz_deg)
+
+    rot_x = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, math.cos(rx), -math.sin(rx)],
+            [0.0, math.sin(rx), math.cos(rx)],
+        ],
+        dtype=float,
+    )
+    rot_y = np.array(
+        [
+            [math.cos(ry), 0.0, math.sin(ry)],
+            [0.0, 1.0, 0.0],
+            [-math.sin(ry), 0.0, math.cos(ry)],
+        ],
+        dtype=float,
+    )
+    rot_z = np.array(
+        [
+            [math.cos(rz), -math.sin(rz), 0.0],
+            [math.sin(rz), math.cos(rz), 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=float,
+    )
+    return rot_z @ rot_y @ rot_x
+
+
+def _bounds_corners(
+    min_corner_mm: Sequence[Any],
+    max_corner_mm: Sequence[Any],
+) -> np.ndarray:
+    min_x, min_y, min_z = _float_triplet(min_corner_mm)
+    max_x, max_y, max_z = _float_triplet(max_corner_mm)
+    return np.asarray(
+        [
+            [min_x, min_y, min_z],
+            [min_x, min_y, max_z],
+            [min_x, max_y, min_z],
+            [min_x, max_y, max_z],
+            [max_x, min_y, min_z],
+            [max_x, min_y, max_z],
+            [max_x, max_y, min_z],
+            [max_x, max_y, max_z],
+        ],
+        dtype=float,
+    )
+
+
+def _transform_bounds(
+    min_corner_mm: Sequence[Any],
+    max_corner_mm: Sequence[Any],
+    *,
+    rotation_deg: Sequence[Any] = (0.0, 0.0, 0.0),
+    translation_mm: Sequence[Any] = (0.0, 0.0, 0.0),
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    corners = _bounds_corners(min_corner_mm, max_corner_mm)
+    rotation = _rotation_matrix_from_euler_deg(rotation_deg)
+    translation = np.asarray(_float_triplet(translation_mm), dtype=float)
+    transformed = (rotation @ corners.T).T + translation.reshape(1, 3)
+    min_corner = transformed.min(axis=0)
+    max_corner = transformed.max(axis=0)
+    return (
+        (float(min_corner[0]), float(min_corner[1]), float(min_corner[2])),
+        (float(max_corner[0]), float(max_corner[1]), float(max_corner[2])),
+    )
+
+
+@dataclass(frozen=True)
+class ResolvedGeometryTruth:
+    profile_kind: str
+    local_bbox_size_mm: Tuple[float, float, float]
+    local_bbox_center_offset_mm: Tuple[float, float, float]
+    effective_bbox_size_mm: Tuple[float, float, float]
+    effective_bbox_center_offset_mm: Tuple[float, float, float]
+    rotation_deg: Tuple[float, float, float]
+    declared_proxy_size_mm: Optional[Tuple[float, float, float]]
+    declared_proxy_center_offset_mm: Tuple[float, float, float]
+    proxy_source: str
+
+    def model_dump(self) -> Dict[str, Any]:
+        return {
+            "profile_kind": str(self.profile_kind),
+            "local_bbox_size_mm": list(self.local_bbox_size_mm),
+            "local_bbox_center_offset_mm": list(self.local_bbox_center_offset_mm),
+            "effective_bbox_size_mm": list(self.effective_bbox_size_mm),
+            "effective_bbox_center_offset_mm": list(self.effective_bbox_center_offset_mm),
+            "rotation_deg": list(self.rotation_deg),
+            "declared_proxy_size_mm": (
+                list(self.declared_proxy_size_mm)
+                if self.declared_proxy_size_mm is not None
+                else None
+            ),
+            "declared_proxy_center_offset_mm": list(self.declared_proxy_center_offset_mm),
+            "proxy_source": str(self.proxy_source),
+        }
+
+
 class GeometryProfileSpec(BaseModel):
     """Precise geometry contract consumed by STEP export and downstream CAD tools."""
 
@@ -72,61 +187,67 @@ class GeometryProfileSpec(BaseModel):
             return PROFILE_KIND_BOX
         return kind
 
-    def approximate_size_mm(self) -> Tuple[float, float, float]:
+    def local_bounds_mm(self) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
         kind = self.normalized_kind()
         if self.size_mm is not None:
-            return _float_triplet(self.size_mm)
+            return _centered_bounds(self.size_mm)
 
         if kind == PROFILE_KIND_CYLINDER:
             radius = float(self.radius_mm or 0.0)
             height = float(self.height_mm or 0.0)
             diameter = radius * 2.0
-            return diameter, diameter, height
+            return _centered_bounds((diameter, diameter, height))
 
         if kind == PROFILE_KIND_FRUSTUM:
             radius = max(float(self.bottom_radius_mm or 0.0), float(self.top_radius_mm or 0.0))
             diameter = radius * 2.0
-            return diameter, diameter, float(self.height_mm or 0.0)
+            return _centered_bounds((diameter, diameter, float(self.height_mm or 0.0)))
 
         if kind == PROFILE_KIND_ELLIPSOID and self.semi_axes_mm is not None:
             axes = _float_triplet(self.semi_axes_mm)
-            return axes[0] * 2.0, axes[1] * 2.0, axes[2] * 2.0
+            return _centered_bounds((axes[0] * 2.0, axes[1] * 2.0, axes[2] * 2.0))
 
         if kind == PROFILE_KIND_EXTRUDED:
             if not self.profile_points_mm:
-                return 0.0, 0.0, float(self.depth_mm or 0.0)
+                return _centered_bounds((0.0, 0.0, float(self.depth_mm or 0.0)))
             xs = [float(point[0]) for point in self.profile_points_mm]
             ys = [float(point[1]) for point in self.profile_points_mm]
-            return max(xs) - min(xs), max(ys) - min(ys), float(self.depth_mm or 0.0)
+            depth = float(self.depth_mm or 0.0)
+            return (
+                (min(xs), min(ys), -depth / 2.0),
+                (max(xs), max(ys), depth / 2.0),
+            )
 
         if kind == PROFILE_KIND_COMPOSITE:
             if not self.children:
-                return 0.0, 0.0, 0.0
+                return _centered_bounds((0.0, 0.0, 0.0))
             min_corner = [float("inf"), float("inf"), float("inf")]
             max_corner = [float("-inf"), float("-inf"), float("-inf")]
             for child in self.children:
-                child_size = child.profile.approximate_size_mm()
-                child_offset = _float_triplet(child.offset_mm)
-                child_min = [
-                    child_offset[0] - child_size[0] / 2.0,
-                    child_offset[1] - child_size[1] / 2.0,
-                    child_offset[2] - child_size[2] / 2.0,
-                ]
-                child_max = [
-                    child_offset[0] + child_size[0] / 2.0,
-                    child_offset[1] + child_size[1] / 2.0,
-                    child_offset[2] + child_size[2] / 2.0,
-                ]
+                child_min, child_max = child.profile.local_bounds_mm()
+                resolved_min, resolved_max = _transform_bounds(
+                    child_min,
+                    child_max,
+                    rotation_deg=child.rotation_deg,
+                    translation_mm=child.offset_mm,
+                )
                 for axis in range(3):
-                    min_corner[axis] = min(min_corner[axis], child_min[axis])
-                    max_corner[axis] = max(max_corner[axis], child_max[axis])
+                    min_corner[axis] = min(min_corner[axis], resolved_min[axis])
+                    max_corner[axis] = max(max_corner[axis], resolved_max[axis])
             return (
-                max_corner[0] - min_corner[0],
-                max_corner[1] - min_corner[1],
-                max_corner[2] - min_corner[2],
+                (float(min_corner[0]), float(min_corner[1]), float(min_corner[2])),
+                (float(max_corner[0]), float(max_corner[1]), float(max_corner[2])),
             )
 
-        return 0.0, 0.0, 0.0
+        return _centered_bounds((0.0, 0.0, 0.0))
+
+    def approximate_size_mm(self) -> Tuple[float, float, float]:
+        min_corner, max_corner = self.local_bounds_mm()
+        return (
+            float(max_corner[0] - min_corner[0]),
+            float(max_corner[1] - min_corner[1]),
+            float(max_corner[2] - min_corner[2]),
+        )
 
     @classmethod
     def from_component_geometry(cls, comp: ComponentGeometry) -> "GeometryProfileSpec":
@@ -197,13 +318,47 @@ class CatalogComponentSpec(BaseModel):
     placeholder: bool = False
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
-    def resolved_proxy(self) -> GeometryProxySpec:
-        if self.geometry_proxy is not None:
+    def resolved_geometry_truth(
+        self,
+        *,
+        rotation_deg: Sequence[Any] = (0.0, 0.0, 0.0),
+    ) -> ResolvedGeometryTruth:
+        return resolve_geometry_truth(self, rotation_deg=rotation_deg)
+
+    def resolved_proxy(
+        self,
+        *,
+        rotation_deg: Sequence[Any] = (0.0, 0.0, 0.0),
+        prefer_declared_proxy: bool = False,
+    ) -> GeometryProxySpec:
+        if bool(prefer_declared_proxy) and self.geometry_proxy is not None:
             return self.geometry_proxy
-        return GeometryProxySpec.from_profile(
-            self.geometry_profile,
-            mount_faces=self.mount_faces,
-            metadata={"source": "derived_from_profile"},
+
+        truth = self.resolved_geometry_truth(rotation_deg=rotation_deg)
+        declared = self.geometry_proxy
+        metadata = {
+            "source": truth.proxy_source,
+            "profile_kind": truth.profile_kind,
+            "rotation_deg": list(truth.rotation_deg),
+            "local_bbox_size_mm": list(truth.local_bbox_size_mm),
+            "local_bbox_center_offset_mm": list(truth.local_bbox_center_offset_mm),
+            "effective_bbox_size_mm": list(truth.effective_bbox_size_mm),
+            "effective_bbox_center_offset_mm": list(truth.effective_bbox_center_offset_mm),
+        }
+        if declared is not None:
+            metadata["declared_proxy_size_mm"] = list(declared.size_mm)
+            metadata["declared_proxy_center_offset_mm"] = list(declared.center_offset_mm)
+        return GeometryProxySpec(
+            kind="aabb",
+            size_mm=truth.effective_bbox_size_mm,
+            center_offset_mm=truth.effective_bbox_center_offset_mm,
+            mount_faces=list((declared.mount_faces if declared is not None else self.mount_faces) or []),
+            functional_axis=(
+                declared.functional_axis
+                if declared is not None
+                else None
+            ),
+            metadata=metadata,
         )
 
     @classmethod
@@ -223,6 +378,62 @@ class CatalogComponentSpec(BaseModel):
             power_w=float(comp.power),
             metadata={"source": "legacy_component_geometry"},
         )
+
+
+def resolve_geometry_truth(
+    spec: CatalogComponentSpec,
+    *,
+    rotation_deg: Sequence[Any] = (0.0, 0.0, 0.0),
+) -> ResolvedGeometryTruth:
+    local_min, local_max = spec.geometry_profile.local_bounds_mm()
+    effective_min, effective_max = _transform_bounds(
+        local_min,
+        local_max,
+        rotation_deg=rotation_deg,
+        translation_mm=(0.0, 0.0, 0.0),
+    )
+    local_bbox_size = (
+        float(local_max[0] - local_min[0]),
+        float(local_max[1] - local_min[1]),
+        float(local_max[2] - local_min[2]),
+    )
+    local_center_offset = (
+        float((local_min[0] + local_max[0]) / 2.0),
+        float((local_min[1] + local_max[1]) / 2.0),
+        float((local_min[2] + local_max[2]) / 2.0),
+    )
+    effective_bbox_size = (
+        float(effective_max[0] - effective_min[0]),
+        float(effective_max[1] - effective_min[1]),
+        float(effective_max[2] - effective_min[2]),
+    )
+    effective_center_offset = (
+        float((effective_min[0] + effective_max[0]) / 2.0),
+        float((effective_min[1] + effective_max[1]) / 2.0),
+        float((effective_min[2] + effective_max[2]) / 2.0),
+    )
+    declared_proxy = spec.geometry_proxy
+    declared_proxy_size = (
+        _float_triplet(declared_proxy.size_mm)
+        if declared_proxy is not None and declared_proxy.size_mm is not None
+        else None
+    )
+    declared_proxy_center_offset = (
+        _float_triplet(declared_proxy.center_offset_mm)
+        if declared_proxy is not None
+        else (0.0, 0.0, 0.0)
+    )
+    return ResolvedGeometryTruth(
+        profile_kind=spec.geometry_profile.normalized_kind(),
+        local_bbox_size_mm=local_bbox_size,
+        local_bbox_center_offset_mm=local_center_offset,
+        effective_bbox_size_mm=effective_bbox_size,
+        effective_bbox_center_offset_mm=effective_center_offset,
+        rotation_deg=_float_triplet(rotation_deg or (0.0, 0.0, 0.0)),
+        declared_proxy_size_mm=declared_proxy_size,
+        declared_proxy_center_offset_mm=declared_proxy_center_offset,
+        proxy_source="geometry_profile_derived",
+    )
 
 
 def load_catalog_component_spec(path: str | Path) -> CatalogComponentSpec:

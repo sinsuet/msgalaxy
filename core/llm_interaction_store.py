@@ -1,5 +1,5 @@
 """
-LLM interaction artifact writer for mode-scoped raw artifact layout.
+LLM interaction artifact writer for the rebuilt scenario mainline.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ def _sanitize_json_value(value: Any) -> Any:
 class LLMInteractionStore:
     """Persist request/response artifacts under mode-scoped directories."""
 
-    _ACTIVE_DIRS = ("agent_loop", "mass", "vop_maas", "delegated_mass", "legacy")
+    _ACTIVE_DIRS = ("mass", "legacy")
 
     def __init__(self, run_dir: str, *, run_mode: str):
         self.run_dir = str(run_dir)
@@ -67,35 +67,20 @@ class LLMInteractionStore:
         if not normalized:
             return self.default_scope
         if normalized.startswith("model_agent_") or normalized.startswith("intent_modeler"):
-            return "mass" if self.run_mode != "vop_maas" else "delegated_mass"
+            return "mass"
         if normalized.startswith("policy_program") or normalized.startswith("vop_"):
-            return "vop_maas" if self.run_mode == "vop_maas" else "mass"
-        if normalized in {
-            "meta_reasoner",
-            "geometry_agent",
-            "thermal_agent",
-            "structural_agent",
-            "power_agent",
-        }:
-            return "agent_loop"
+            return "mass"
         return self.default_scope
 
     def normalize_mode(self, mode: Optional[str]) -> str:
         normalized = str(mode or "").strip().lower()
-        if normalized == "delegated_mass":
-            return "delegated_mass"
         normalized = normalize_observability_mode(normalized, default=self.default_scope)
-        if normalized in {"agent_loop", "mass", "vop_maas"}:
-            if normalized == "mass" and self.run_mode == "vop_maas":
-                return "delegated_mass"
+        if normalized in self._ACTIVE_DIRS:
             return normalized
         return self.default_scope
 
     def resolve_dir(self, *, role: str = "", mode: Optional[str] = None) -> str:
-        if str(mode or "").strip():
-            scope = self.normalize_mode(mode)
-        else:
-            scope = self.infer_mode_from_role(role)
+        scope = self.normalize_mode(mode) if str(mode or "").strip() else self.infer_mode_from_role(role)
         return self._ensure_scope_dir(scope)
 
     def get_active_buckets(self) -> list[str]:
